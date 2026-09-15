@@ -4,6 +4,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
+import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KclService, onlyFields } from './service.ts';
@@ -15,12 +16,21 @@ const MAX_BODY = 768 * 1024;
 const token = () => randomBytes(32).toString('hex');
 const equal = (a: string, b: string) => /^[0-9a-f]{64}$/.test(a) && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-export async function createApp(options: { dataDir: string; seed?: boolean }) {
-  const ledger = new LocalLedger(join(options.dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
-  const vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-  const service = new KclService(ledger, vault);
-  try { await service.initialize(options.seed ?? true); }
-  catch (error) { ledger.close(); vault.close(); throw error; }
+export async function createApp(options: { dataDir: string; seed?: boolean; ledger?: ApplicationLedger; personas?: typeof PERSONAS }) {
+  let ledger: ApplicationLedger | undefined;
+  let vault: PrivateStore | undefined;
+  let service: KclService | undefined;
+  const personas = options.personas ?? PERSONAS;
+  try {
+    ledger = options.ledger ?? new LocalLedger(join(options.dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
+    if (ledger.mode === 'fabric-test-network' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
+    vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
+    service = new KclService(ledger, vault, personas);
+    await service.initialize(options.seed ?? true);
+  } catch (error) {
+    try { await ledger?.close(); } finally { vault?.close(); }
+    throw error;
+  }
   const sessions = new Map<string, Session>();
 
   function json(res: ServerResponse, status: number, value: any) {
@@ -34,13 +44,12 @@ export async function createApp(options: { dataDir: string; seed?: boolean }) {
     if (id) sessions.delete(id);
     return undefined;
   }
-  function authorize(req: IncomingMessage): Session {
+  async function authorize(req: IncomingMessage): Promise<Session> {
     const session = currentSession(req);
     if (!session) throw new ApiError('UNAUTHENTICATED', '로컬 데모 세션을 시작해 주세요.', 401);
     const minute = Math.floor(Date.now() / 60_000);
     if (session.minute !== minute) { session.minute = minute; session.count = 0; }
     if (++session.count > 180) throw new ApiError('RATE_LIMITED', '요청이 많습니다. 잠시 후 다시 시도해 주세요.', 429, true);
-    service.actor(session.actor);
     return session;
   }
   async function body(req: IncomingMessage): Promise<any> {
@@ -82,20 +91,25 @@ export async function createApp(options: { dataDir: string; seed?: boolean }) {
         res.end(contents); return;
       }
       if (req.method === 'GET' && path === '/healthz') {
-        json(res, 200, { status: 'ok', mode: 'local-simulation', channel_id: CHANNEL_ID }); return;
+        let healthy = true;
+        let checkpoint: ReturnType<ApplicationLedger['checkpoint']> = null;
+        try { await service.refresh(); checkpoint = ledger.checkpoint(); } catch { healthy = false; }
+        json(res, healthy ? 200 : 503, { status: healthy ? 'ok' : 'unavailable', healthy, mode: ledger.mode, channel_id: ledger.channelId, checkpoint, state: healthy ? 'ready' : 'peer-unavailable' }); return;
       }
       if (req.method === 'GET' && path === '/api/session') {
         let session = currentSession(req);
         if (!session) {
           for (const [id, value] of sessions) if (value.expires <= Date.now()) sessions.delete(id);
           if (sessions.size >= 256) throw new ApiError('SESSION_LIMIT', '로컬 세션 수가 너무 많습니다.', 429, true);
-          session = { id: token(), csrf: token(), actor: actorIdentity(PERSONAS[1]), expires: Date.now() + 30 * 60_000, minute: 0, count: 0 };
+          const defaultPersona = personas.find(item => item.actor_id === PERSONAS[1].actor_id) ?? personas[0];
+          if (!defaultPersona) throw new ApiError('LEDGER_NOT_READY', '사용 가능한 서명자 구성이 없습니다.', 503, true);
+          session = { id: token(), csrf: token(), actor: actorIdentity(defaultPersona), expires: Date.now() + 30 * 60_000, minute: 0, count: 0 };
           sessions.set(session.id, session);
           res.setHeader('Set-Cookie', `kcl_session=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800`);
         }
-        json(res, 200, { actor: session.actor, personas: PERSONAS, csrf_token: session.csrf, mode: 'local-simulation' }); return;
+        json(res, 200, { actor: session.actor, personas, csrf_token: session.csrf, mode: ledger.mode }); return;
       }
-      const session = authorize(req);
+      const session = await authorize(req);
       const actor = session.actor;
       if (req.method === 'POST') {
         const csrf = req.headers['x-kcl-csrf'];
@@ -103,10 +117,13 @@ export async function createApp(options: { dataDir: string; seed?: boolean }) {
         const input = await body(req);
         if (path === '/api/session') {
           onlyFields(input, ['actor_id']);
-          const persona = PERSONAS.find(item => item.actor_id === input.actor_id);
+          const persona = personas.find(item => item.actor_id === input.actor_id);
           if (!persona) throw new ApiError('NOT_FOUND', '데모 역할을 찾을 수 없습니다.', 404);
-          session.actor = actorIdentity(persona); session.csrf = token();
-          json(res, 200, { actor: session.actor, personas: PERSONAS, csrf_token: session.csrf, mode: 'local-simulation' }); return;
+          const selectedActor = actorIdentity(persona);
+          await service.refresh();
+          service.actor(selectedActor);
+          session.actor = selectedActor; session.csrf = token();
+          json(res, 200, { actor: session.actor, personas, csrf_token: session.csrf, mode: ledger.mode }); return;
         }
         const root = '/v1/workspaces/demo';
         const routes: Record<string, () => Promise<any>> = {
@@ -117,19 +134,22 @@ export async function createApp(options: { dataDir: string; seed?: boolean }) {
           [`${root}/search`]: () => service.search(actor, input),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
-        if (Object.hasOwn(routes, path)) { json(res, 200, await routes[path]()); return; }
+        const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
+        if (Object.hasOwn(routes, path)) { respond(await routes[path]()); return; }
         let match = /^\/v1\/workspaces\/demo\/agreement-proposals\/([A-Za-z0-9._:-]+)\/(decisions|activate)$/.exec(path);
-        if (match) { json(res, 200, match[2] === 'decisions' ? await service.decide(actor, match[1], input) : await service.activate(actor, match[1], input)); return; }
+        if (match) { respond(match[2] === 'decisions' ? await service.decide(actor, match[1], input) : await service.activate(actor, match[1], input)); return; }
         match = /^\/v1\/workspaces\/demo\/agreements\/([A-Za-z0-9._:-]+)\/(withdraw|suspend)$/.exec(path);
-        if (match) { json(res, 200, await service.changeAgreement(actor, match[1], match[2] as 'withdraw' | 'suspend', input)); return; }
+        if (match) { respond(await service.changeAgreement(actor, match[1], match[2] as 'withdraw' | 'suspend', input)); return; }
         match = /^\/v1\/workspaces\/demo\/runs\/([A-Za-z0-9._:-]+)\/revalidate$/.exec(path);
-        if (match) { json(res, 200, await service.revalidate(actor, match[1], input)); return; }
+        if (match) { respond(await service.revalidate(actor, match[1], input)); return; }
       }
       if (req.method === 'GET') {
         if (path === '/v1/workspaces/demo/overview') { json(res, 200, await service.overview(actor)); return; }
         if (path === '/v1/workspaces/demo/events') {
           const cursor = Number(url.searchParams.get('cursor') ?? 0);
           if (!Number.isSafeInteger(cursor) || cursor < 0) throw new ApiError('INVALID_CURSOR', '올바른 커서가 필요합니다.');
+          await service.refresh();
+          service.actor(actor);
           json(res, 200, { events: ledger.events(cursor), checkpoint: ledger.checkpoint() }); return;
         }
         const match = /^\/v1\/workspaces\/demo\/(documents|agreements)\/([A-Za-z0-9._:-]+)$/.exec(path);
@@ -164,7 +184,7 @@ export async function createApp(options: { dataDir: string; seed?: boolean }) {
     },
     async close() {
       if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      ledger.close(); vault.close();
+      await ledger.close(); vault.close();
     },
   };
 }

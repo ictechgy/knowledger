@@ -30,6 +30,8 @@ export interface ProjectedTransaction {
   validation_code: number;
   valid: boolean;
   writes: number;
+  writeset: Array<{ key: string; value: unknown }>;
+  timestamp: string;
 }
 
 export interface ProjectBlockResult {
@@ -45,7 +47,6 @@ interface DecodedWrite {
 }
 
 interface DecodedTransaction extends ProjectedTransaction {
-  writeset: DecodedWrite[];
   header_type: number;
 }
 
@@ -148,6 +149,23 @@ function chaincodeName(action: peer.ChaincodeAction): string {
   return id.getName();
 }
 
+function channelTimestamp(channelHeader: common.ChannelHeader, required: boolean): string {
+  if (!channelHeader.hasTimestamp()) {
+    if (required) fail("VALID Fabric transaction has no timestamp");
+    return "";
+  }
+  const timestamp = channelHeader.getTimestamp();
+  if (!timestamp) fail("Transaction timestamp is malformed");
+  const seconds = timestamp.getSeconds();
+  const nanos = timestamp.getNanos();
+  if (!Number.isSafeInteger(seconds) || !Number.isInteger(nanos) || nanos < 0 || nanos >= 1_000_000_000) fail("Transaction timestamp is malformed");
+  const date = new Date(seconds * 1000 + Math.trunc(nanos / 1_000_000));
+  if (!Number.isFinite(date.getTime())) fail("Transaction timestamp is outside the supported range");
+  if (nanos === 0) return date.toISOString();
+  const fraction = String(nanos).padStart(9, "0").replace(/0+$/, "");
+  return `${date.toISOString().slice(0, 19)}.${fraction}Z`;
+}
+
 function decodeTransaction(data: Uint8Array, index: number, validationCode: number, options: ProjectorTarget & { genesis: { config_version: string | number; membership_epoch: number; role_binding_version: number } }, genesisDigest: string): DecodedTransaction {
   const envelope = decode(common.Envelope, data);
   const payload = decode(common.Payload, bytes(envelope.getPayload_asU8()));
@@ -157,7 +175,8 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
   const txId = channelHeader.getTxId();
   if (channelHeader.getChannelId() !== options.channel_id) fail("Fabric block contains a transaction for another channel");
   if (txId.length === 0 && channelHeader.getType() !== common.HeaderType.CONFIG) fail("Transaction has no transaction ID");
-  const result: DecodedTransaction = { tx_id: txId, transaction_index: index, validation_code: validationCode, valid: validationCode === peer.TxValidationCode.VALID, writes: 0, writeset: [], header_type: channelHeader.getType() };
+  const valid = validationCode === peer.TxValidationCode.VALID;
+  const result: DecodedTransaction = { tx_id: txId, transaction_index: index, validation_code: validationCode, valid, writes: 0, writeset: [], timestamp: channelTimestamp(channelHeader, valid), header_type: channelHeader.getType() };
   if (!result.valid || channelHeader.getType() !== ENDORSER_TRANSACTION) return result;
 
   const transaction = decode(peer.Transaction, bytes(payload.getData_asU8()));
@@ -167,6 +186,7 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
     const actionPayload = decode(peer.ChaincodeActionPayload, bytes(transactionAction.getPayload_asU8()));
     if (!actionPayload.hasAction()) fail("Endorser transaction has no chaincode action");
     const endorsed = actionPayload.getAction();
+    if (!endorsed) fail("Endorser transaction has no chaincode action");
     const responsePayload = decode(peer.ProposalResponsePayload, bytes(endorsed.getProposalResponsePayload_asU8()));
     const action = decode(peer.ChaincodeAction, bytes(responsePayload.getExtension_asU8()));
     const actionChaincode = chaincodeName(action);
@@ -220,6 +240,7 @@ export class FabricBlockProjector {
   readonly channel_id: string;
   readonly chaincode_name: string;
   readonly chaincode_version: string;
+  private readonly options: FabricBlockProjectorOptions;
   private readonly genesisDigest: string;
   private readonly genesis: { config_version: string | number; membership_epoch: number; role_binding_version: number };
   private state = new Map<string, unknown>();
@@ -238,6 +259,20 @@ export class FabricBlockProjector {
     this.chaincode_version = options.chaincode_version ?? "0.1.0";
     if (typeof this.chaincode_version !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(this.chaincode_version)) throw new Error("A fixed chaincode version is required");
     this.genesisDigest = sha256Digest(options.public_genesis);
+    this.options = {
+      channel_id: this.channel_id,
+      chaincode_name: this.chaincode_name,
+      chaincode_version: this.chaincode_version,
+      public_genesis: clone(options.public_genesis),
+    };
+  }
+
+  /** Create a candidate that shares no mutable state with this projector. */
+  fork(): FabricBlockProjector {
+    const candidate = new FabricBlockProjector(this.options);
+    candidate.state = new Map([...this.state.entries()].map(([key, value]) => [key, clone(value)]));
+    candidate.latestCheckpoint = this.latestCheckpoint ? { ...this.latestCheckpoint } : null;
+    return candidate;
   }
 
   checkpoint(): ProjectorCheckpoint | null { return this.latestCheckpoint ? { ...this.latestCheckpoint } : null; }
@@ -257,6 +292,7 @@ export class FabricBlockProjector {
     const header = block.getHeader();
     const data = block.getData();
     const metadata = block.getMetadata();
+    if (!header || !data || !metadata) fail("Fabric block header, data, and metadata are required");
     const blockNumber = header.getNumber();
     if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) fail("Fabric block number is outside the supported range");
     if (this.latestCheckpoint ? blockNumber !== this.latestCheckpoint.block_number + 1 : blockNumber !== 0) fail("Fabric block number is not contiguous");
@@ -304,7 +340,7 @@ export class FabricBlockProjector {
     this.latestCheckpoint = checkpoint;
     return {
       checkpoint: { ...checkpoint },
-      transactions: transactions.map(({ writeset: _writeset, header_type: _headerType, ...transaction }) => ({ ...transaction })),
+      transactions: transactions.map(({ header_type: _headerType, ...transaction }) => ({ ...transaction, writeset: transaction.writeset.map(({ key, value }) => ({ key, value: clone(value) })) })),
       valid_transaction_ids: transactions.filter(transaction => transaction.valid).map(transaction => transaction.tx_id),
       invalid_transaction_ids: transactions.filter(transaction => !transaction.valid).map(transaction => transaction.tx_id),
     };

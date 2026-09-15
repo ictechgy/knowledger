@@ -110,6 +110,11 @@ The adapter does not perform automatic DLP.
 
 ## Local three-organization network
 
+The existing web UI can use this network with `npm run start:fabric`. It has a
+durable SQLite block projection and authenticated test signer routes. See the
+[Fabric web profile](../../docs/12-FABRIC-WEB.md) for setup, restart semantics,
+HTTP pending/failure behavior, and the boundary with production authentication.
+
 `test-network.py` prepares a fixed `kcl-demo` channel with SalesMSP,
 FulfillmentMSP and SettlementMSP peers and three Raft orderers. All endpoints
 published to the host bind to loopback. The nodes share one local Docker host;
@@ -200,6 +205,9 @@ check header hashes across integer byte boundaries.
 
 The caller must supply blocks through an authenticated peer delivery connection.
 The reader does not independently verify peer identity, block signatures or
-endorsement signatures. State/cursor persistence, coordinated crash recovery,
-catch-up supervision and the HTTP serving integration are not implemented here.
-Persisting a cursor alone is insufficient to recover its in-memory state.
+endorsement signatures. [SqliteFabricProjection](../../packages/fabric/sqlite-projection.ts)
+adds an atomic raw block journal, state/history/cursor storage, replay on restart,
+and cache integrity checks. [FabricApplicationLedger](../../packages/fabric/application-ledger.ts)
+connects that store to Gateway commands and request-driven peer catch-up for the
+web API. Historical reads retain the exact transaction position. Large-ledger
+performance and independent operator deployment remain unverified.

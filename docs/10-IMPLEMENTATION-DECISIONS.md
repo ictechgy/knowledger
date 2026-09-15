@@ -18,6 +18,20 @@ Fabric adapter는 동일한 도메인 엔진을 사용하고 제출자의 인증
 
 ## 초기 도입 범위
 
+### Fabric 웹 모드와 시간별 영속 projection
+
+웹 서비스는 공통 `ApplicationLedger` 인터페이스로 로컬 모의 원장과 실제 Fabric
+테스트 원장에 연결한다. Fabric의 raw block, 거래별 이력과 cursor는 SQLite에
+원자적으로 저장한다. 시작 시 원본 replay로 검증·복원하고 새 블록은 증분 적용한다.
+생성된 테스트 신원만 사용하는 `fabric-test-network` 모드는 실제 SSO와 구분한다.
+테스트 chaincode는 lifecycle sequence를 올려 현재 공통 엔진으로 갱신할 수 있다.
+
+`docs/05-RAG.md`의 fence 거래 시점은 그대로 유지한다. 응답 직전까지 이미 관측한
+더 최신 epoch가 있다면 추가로 `FENCE_SUPERSEDED`를 반환한다. 이는 기존 선형화
+기준보다 보수적인 제공 정책이며, 확인한 철회를 무시하지 않는 대신 일부 요청을
+더 많이 보류할 수 있다. 이미 전달한 문서나 외부 동작의 원자적 철회를 뜻하지 않는다.
+명령 receipt의 거래 위치와 블록 끝 상태를 혼동하지 않는다.
+
 ### 첫 실제 네트워크 통합의 버전 고정
 
 첫 통합 프로필은 Fabric 2.5.16, shim 2.5.8, Gateway 1.12.1로 고정한다.

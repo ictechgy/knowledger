@@ -46,6 +46,10 @@ Normative packet의 기준점은 다음이다.
 
 **같은 블록의 fence 뒤에도 다른 VALID 거래가 있을 수 있다.** 따라서 block 끝이 아니라 fence transaction 위치까지의 상태를 사용한다. Projector는 시간별 active interval/epoch 이력을 유지하고, 각 질의마다 최신 DB 전체를 과거로 rollback하지 않는다.
 
+현재 웹 테스트 구현은 이 정확한 시점 조회를 유지하며, 응답 전에 더 최신 epoch를
+이미 관측한 경우 추가로 제공을 보류한다. 보수적인 `FENCE_SUPERSEDED` 정책과
+영속 이력은 [구현 결정](10-IMPLEMENTATION-DECISIONS.md) 및 [실행 가이드](12-FABRIC-WEB.md)에 기록한다.
+
 Fence의 초기 유효 시간 후보는 요청 시작부터 30초다. 이는 ledger timestamp가 아니라 신뢰하는 gateway의 monotonic request deadline으로 검사한다. 재전송은 최초 요청 시각을 보존하며, deadline 이후 확인된 옛 fence를 새로운 작업에 재사용하지 않는다. 새 generation/action에는 새 nonce를 사용한다. 이 값은 P0 부하/복구 실험 후 조정한다.
 
 Fence가 epoch를 읽은 뒤 선행 거래가 그 epoch를 바꾸면 fence는 MVCC invalid가 될 수 있다. 같은 nonce command의 결과를 확인하고 새로운 기준으로 제한된 재시도를 수행한다. peer commit receipt는 신뢰하는 local peer의 관측이며, Fabric SDK에 존재하지 않는 범용 quorum proof라고 부르지 않는다.

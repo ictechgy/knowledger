@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as domain from '../../packages/domain/index.ts';
-import { LocalLedger } from '../../packages/storage/local-ledger.ts';
+import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { demoFixtures, BOOTSTRAP_ACTOR, PERSONAS, slotFields, actorIdentity } from './demo-config.ts';
@@ -28,16 +28,30 @@ function identifier(value: unknown): string {
 
 /** API orchestration for the explicitly labelled local simulation. */
 export class KclService {
-  readonly ledger: LocalLedger;
+  readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
+  private personas: typeof PERSONAS;
   private bootId = randomUUID();
   private commandQueue: Promise<unknown> = Promise.resolve();
 
-  constructor(ledger: LocalLedger, vault: PrivateStore) { this.ledger = ledger; this.vault = vault; }
+  constructor(ledger: ApplicationLedger, vault: PrivateStore, personas: typeof PERSONAS = PERSONAS) {
+    this.ledger = ledger;
+    this.vault = vault;
+    this.personas = personas;
+  }
+  async refresh(): Promise<void> {
+    try { await this.ledger.refresh(); }
+    catch (error: any) {
+      if (typeof error?.code === 'string' && Number.isInteger(error?.status)) throw new ApiError(error.code, typeof error.message === 'string' ? error.message : '원장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.', error.status, Boolean(error.retryable));
+      throw new ApiError('LEDGER_UNAVAILABLE', '원장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.', 503, true);
+    }
+  }
   config(at?: Checkpoint) { return this.ledger.read(`${P}config`, at); }
   values(kind: string, at?: Checkpoint): any[] { return this.ledger.entries(`${P}${kind}:`, at).map(([, value]) => value); }
   actor(actor: Actor): void {
     const config = this.config();
+    if (!this.personas.some(item => item.org_id === actor.org_id && item.actor_id === actor.actor_id && item.kind === actor.kind)) throw new ApiError('NOT_FOUND', '대상을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    if (!config || !Array.isArray(config.identities)) throw new ApiError('LEDGER_NOT_READY', '원장 구성을 확인할 수 없습니다.', 503, true);
     if (!config?.identities.some((item: any) => item.org_id === actor.org_id && item.actor_id === actor.actor_id && item.kind === actor.kind)) throw new ApiError('NOT_FOUND', '대상을 찾을 수 없거나 접근할 수 없습니다.', 404);
     if (!config.serving_enabled) throw new ApiError('SERVING_FROZEN', '현재 공유 지식 제공이 중지되어 있습니다.', 503, true);
   }
@@ -59,14 +73,26 @@ export class KclService {
 
   async initialize(seed = true): Promise<void> {
     const fixtures = demoFixtures();
-    if (!this.config()) await this.ledger.transact(BOOTSTRAP_ACTOR, ctx => domain.bootstrap(ctx, fixtures.config));
+    await this.refresh();
+    if (this.ledger.mode === 'fabric-test-network') {
+      if (!this.config()) throw new ApiError('LEDGER_NOT_READY', 'Fabric 테스트 네트워크의 구성을 확인할 수 없습니다.', 503, true);
+      return;
+    }
+    if (!this.config()) {
+      if (!this.ledger.bootstrap) throw new ApiError('LEDGER_NOT_READY', '원장 초기화 기능을 사용할 수 없습니다.', 503, true);
+      await this.ledger.bootstrap(BOOTSTRAP_ACTOR, fixtures.config);
+    }
     if (!seed) return;
     for (let index = 0; index < fixtures.revisions.length; index++) {
       const revision = fixtures.revisions[index];
       const actor = actorIdentity(PERSONAS[index === 3 ? 1 : index]);
       const policy = fixtures.policies[index];
       const suffix = index === 3 ? 'review-invitation' : ['sales', 'fulfillment', 'settlement'][index];
-      const submit = (type: string, input: any) => this.ledger.transact(actor, ctx => domain.execute(ctx, { command_id: `seed-${type}-${suffix}`, type, input }));
+      const submit = async (type: string, input: any) => {
+        const receipt = await this.ledger.execute(actor, { command_id: `seed-${type}-${suffix}`, type, input });
+        if (receipt.status === 'pending') throw new ApiError('LEDGER_NOT_READY', '로컬 원장 시드가 완료되지 않았습니다.', 503, true);
+        return receipt;
+      };
       await submit('publish_revision', { revision, publication: { revision_digest: revision.revision_digest, config_version: 1, membership_epoch: 1 } });
       const proposalId = `proposal-${suffix}-001`;
       await submit('propose', { proposal_id: proposalId, revision_digest: revision.revision_digest, policy_id: policy.policy_id, policy_version: 1 });
@@ -92,6 +118,7 @@ export class KclService {
   }
 
   async overview(actor: Actor) {
+    await this.refresh();
     this.actor(actor);
     const checkpoint = this.ledger.checkpoint()!;
     const revisions = this.values('revision', checkpoint);
@@ -116,10 +143,11 @@ export class KclService {
       };
     });
     this.actor(actor);
-    return { mode: 'local-simulation', channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
+    return { mode: this.ledger.mode, channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
   }
 
   async draft(actor: Actor, input: any) {
+    await this.refresh();
     this.actor(actor);
     onlyFields(input, ['base_revision_digest', 'title', 'body_markdown', 'source_kind', 'context_id', 'scope_id', 'usage_scope', 'document_id']);
     const base = input.base_revision_digest ? this.revision(input.base_revision_digest) : undefined;
@@ -139,6 +167,7 @@ export class KclService {
   }
 
   async preview(actor: Actor, input: any) {
+    await this.refresh();
     this.actor(actor); onlyFields(input, ['draft_id']);
     const draft = this.vault.get('draft', identifier(input.draft_id), actor);
     if (!draft) throw new ApiError('NOT_FOUND', '초안을 찾을 수 없거나 접근할 수 없습니다.', 404);
@@ -155,8 +184,10 @@ export class KclService {
 
   /** Persist the exact generated command before execution so HTTP retries bind identical timestamps/IDs. */
   private command(actor: Actor, route: string, input: any, build: () => any): Promise<any> {
-    this.actor(actor); identifier(input.command_id);
+    identifier(input.command_id);
     const run = this.commandQueue.then(async () => {
+      await this.refresh();
+      this.actor(actor);
       const digest = createHash('sha256').update(domain.canonicalize({ route, input })).digest('hex');
       let stored = this.vault.get('command', input.command_id, actor);
       if (stored && stored.request_digest !== digest) throw new ApiError('IDEMPOTENCY_CONFLICT', '같은 command_id로 다른 요청을 보낼 수 없습니다.', 409);
@@ -164,8 +195,10 @@ export class KclService {
         stored = { request_digest: digest, command: { command_id: input.command_id, ...build() } };
         this.vault.put('command', input.command_id, actor, stored);
       }
-      const receipt = await this.ledger.transact(actor, ctx => domain.execute(ctx, stored.command));
+      const receipt = await this.ledger.execute(actor, stored.command);
+      if (receipt.status === 'pending') return receipt;
       const committed = this.ledger.read(domain.keyFor.idempotency(actor.org_id, input.command_id));
+      if (!committed?.tx_id) throw new ApiError('PROJECTION_BEHIND', '원장 projection에서 커밋된 거래를 확인하지 못했습니다.', 503, true);
       const checkpoint = this.ledger.checkpointForTransaction(committed.tx_id);
       return { command_id: input.command_id, ...receipt, checkpoint };
     });
@@ -206,6 +239,7 @@ export class KclService {
   }
 
   async search(actor: Actor, input: any) {
+    await this.refresh();
     onlyFields(input, ['query', 'context_id', 'scope_id', 'usage_scope']);
     if (typeof input.query !== 'string' || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하여야 합니다.');
     const overview = await this.overview(actor);
@@ -214,15 +248,24 @@ export class KclService {
   }
 
   async resolve(actor: Actor, input: any) {
+    const started = performance.now();
+    await this.refresh();
     this.actor(actor); onlyFields(input, ['document_ids', 'context_id', 'scope_id', 'usage_scope', 'query']);
     if (!Array.isArray(input.document_ids) || input.document_ids.length !== 1) throw new ApiError('INVALID_INPUT', 'v0.1에서는 정확한 문서 한 개의 사용 범위를 지정해 주세요.');
     const slot = { channel_id: this.ledger.channelId, document_id: identifier(input.document_ids[0]), context_id: identifier(input.context_id), scope_id: identifier(input.scope_id), usage_scope: input.usage_scope };
     if (typeof input.usage_scope !== 'string' || !/^[a-z][a-z0-9-]{1,40}\/v[1-9][0-9]*$/.test(input.usage_scope)) throw new ApiError('INVALID_INPUT', '버전이 있는 사용 범위가 필요합니다.');
     if (input.query !== undefined && (typeof input.query !== 'string' || input.query.length > 1000)) throw new ApiError('INVALID_INPUT', '검색어가 너무 깁니다.');
-    const started = performance.now();
-    const fence = await this.ledger.transact(actor, ctx => domain.execute(ctx, { command_id: newId('command'), type: 'fence', input: { nonce: newId('fence') } }));
+    const nonce = newId('fence');
+    const fence = await this.ledger.execute(actor, { command_id: newId('command'), type: 'fence', input: { nonce } });
+    if (fence.status === 'pending') throw new ApiError('FRESHNESS_UNAVAILABLE', '신선한 원장 체크포인트를 확보하지 못했습니다.', 503, true);
     const at = fence.checkpoint;
+    const fenceState = this.ledger.read(domain.keyFor.fence(nonce), at);
+    const fencedConfig = this.config(at);
+    if (!fenceState || fenceState.nonce !== nonce || fenceState.tx_id !== at.transaction_id || fenceState.eligibility_epoch !== fence.result.eligibility_epoch || !fencedConfig) throw new ApiError('FRESHNESS_UNAVAILABLE', '신선한 원장 체크포인트를 확보하지 못했습니다.', 503, true);
     const resolved = await domain.resolveAt(async key => this.ledger.read(key, at), slot);
+    await this.refresh();
+    const latestEpoch = this.ledger.read(domain.keyFor.eligibilityEpoch());
+    if (latestEpoch !== fence.result.eligibility_epoch) return { status: 'withheld', reason: 'FENCE_SUPERSEDED', documents: [], checkpoint: at };
     this.actor(actor);
     if (performance.now() - started > 30_000) throw new ApiError('FRESHNESS_UNAVAILABLE', '신선한 원장 체크포인트를 확보하지 못했습니다.', 503, true);
     if (!resolved.eligible || !resolved.revision || !resolved.agreement) return { status: 'withheld', reason: resolved.reason ?? 'NO_ACTIVE_AGREEMENT', documents: [], checkpoint: at };
@@ -230,20 +273,26 @@ export class KclService {
     domain.validateRevision(revision);
     const runId = newId('run');
     const approvalDecisions = await domain.validateAgreementApprovals(async key => this.ledger.read(key, at), agreement);
+    const finalConfig = this.config();
+    const finalEpoch = this.ledger.read(domain.keyFor.eligibilityEpoch());
+    this.actor(actor);
+    if (!finalConfig || finalConfig.membership_epoch !== fencedConfig.membership_epoch || finalEpoch !== latestEpoch) return { status: 'withheld', reason: 'FENCE_SUPERSEDED', documents: [], checkpoint: at };
+    if (performance.now() - started > 30_000) throw new ApiError('FRESHNESS_UNAVAILABLE', '신선한 원장 체크포인트를 확보하지 못했습니다.', 503, true);
     const manifest = {
       contract_type: 'RunContextManifest', contract_version: 1, manifest_id: newId('manifest'), run_id: runId,
       context_id: slot.context_id, scope_id: slot.scope_id, usage_scope: slot.usage_scope,
-      policy_id: agreement.policy_id, policy_version: agreement.policy_version, membership_epoch: this.config(at).membership_epoch,
-      checkpoint: { mode: 'strict', checkpoint_id: newId('checkpoint'), ...at, eligibility_epoch: this.ledger.read(`${P}eligibility_epoch`, at) },
+      policy_id: agreement.policy_id, policy_version: agreement.policy_version, membership_epoch: fencedConfig.membership_epoch,
+      checkpoint: { mode: 'strict', checkpoint_id: newId('checkpoint'), ...at, eligibility_epoch: fenceState.eligibility_epoch },
       provided_revisions: [{ revision_digest: revision.revision_digest, purpose: 'scoped_knowledge', reference_kind: 'normative', target_context_id: slot.context_id, target_scope_id: slot.scope_id, usage_scope: slot.usage_scope, agreement_id: agreement.agreement_id }],
       approval_decisions: approvalDecisions.map(item => ({ decision_id: item.decision_id, revision_digest: item.revision_digest, proposal_id: item.proposal_id })),
       private_sources: [], retrieval_profile_id: 'retrieval-scoped-markdown-v1', authorization_snapshot_id: newId('authz'), model_egress_policy_version: 1,
     };
     this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now() });
-    return { status: 'provided', mode: 'local-simulation', documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
+    return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
   async revalidate(actor: Actor, runId: string, input: any) {
+    await this.refresh();
     this.actor(actor); onlyFields(input, ['action']);
     if (input.action !== 'use-context') throw new ApiError('UNSUPPORTED_ACTION', 'v0.1에서는 지식 사용 여부만 재검증할 수 있습니다.');
     const run = this.vault.get('run', identifier(runId), actor);

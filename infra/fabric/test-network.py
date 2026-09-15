@@ -195,7 +195,7 @@ def peer_flags():
     return flags
 
 
-def deploy():
+def deploy(upgrade=False):
     # All calls below use only this harness's generated credentials.
     check_tools()
     block = STATE / "channel.block"
@@ -235,17 +235,23 @@ def deploy():
     package = STATE / "kcl.tar.gz"
     peer(ORGS[0], "lifecycle", "chaincode", "package", package, "--path", ROOT / "infra/fabric/dist", "--lang", "node", "--label", "kcl_0.1.0")
     package_id = peer(ORGS[0], "lifecycle", "chaincode", "calculatepackageid", package).strip()
-    definition = ["--channelID", CHANNEL, "--name", "kcl", "--version", "0.1.0", "--sequence", "1", "--init-required"]
     committed = json.loads(peer(ORGS[0], "lifecycle", "chaincode", "querycommitted", "--channelID", CHANNEL, "--output", "json"))
     existing = next((item for item in committed.get("chaincode_definitions", []) if item["name"] == "kcl"), None)
-    if existing and (existing["sequence"] != 1 or existing["version"] != "0.1.0" or not existing.get("init_required")):
+    # Keep the original channel endorsement policy and plugins when replacing
+    # test package bytes. Logical version/genesis/Init state stay at v0.1.0.
+    expected_policy = "EiAvQ2hhbm5lbC9BcHBsaWNhdGlvbi9FbmRvcnNlbWVudA=="
+    if existing and (existing["version"] != "0.1.0" or not existing.get("init_required") or existing.get("endorsement_plugin") != "escc" or existing.get("validation_plugin") != "vscc" or existing.get("validation_parameter") != expected_policy or existing.get("collections") != {}):
         raise RuntimeError("An incompatible KCL definition is already committed; review it before changing lifecycle state")
+    if upgrade and not existing:
+        raise RuntimeError("Deploy KCL before upgrading its package")
+    sequence = existing["sequence"] + (1 if upgrade else 0) if existing else 1
+    definition = ["--channelID", CHANNEL, "--name", "kcl", "--version", "0.1.0", "--sequence", str(sequence), "--init-required"]
     for org in ORGS:
         installed = json.loads(peer(org, "lifecycle", "chaincode", "queryinstalled", "--output", "json"))
         if not any(item["package_id"] == package_id for item in installed.get("installed_chaincodes", [])):
             peer(org, "lifecycle", "chaincode", "install", package)
-        if existing:
-            approved = json.loads(peer(org, "lifecycle", "chaincode", "queryapproved", "--channelID", CHANNEL, "--name", "kcl", "--sequence", "1", "--output", "json"))
+        if existing and not upgrade:
+            approved = json.loads(peer(org, "lifecycle", "chaincode", "queryapproved", "--channelID", CHANNEL, "--name", "kcl", "--sequence", str(sequence), "--output", "json"))
             if approved.get("source", {}).get("Type", {}).get("LocalPackage", {}).get("package_id") != package_id:
                 raise RuntimeError("Committed definition uses a different package; deployment will not silently replace it")
             for field in ("sequence", "version", "endorsement_plugin", "validation_plugin", "validation_parameter", "collections", "init_required"):
@@ -253,7 +259,7 @@ def deploy():
                     raise RuntimeError("Organization approval differs from the committed definition")
         else:
             peer(org, "lifecycle", "chaincode", "approveformyorg", *definition, "--package-id", package_id, *orderer_flags())
-    if not existing:
+    if not existing or upgrade:
         ready = json.loads(peer(ORGS[0], "lifecycle", "chaincode", "checkcommitreadiness", *definition, "--output", "json"))
         if not all(ready["approvals"].get(msp) for _, msp, _ in ORGS):
             raise RuntimeError("Not all organizations approved the chaincode definition")
@@ -272,13 +278,13 @@ def deploy():
              "--waitForEvent", "--waitForEventTimeout", "60s", *orderer_flags(), *peer_flags(), user="User1")
     for org in ORGS:
         peer(org, "chaincode", "query", "-C", CHANNEL, "-n", "kcl", "-c", json.dumps({"Args": ["GetCommand", org[1], "deployment-probe"]}), user="User1")
-    write_json(STATE / "deployment.json", {"channel": CHANNEL, "chaincode": "kcl", "package_id": package_id, "organizations": [msp for _, msp, _ in ORGS]})
+    write_json(STATE / "deployment.json", {"channel": CHANNEL, "chaincode": "kcl", "package_id": package_id, "sequence": sequence, "organizations": [msp for _, msp, _ in ORGS]})
     print("Verified deployed lifecycle and authenticated queries on all peers." if initialized else "Founder Init committed VALID; authenticated queries verified on all peers.", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "up", "deploy", "stop"])
+    parser.add_argument("action", choices=["prepare", "up", "deploy", "upgrade", "stop"])
     args = parser.parse_args()
     os.umask(0o077)
     if args.action == "prepare":
@@ -290,6 +296,8 @@ def main():
         deploy()
     elif args.action == "deploy":
         deploy()
+    elif args.action == "upgrade":
+        deploy(upgrade=True)
     else:
         print(compose("stop"))
 

@@ -1,5 +1,46 @@
 # 검증 기록
 
+## 영속 Fabric projection과 웹 API — 2026-09-15 18:04 KST
+
+현재 소스에서 `npm run check` **87 passed / 0 failed**, `npm run check:types`
+**TypeScript 7.0.2 strict 통과**, `npm run demo` 통과. TypeScript와 Node 타입은
+root 개발 의존성/lockfile에 고정했으며, Fabric 경계 CI job에 타입 검사를 추가했다.
+원격 CI 실행은 아직 하지 않았다.
+Fabric/개발 의존성이 없는 별도 복사본도 **67 passed / 0 failed / 20 optional skipped**로
+검증해 로컬 실행의 선택적 의존성 경계를 유지했다.
+
+영속 projector는 새 블록의 raw bytes·거래 이력·상태·cursor를 하나의 SQL transaction으로
+저장하고 commit 뒤 메모리 상태를 교체한다. SQL 실패 시 rollback, 재시작 replay,
+과거 transaction-index 조회, 위조 checkpoint, 최신/과거 캐시 손상, VALID 필터만의
+손상, cursor 손상, 기존 이력을 삭제하지 않는 증분 append를 회귀 검사했다.
+
+`npm run fabric:http-smoke`를 실제 테스트 네트워크에 실행했다. 최종 근거는
+`.data/fabric-http-smoke-X5cJOF/http-evidence.json`에 있으며 생성 데이터는 Git 제외다.
+
+| 실제 HTTP 검사 | 결과 |
+| --- | --- |
+| 비공개 초안 | 다른 actor의 preview는 404, 공개 전 원장 events에 본문 canary 없음 |
+| 공유 확인 | 확인 없는 publish는 400, 명시적 확인 후 실제 VALID 게시 |
+| 권한/승인 | 비대표 승인 403, 승인 전 채택 409, 승인·채택 후 정확한 본문 제공 |
+| peer 단절 | Fulfillment peer 실제 정지 시 healthz/resolve 503, peer 기동 후 fresh 제공 복구 |
+| 프로세스 재시작 | 새 API 프로세스가 영속 projection을 재생하고 이전 명령의 동일 receipt 반환 |
+| run 경계 | 이전 프로세스 manifest는 재사용 거부, 새 fence 후 제공 |
+| 철회 | 실제 withdrawal 뒤 새 revalidate는 withheld |
+| 요청 기밀 | resolver query canary는 공유 events에 없음 |
+
+최종 게시/승인/채택은 각각 block **69/71/72**, 마지막 웹 체크포인트는 block **77**이다.
+현재 chaincode는 logical version 0.1.0 / lifecycle sequence **2**이며, 검증을 유지한
+타입 정리 후 각 조직 승인으로 package를 갱신했다. package ID:
+`kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157`.
+
+`agent-browser`에서 Fabric 테스트 모드 표시·세 명의 가상 사용자·현재 문서 목록을
+확인했다. 스크린샷 명령은 응답하지 않아 작업 소유 명령을 종료하고 격리 브라우저를
+닫았다. 스크린샷 검증 성공으로 기록하지 않는다.
+
+서버는 `http://127.0.0.1:4318`에서 실제 peer와 연결된 테스트 모드로 실행한다.
+프로덕션 SSO/OIDC·KMS·Fabric CA enrollment, 조직별 독립 배포 및 대규모 원장의
+성능 검증은 별도 단계다. SSO/KMS 제공자 정보는 사용자에게 질문한 상태다.
+
 ## 실제 Fabric 네트워크 — 2026-09-15 17:02 KST
 
 사용자의 네트워크 및 테스트 인증서 생성·사용 승인 후 macOS arm64의 Colima에서
@@ -32,7 +73,7 @@ shim 2.5.8 / Node 22.12.0, 클라이언트는 Gateway 1.12.1 / Node 24.18.0이�
 고정 chaincode version과 같은 거래의 pinned bootstrap이 있는 경우만 수용한다.
 이 오류는 합성 회귀 테스트에서 먼저 실패를 확인한 뒤 실제 peer 블록으로 재검증했다.
 
-최종 `npm run check`: **70 passed, 0 failed**. `npm run demo`도 통과했다.
+이 단계의 `npm run check`: **70 passed, 0 failed**. `npm run demo`도 통과했다.
 TLS는 실제 사용했지만 Fabric CA enrollment, 운영 SSO/KMS, 영속 projector·HTTP
 Fabric mode, 독립 조직/호스트의 CFT/BFT 장애 내성·성능, 원격 CI와 정적 타입 검사는
 여전히 미검증 또는 미구현이다. 응답 유실은 클라이언트 경계의 주입이며 실제 네트워크

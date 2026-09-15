@@ -5,18 +5,28 @@
   "description": "Domain-scoped knowledge agreements for KB, LLM wiki and AI workflows",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node apps/api/main.ts",
+    "start:fabric": "node apps/api/main.ts --ledger fabric-test-network --port 4318",
     "dev": "node --watch apps/api/main.ts",
     "test": "node --test --test-reporter=spec 'test/**/*.test.ts'",
     "test:design": "python3 -B tools/validate_design.py && python3 -B tools/check_docs.py",
     "check": "npm test && npm run test:design",
+    "check:types": "tsc --project tsconfig.json",
     "demo": "node tools/demo.ts",
     "fabric:prepare": "python3 -B infra/fabric/test-network.py prepare",
     "fabric:up": "python3 -B infra/fabric/test-network.py up",
     "fabric:deploy": "python3 -B infra/fabric/test-network.py deploy",
+    "fabric:upgrade": "python3 -B infra/fabric/test-network.py upgrade",
     "fabric:smoke": "node infra/fabric/smoke.ts",
+    "fabric:http-smoke": "node infra/fabric/http-smoke.ts",
     "fabric:stop": "python3 -B infra/fabric/test-network.py stop"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.4",
+    "typescript": "7.0.2"
   }
 }

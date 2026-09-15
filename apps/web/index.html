@@ -20,7 +20,7 @@
           </div>
         </div>
         <div class="topbar-tools">
-          <span class="environment-badge"><span class="status-dot" aria-hidden="true"></span>로컬 시뮬레이션</span>
+          <span class="environment-badge"><span class="status-dot" aria-hidden="true"></span><span id="environment-label">로컬 시뮬레이션</span></span>
           <label class="persona-picker" for="persona-select">
             <span class="sr-only">현재 검토자</span>
             <select id="persona-select" aria-label="현재 검토자" disabled>
@@ -32,7 +32,7 @@
 
       <div id="demo-note" class="demo-note" role="note">
         <span class="demo-note-icon" aria-hidden="true">⌁</span>
-        <p><strong>로컬 시뮬레이션</strong> — 이 화면의 상태는 개발용 로컬 원장 어댑터에서 옵니다. 실제 Fabric VALID 커밋이나 운영 독립성을 증명하지 않습니다.</p>
+        <p><strong id="mode-note-title">로컬 시뮬레이션</strong><span id="mode-note-copy"> — 이 화면의 상태는 개발용 로컬 원장 어댑터에서 옵니다. 실제 Fabric VALID 커밋이나 운영 독립성을 증명하지 않습니다.</span></p>
         <button class="icon-button" id="dismiss-demo-note" type="button" aria-label="안내 닫기">×</button>
       </div>
 

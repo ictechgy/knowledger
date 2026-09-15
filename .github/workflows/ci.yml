@@ -30,5 +30,7 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-fund
       - run: npm ci --prefix packages/fabric --ignore-scripts --no-fund
+      - run: npm run check:types
       - run: node --test 'test/fabric/*.test.ts'

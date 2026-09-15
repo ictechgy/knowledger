@@ -14,6 +14,7 @@ catch (error) {
   const missing = error as NodeJS.ErrnoException;
   if (missing.code !== "MODULE_NOT_FOUND" || !missing.message.startsWith("Cannot find module '@hyperledger/fabric-protos'")) throw error;
 }
+const Timestamp = fabricProtosAvailable ? requireFabric("google-protobuf/google/protobuf/timestamp_pb.js").Timestamp : undefined;
 const { common, ledger, peer } = fabricProtosAvailable ? await import(fabricProtosPath) : { common: undefined, ledger: undefined, peer: undefined };
 const { FabricBlockProjector, fabricBlockHeaderHash } = fabricProtosAvailable ? await import("../../packages/fabric/block-projector.ts") : { FabricBlockProjector: undefined, fabricBlockHeaderHash: undefined };
 
@@ -23,7 +24,7 @@ const genesis = { channel_id: channel, config_version: "cfg-1", membership_epoch
 
 function hash(value: Uint8Array): Uint8Array { return createHash("sha256").update(value).digest(); }
 
-type Tx = { txId: string; validationCode?: number; writes?: Array<{ key: string; value?: unknown; rawValue?: Uint8Array; delete?: boolean }>; channelId?: string; chaincodeName?: string; namespace?: string };
+type Tx = { txId: string; validationCode?: number; writes?: Array<{ key: string; value?: unknown; rawValue?: Uint8Array; delete?: boolean }>; channelId?: string; chaincodeName?: string; namespace?: string; timestamp?: boolean | "malformed" };
 
 async function runEngine(store: Map<string, unknown>, actor: { org_id: string; actor_id: string; kind: "human" | "agent" }, txId: string, command: { command_id: string; type: string; input: unknown }): Promise<Array<{ key: string; value: unknown }>> {
   const writes = new Map<string, unknown>();
@@ -58,6 +59,12 @@ function transaction(input: Tx): Uint8Array {
   channelHeader.setType(common.HeaderType.ENDORSER_TRANSACTION);
   channelHeader.setChannelId(input.channelId ?? channel);
   channelHeader.setTxId(input.txId);
+  if (input.timestamp !== false) {
+    const timestamp = new Timestamp();
+    timestamp.setSeconds(1_789_430_400);
+    timestamp.setNanos(input.timestamp === "malformed" ? 1_000_000_000 : 123_000_000);
+    channelHeader.setTimestamp(timestamp);
+  }
   const header = new common.Header();
   header.setChannelHeader(channelHeader.serializeBinary());
   const transaction = new peer.Transaction();
@@ -125,6 +132,9 @@ function configurationTransaction(): Uint8Array {
   const channelHeader = new common.ChannelHeader();
   channelHeader.setType(common.HeaderType.CONFIG);
   channelHeader.setChannelId(channel);
+  const timestamp = new Timestamp();
+  timestamp.setSeconds(1_789_430_400);
+  channelHeader.setTimestamp(timestamp);
   const header = new common.Header();
   header.setChannelHeader(channelHeader.serializeBinary());
   const payload = new common.Payload();
@@ -246,6 +256,16 @@ test("halts on NOT_VALIDATED and unknown transaction filter codes", { skip: !fab
   assert.equal(projector.checkpoint(), null);
   assert.throws(() => projector.applyBlock(block(0, [tx], new Uint8Array(), [200])), /unknown or not final/);
   assert.equal(projector.checkpoint(), null);
+});
+
+test("requires a well-formed timestamp on VALID transactions", { skip: !fabricProtosAvailable }, () => {
+  const missing = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  assert.throws(() => missing.applyBlock(block(0, [transaction({ txId: "tx-missing-timestamp", writes: [], timestamp: false })])), /VALID Fabric transaction has no timestamp/);
+  const malformed = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  assert.throws(() => malformed.applyBlock(block(0, [transaction({ txId: "tx-malformed-timestamp", writes: [], timestamp: "malformed" })])), /timestamp is malformed/);
+  const invalid = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  const result = invalid.applyBlock(block(0, [transaction({ txId: "tx-invalid-missing-timestamp", writes: [], timestamp: false })], new Uint8Array(), [peer.TxValidationCode.MVCC_READ_CONFLICT]));
+  assert.equal(result.transactions[0]?.timestamp, "");
 });
 
 test("allows lifecycle transactions and read-only non-target namespaces while rejecting hidden writes", { skip: !fabricProtosAvailable }, () => {

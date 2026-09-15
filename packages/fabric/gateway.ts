@@ -169,7 +169,7 @@ export class FabricGatewayTransport {
   }
 
   async execute(command: GatewayCommand): Promise<GatewaySubmitResult> {
-    const payloadDigest = idempotencyDigest({ command_id: command.command_id, type: command.type, input: command.input });
+    const payloadDigest = idempotencyDigest({ type: command.type, input: command.input });
     let proposal: GatewayProposal;
     try {
       proposal = await this.newProposal(command);

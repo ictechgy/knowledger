@@ -503,7 +503,18 @@ function validateDependency(value: unknown, index: number, channelId: string): R
   assertId(value.document_id, `dependencies[${index}].document_id`);
   assertId(value.scope_id, `dependencies[${index}].scope_id`);
   if (value.channel_id !== channelId) fail("INVALID_INPUT", `dependencies[${index}].channel_id must match the revision channel`);
-  return cloneCanonical(value as RevisionDependency);
+  canonicalize(value);
+  const dependency: RevisionDependency = {
+    revision_digest: value.revision_digest,
+    context_id: value.context_id,
+    usage_scope: value.usage_scope,
+    relationship: value.relationship,
+    enforcement: value.enforcement,
+    document_id: value.document_id,
+    scope_id: value.scope_id,
+    channel_id: value.channel_id,
+  };
+  return cloneCanonical(dependency);
 }
 
 export function validateRevision(revision: unknown): DocumentRevision {
@@ -526,11 +537,15 @@ export function validateRevision(revision: unknown): DocumentRevision {
   if (Buffer.byteLength(payload.body_markdown, "utf8") > 262144) fail("INVALID_INPUT", "revision body exceeds 256 KiB UTF-8 limit");
   assertArray(payload.parents, "revision.payload.parents");
   if (payload.parents.length > 2) fail("INVALID_INPUT", "at most two parents are allowed");
-  payload.parents.forEach((parent, index) => assertDigest(parent, `revision.payload.parents[${index}]`));
-  assertUniqueCanonical(payload.parents, "revision.payload.parents");
+  const parents = payload.parents.map((parent, index): string => {
+    assertDigest(parent, `revision.payload.parents[${index}]`);
+    return parent;
+  });
+  assertUniqueCanonical(parents, "revision.payload.parents");
   assertArray(payload.dependencies, "revision.payload.dependencies");
   if (payload.dependencies.length > 32) fail("INVALID_INPUT", "at most 32 dependencies are allowed");
-  const dependencies = payload.dependencies.map((dependency, index) => validateDependency(dependency, index, payload.channel_id));
+  const channelId = payload.channel_id;
+  const dependencies = payload.dependencies.map((dependency, index) => validateDependency(dependency, index, channelId));
   assertUniqueCanonical(dependencies, "revision.payload.dependencies");
   assertRecord(payload.metadata, "revision.payload.metadata");
   assertKeys(payload.metadata, ["author_id", "created_at", "source_kind", "shared_assertions", "author_org_id"], [], "revision.payload.metadata");
@@ -538,13 +553,19 @@ export function validateRevision(revision: unknown): DocumentRevision {
   assertNonEmptyString(payload.metadata.created_at, "revision.payload.metadata.created_at", 80);
   if (!["human_authored", "approved_import", "llm_drafted"].includes(payload.metadata.source_kind as string)) fail("INVALID_INPUT", "revision source_kind is invalid");
   assertArray(payload.metadata.shared_assertions, "revision.payload.metadata.shared_assertions");
-  const assertions = payload.metadata.shared_assertions.map((entry, index) => {
+  const assertions = payload.metadata.shared_assertions.map((entry, index): SharedAssertion => {
     assertRecord(entry, `shared_assertions[${index}]`);
     assertKeys(entry, ["assertion_id", "statement", "source_visibility"], [], `shared_assertions[${index}]`);
     assertId(entry.assertion_id, `shared_assertions[${index}].assertion_id`);
     assertNonEmptyString(entry.statement, `shared_assertions[${index}].statement`, 300);
     if (entry.source_visibility !== "private_shared_assertion") fail("INVALID_INPUT", `shared_assertions[${index}].source_visibility is invalid`);
-    return cloneCanonical(entry as SharedAssertion);
+    canonicalize(entry);
+    const assertion: SharedAssertion = {
+      assertion_id: entry.assertion_id,
+      statement: entry.statement,
+      source_visibility: "private_shared_assertion",
+    };
+    return cloneCanonical(assertion);
   });
   assertUniqueCanonical(assertions, "revision.payload.metadata.shared_assertions");
   assertId(payload.metadata.author_org_id, "revision.payload.metadata.author_org_id");
@@ -561,7 +582,7 @@ export function validateRevision(revision: unknown): DocumentRevision {
     visibility: "shared_channel",
     title: payload.title,
     body_markdown: payload.body_markdown,
-    parents: [...payload.parents],
+    parents,
     dependencies,
     metadata: {
       author_id: payload.metadata.author_id,
@@ -618,7 +639,13 @@ export function validatePolicy(value: unknown): AgreementPolicy {
     if (representatives.has(repKey)) fail("INVALID_INPUT", "one actor cannot fill multiple required roles");
     roles.add(representative.domain_role);
     representatives.add(repKey);
-    normalizedRepresentatives.push(cloneCanonical(representative as RoleRepresentative));
+    canonicalize(representative);
+    const normalizedRepresentative: RoleRepresentative = {
+      domain_role: representative.domain_role,
+      actor_org_id: representative.actor_org_id,
+      actor_id: representative.actor_id,
+    };
+    normalizedRepresentatives.push(cloneCanonical(normalizedRepresentative));
   }
   if (roles.size !== value.required_domain_roles.length) fail("INVALID_INPUT", "policy representative roles are incomplete");
   return {
@@ -903,7 +930,28 @@ export function validateProposal(value: unknown): AgreementProposalRecord {
   assertSafeInteger(value.review_counter, "proposal.review_counter", 0);
   if (value.agreement_id !== undefined) assertId(value.agreement_id, "proposal.agreement_id");
   assertSlotShape(value);
-  return cloneCanonical(value as AgreementProposalRecord);
+  canonicalize(value);
+  const proposal: AgreementProposalRecord = {
+    record_type: "AgreementProposal",
+    proposal_id: value.proposal_id,
+    revision_digest: value.revision_digest,
+    policy_id: value.policy_id,
+    policy_version: value.policy_version,
+    membership_epoch: value.membership_epoch,
+    role_binding_version: value.role_binding_version,
+    config_version: value.config_version,
+    status: value.status,
+    created_by: {
+      org_id: value.created_by.org_id,
+      actor_id: value.created_by.actor_id,
+      kind: value.created_by.kind,
+    },
+    created_at: value.created_at,
+    review_counter: value.review_counter,
+    ...slotFields(value),
+  };
+  if (value.agreement_id !== undefined) proposal.agreement_id = value.agreement_id;
+  return cloneCanonical(proposal);
 }
 
 export function validateDecision(value: unknown): ApprovalDecision {
@@ -912,21 +960,68 @@ export function validateDecision(value: unknown): ApprovalDecision {
   if (value.contract_type !== "ApprovalDecision" || value.contract_version !== 1) fail("INVALID_INPUT", "decision contract is invalid");
   assertId(value.decision_id, "decision.decision_id");
   assertDigest(value.revision_digest, "decision.revision_digest");
-  for (const field of ["document_id", "context_id", "scope_id", "channel_id", "policy_id", "actor_org_id", "actor_id", "subject_id", "actor_domain_role", "proposal_id"] as const) assertId(value[field], `decision.${field}`);
+  const documentId = value.document_id;
+  const contextId = value.context_id;
+  const scopeId = value.scope_id;
+  const channelId = value.channel_id;
+  const policyId = value.policy_id;
+  const actorOrgId = value.actor_org_id;
+  const actorId = value.actor_id;
+  const subjectId = value.subject_id;
+  const actorDomainRole = value.actor_domain_role;
+  const proposalId = value.proposal_id;
+  assertId(documentId, "decision.document_id");
+  assertId(contextId, "decision.context_id");
+  assertId(scopeId, "decision.scope_id");
+  assertId(channelId, "decision.channel_id");
+  assertId(policyId, "decision.policy_id");
+  assertId(actorOrgId, "decision.actor_org_id");
+  assertId(actorId, "decision.actor_id");
+  assertId(subjectId, "decision.subject_id");
+  assertId(actorDomainRole, "decision.actor_domain_role");
+  assertId(proposalId, "decision.proposal_id");
   assertUsageScope(value.usage_scope, "decision.usage_scope");
   assertSafeInteger(value.policy_version, "decision.policy_version", 1);
   assertSafeInteger(value.membership_epoch, "decision.membership_epoch", 1);
   assertSafeInteger(value.role_binding_version, "decision.role_binding_version", 1);
-  if (!["approve", "object", "abstain", "retract"].includes(value.decision as string)) fail("INVALID_INPUT", "decision.decision is invalid");
+  const decisionKind = value.decision;
+  if (decisionKind !== "approve" && decisionKind !== "object" && decisionKind !== "abstain" && decisionKind !== "retract") {
+    fail("INVALID_INPUT", "decision.decision is invalid");
+  }
   assertNonEmptyString(value.rationale, "decision.rationale", 1000);
   assertNonEmptyString(value.decided_at, "decision.decided_at", 80);
-  if (value.decision === "retract") {
+  if (decisionKind === "retract") {
     assertId(value.retracts_decision_id, "decision.retracts_decision_id");
   } else if (value.retracts_decision_id !== undefined) {
     fail("INVALID_INPUT", "retracts_decision_id is only valid for retract decisions");
   }
   assertSlotShape(value);
-  return cloneCanonical(value as ApprovalDecision);
+  canonicalize(value);
+  const decision: ApprovalDecision = {
+    contract_type: "ApprovalDecision",
+    contract_version: 1,
+    decision_id: value.decision_id,
+    revision_digest: value.revision_digest,
+    document_id: value.document_id,
+    context_id: value.context_id,
+    scope_id: value.scope_id,
+    usage_scope: value.usage_scope,
+    channel_id: value.channel_id,
+    policy_id: policyId,
+    policy_version: value.policy_version,
+    membership_epoch: value.membership_epoch,
+    role_binding_version: value.role_binding_version,
+    actor_org_id: actorOrgId,
+    actor_id: actorId,
+    subject_id: subjectId,
+    actor_domain_role: actorDomainRole,
+    decision: decisionKind,
+    rationale: value.rationale,
+    decided_at: value.decided_at,
+    proposal_id: proposalId,
+  };
+  if (value.retracts_decision_id !== undefined) decision.retracts_decision_id = value.retracts_decision_id;
+  return cloneCanonical(decision);
 }
 
 function decisionLatestKey(decision: ApprovalDecision): string {
@@ -996,26 +1091,64 @@ export function validateAgreement(value: unknown): AgreementRecord {
   assertSafeInteger(value.role_binding_version, "agreement.role_binding_version", 1);
   assertArray(value.approval_decision_ids, "agreement.approval_decision_ids");
   if (value.approval_decision_ids.length < 1 || value.approval_decision_ids.length > 32) fail("CORRUPT_STATE", "stored agreement approval manifest is invalid", { status: 500, retryable: true });
-  value.approval_decision_ids.forEach((decisionId, index) => assertId(decisionId, `agreement.approval_decision_ids[${index}]`));
-  assertUniqueCanonical(value.approval_decision_ids, "agreement.approval_decision_ids");
-  if (!["active", "superseded", "withdrawn", "suspended"].includes(value.status as string)) fail("CORRUPT_STATE", "stored agreement status invalid", { status: 500, retryable: true });
+  const approvalDecisionIds = value.approval_decision_ids.map((decisionId, index): string => {
+    assertId(decisionId, `agreement.approval_decision_ids[${index}]`);
+    return decisionId;
+  });
+  assertUniqueCanonical(approvalDecisionIds, "agreement.approval_decision_ids");
+  const agreementStatus = value.status;
+  if (agreementStatus !== "active" && agreementStatus !== "superseded" && agreementStatus !== "withdrawn" && agreementStatus !== "suspended") {
+    fail("CORRUPT_STATE", "stored agreement status invalid", { status: 500, retryable: true });
+  }
   assertRecord(value.activated_by, "agreement.activated_by");
   assertKeys(value.activated_by, ["org_id", "actor_id", "kind"], [], "agreement.activated_by");
   assertId(value.activated_by.org_id, "agreement.activated_by.org_id");
   assertId(value.activated_by.actor_id, "agreement.activated_by.actor_id");
-  if (value.activated_by.kind !== "human" && value.activated_by.kind !== "agent") fail("CORRUPT_STATE", "agreement actor kind invalid", { status: 500, retryable: true });
+  const activatedByKind = value.activated_by.kind;
+  if (activatedByKind !== "human" && activatedByKind !== "agent") fail("CORRUPT_STATE", "agreement actor kind invalid", { status: 500, retryable: true });
   assertNonEmptyString(value.activated_at, "agreement.activated_at", 80);
   if (value.status_reason !== undefined) assertNonEmptyString(value.status_reason, "agreement.status_reason", 1000);
+  let normalizedStatusChangedBy: Actor | undefined;
   if (value.status_changed_by !== undefined) {
     assertRecord(value.status_changed_by, "agreement.status_changed_by");
     assertKeys(value.status_changed_by, ["org_id", "actor_id", "kind"], [], "agreement.status_changed_by");
-    assertId(value.status_changed_by.org_id, "agreement.status_changed_by.org_id");
-    assertId(value.status_changed_by.actor_id, "agreement.status_changed_by.actor_id");
-    if (value.status_changed_by.kind !== "human" && value.status_changed_by.kind !== "agent") fail("CORRUPT_STATE", "agreement status actor kind invalid", { status: 500, retryable: true });
+    const statusChangedByOrgId = value.status_changed_by.org_id;
+    const statusChangedByActorId = value.status_changed_by.actor_id;
+    assertId(statusChangedByOrgId, "agreement.status_changed_by.org_id");
+    assertId(statusChangedByActorId, "agreement.status_changed_by.actor_id");
+    const statusChangedByKind = value.status_changed_by.kind;
+    if (statusChangedByKind !== "human" && statusChangedByKind !== "agent") fail("CORRUPT_STATE", "agreement status actor kind invalid", { status: 500, retryable: true });
+    normalizedStatusChangedBy = {
+      org_id: statusChangedByOrgId,
+      actor_id: statusChangedByActorId,
+      kind: statusChangedByKind,
+    };
   }
   if (value.status_changed_at !== undefined) assertNonEmptyString(value.status_changed_at, "agreement.status_changed_at", 80);
   assertSlotShape(value);
-  return cloneCanonical(value as AgreementRecord);
+  canonicalize(value);
+  const agreement: AgreementRecord = {
+    agreement_id: value.agreement_id,
+    proposal_id: value.proposal_id,
+    revision_digest: value.revision_digest,
+    policy_id: value.policy_id,
+    policy_version: value.policy_version,
+    membership_epoch: value.membership_epoch,
+    role_binding_version: value.role_binding_version,
+    approval_decision_ids: approvalDecisionIds,
+    status: agreementStatus,
+    activated_by: {
+      org_id: value.activated_by.org_id,
+      actor_id: value.activated_by.actor_id,
+      kind: activatedByKind,
+    },
+    activated_at: value.activated_at,
+    ...slotFields(value),
+  };
+  if (value.status_reason !== undefined) agreement.status_reason = value.status_reason;
+  if (normalizedStatusChangedBy !== undefined) agreement.status_changed_by = normalizedStatusChangedBy;
+  if (value.status_changed_at !== undefined) agreement.status_changed_at = value.status_changed_at;
+  return cloneCanonical(agreement);
 }
 
 function corruptApprovalState(message: string): never {

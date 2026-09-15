@@ -20,6 +20,15 @@ const formatDate = (value) => {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium' }).format(date);
 };
 
+function renderMode(mode) {
+  const fabric = mode === 'fabric-test-network';
+  text(el('environment-label'), fabric ? 'Fabric 테스트 원장' : '로컬 시뮬레이션');
+  text(el('mode-note-title'), fabric ? 'Fabric 테스트 네트워크 · 가상 사용자' : '로컬 시뮬레이션');
+  text(el('mode-note-copy'), fabric
+    ? ' — 가상 조직 사용자로 실제 Fabric 테스트 원장에 문서를 게시하고 승인·철회할 수 있습니다.'
+    : ' — 이 화면의 상태는 개발용 로컬 원장 어댑터에서 옵니다. 실제 Fabric VALID 커밋이나 운영 독립성을 증명하지 않습니다.');
+}
+
 function showStatus(message, tone = 'success') {
   const node = el('global-status');
   text(node, message);
@@ -52,12 +61,20 @@ async function request(path, options = {}) {
     error.status = response.status;
     throw error;
   }
+  if (response.status === 202 || body?.status === 'pending') {
+    const error = new Error(body?.message || '요청이 접수됐지만 아직 VALID 커밋으로 확인되지 않았습니다.');
+    error.api = body;
+    error.status = response.status;
+    error.pending = true;
+    throw error;
+  }
   return body || {};
 }
 
 async function loadSession() {
   const session = await request('/api/session');
   state.session = session;
+  renderMode(session.mode);
   const picker = el('persona-select');
   picker.replaceChildren();
   (session.personas || []).forEach((persona) => {
@@ -75,6 +92,7 @@ async function loadOverview({ preserveSelection = true } = {}) {
   const previous = preserveSelection ? state.selectedDocumentKey : null;
   const overview = await request(`${apiBase}/overview`);
   state.overview = overview;
+  renderMode(overview.mode);
   const docs = currentDocuments();
   state.selectedDocumentKey = docs.some((doc) => slotKeyFor(doc.payload) === previous) ? previous : slotKeyFor(docs[0]?.payload) || null;
   renderOverview();
@@ -286,7 +304,13 @@ async function executeMutation(path, payload, label) {
     if (result.status === 'pending') { showStatus(`${label} 요청이 접수됐습니다. 아직 VALID 커밋으로 확인되지 않았습니다.`, 'pending'); return result; }
     if (result.status && result.status !== 'committed' && result.status !== 'valid') { showStatus(`${label} 상태가 ${result.status}입니다. 결과를 확정하지 않았습니다.`, 'pending'); return result; }
     showStatus(`${label}이(가) 커밋됐습니다.`, 'success'); await loadOverview(); return result;
-  } catch (error) { showStatus(`${label} 실패: ${error.message}`, 'error'); return null; }
+  } catch (error) {
+    if (error.pending || error.status === 202 || error.api?.status === 'pending') {
+      showStatus(`${label} 요청이 접수됐습니다. 아직 VALID 커밋으로 확인되지 않았습니다.`, 'pending');
+      return error.api || null;
+    }
+    showStatus(`${label} 실패: ${error.message}`, 'error'); return null;
+  }
 }
 
 async function submitDecision(proposal, decision) {

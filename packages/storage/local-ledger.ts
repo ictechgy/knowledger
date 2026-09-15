@@ -3,7 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { validateStateWrite as validateWrite, validateStateLinks, IMMUTABLE_KINDS } from './state-validation.ts';
-import { canonicalize } from '../domain/index.ts';
+import { canonicalize, execute, bootstrap } from '../domain/index.ts';
+import type { DomainCommand } from '../domain/index.ts';
 
 export interface Checkpoint {
   channel_id: string;
@@ -39,6 +40,7 @@ function hashRecord(record: Omit<LedgerEvent, 'checkpoint'> & { checkpoint: Omit
 /** A development-only, single-writer append-only journal. This is not a distributed ledger. */
 export class LocalLedger {
   readonly channelId: string;
+  readonly mode = 'local-simulation' as const;
   private db: DatabaseSync;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -78,6 +80,10 @@ export class LocalLedger {
   }
 
   close(): void { if (!this.closed) { this.db.close(); this.closed = true; } }
+
+  async refresh(): Promise<void> { /* This process owns the local journal. */ }
+  execute(actor: Actor, command: DomainCommand) { return this.transact(actor, ctx => execute(ctx, command)); }
+  bootstrap(actor: Actor, config: unknown) { return this.transact(actor, ctx => bootstrap(ctx, config)); }
 
   read(key: string, at?: Checkpoint | null): any | undefined {
     let row: any;
