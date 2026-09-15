@@ -14,6 +14,7 @@ import {
   keyFor,
   resolveAt,
   slotKey,
+  validateAgreementApprovals,
 } from "../../packages/domain/index.ts";
 
 type JsonMap = Map<string, unknown>;
@@ -267,6 +268,29 @@ function installGraphAgreement(store: JsonMap, value: DocumentRevision, policyVa
     scope_id: value.payload.scope_id,
     usage_scope: value.payload.usage_scope,
   });
+  store.set(keyFor.decision(`decision-${label}`), {
+    contract_type: "ApprovalDecision",
+    contract_version: 1,
+    decision_id: `decision-${label}`,
+    revision_digest: value.revision_digest,
+    document_id: value.payload.document_id,
+    context_id: value.payload.context_id,
+    scope_id: value.payload.scope_id,
+    usage_scope: value.payload.usage_scope,
+    channel_id: value.payload.channel_id,
+    policy_id: policyValue.policy_id,
+    policy_version: 1,
+    membership_epoch: 1,
+    role_binding_version: 1,
+    actor_org_id: admin.org_id,
+    actor_id: admin.actor_id,
+    subject_id: value.payload.document_id,
+    actor_domain_role: "graph_owner",
+    decision: "approve",
+    rationale: "Graph resolver fixture approval.",
+    decided_at: "2026-09-15T00:00:00Z",
+    proposal_id: `proposal-${label}`,
+  });
   store.set(keyFor.activeSlot(value.payload), { agreement_id: `agreement-${label}` });
 }
 
@@ -274,6 +298,18 @@ async function boot(): Promise<JsonMap> {
   const store: JsonMap = new Map();
   await bootstrap(memoryContext(store, admin, 1), config);
   return store;
+}
+
+async function activeBaseFixture(label: string) {
+  const store = await boot();
+  const value = revision({ revisionId: `rev-${label}`, documentId: "doc-base-001", contextId: "context-sales", usageScope: "domain-definition/v1", body: `# ${label}\n\nImmutable approval fixture.` });
+  const proposalId = `proposal-${label}`;
+  const decisionId = `decision-${label}`;
+  await publish(store, sales, 2, `cmd-publish-${label}`, value);
+  await propose(store, sales, 3, `cmd-propose-${label}`, proposalId, value, basePolicy.policy_id);
+  await approve(store, sales, 4, `cmd-approve-${label}`, proposalId, value, basePolicy.policy_id, "sales_owner", decisionId);
+  await activate(store, admin, 5, `cmd-activate-${label}`, proposalId, `agreement-${label}`, null);
+  return { store, value, decisionId, agreementId: `agreement-${label}` };
 }
 
 test("JCS digest binds the full immutable revision and rejects malformed input", async () => {
@@ -324,6 +360,8 @@ test("named representatives, exact proposal binding, dependency activation, and 
   await approve(store, fulfillment, 9, "cmd-dec-review-fulfillment", "proposal-review-001", dependent, reviewPolicy.policy_id, "fulfillment_owner");
   const activation = await activate(store, admin, 10, "cmd-act-review", "proposal-review-001", "agreement-review-001", null) as { agreement_id: string };
   assert.equal(activation.agreement_id, "agreement-review-001");
+  const validatedApprovals = await validateAgreementApprovals((key) => Promise.resolve(store.get(key)), store.get(keyFor.agreement("agreement-review-001")) as any);
+  assert.deepEqual(validatedApprovals.map((decision) => decision.actor_domain_role), ["sales_owner", "fulfillment_owner"]);
   const resolved = await resolveAt((key) => Promise.resolve(store.get(key)), dependent.payload);
   assert.equal(resolved.eligible, true);
   assert.equal(resolved.revision?.revision_digest, dependent.revision_digest);
@@ -361,6 +399,47 @@ test("publication validates dependency existence and exact target slots while al
     dependencies: [{ ...graphDependency(base), context_id: "context-other" }],
   });
   await expectDomain("DEPENDENCY_SCOPE_MISMATCH", () => publish(store, sales, 5, "cmd-dep-publish-wrong-slot", wrongSlotDependency));
+});
+
+test("resolver withholds agreements whose immutable approval records are forged after activation", async () => {
+  const variants: Array<[string, (decision: Record<string, unknown>) => void]> = [
+    ["policy", decision => { decision.policy_id = reviewPolicy.policy_id; }],
+    ["scope", decision => { decision.scope_id = "scope-other-001"; }],
+    ["actor", decision => { decision.actor_id = fulfillment.actor_id; }],
+  ];
+  for (const [label, mutate] of variants) {
+    const fixture = await activeBaseFixture(`forged-${label}`);
+    const key = keyFor.decision(fixture.decisionId);
+    const forged = structuredClone(fixture.store.get(key)) as Record<string, unknown>;
+    mutate(forged);
+    fixture.store.set(key, forged);
+    await expectDomain("CORRUPT_STATE", () => validateAgreementApprovals((stateKey) => Promise.resolve(fixture.store.get(stateKey)), fixture.store.get(keyFor.agreement(fixture.agreementId)) as any));
+    const resolved = await resolveAt((stateKey) => Promise.resolve(fixture.store.get(stateKey)), fixture.value.payload);
+    assert.equal(resolved.eligible, false);
+    assert.equal(resolved.reason, "CORRUPT_APPROVALS");
+  }
+});
+
+test("activation rejects a latest-decision pointer that names another representative's approval", async () => {
+  const store = await boot();
+  const base = revision({ revisionId: "rev-latest-pointer-base", documentId: "doc-base-001", contextId: "context-sales", usageScope: "domain-definition/v1" });
+  await publish(store, sales, 2, "cmd-latest-pointer-pub-base", base);
+  await propose(store, sales, 3, "cmd-latest-pointer-prop-base", "proposal-latest-pointer-base", base, basePolicy.policy_id);
+  await approve(store, sales, 4, "cmd-latest-pointer-dec-base", "proposal-latest-pointer-base", base, basePolicy.policy_id, "sales_owner");
+  await activate(store, admin, 5, "cmd-latest-pointer-act-base", "proposal-latest-pointer-base", "agreement-latest-pointer-base", null);
+  const dependent = revision({
+    revisionId: "rev-latest-pointer-review",
+    documentId: "doc-review-001",
+    contextId: "context-review",
+    usageScope: "review-invitation/v1",
+    dependencies: [graphDependency(base)],
+  });
+  await publish(store, sales, 6, "cmd-latest-pointer-pub-review", dependent);
+  await propose(store, sales, 7, "cmd-latest-pointer-prop-review", "proposal-latest-pointer-review", dependent, reviewPolicy.policy_id);
+  await approve(store, sales, 8, "cmd-latest-pointer-sales-a", "proposal-latest-pointer-review", dependent, reviewPolicy.policy_id, "sales_owner", "decision-latest-pointer-sales-a");
+  await approve(store, sales, 9, "cmd-latest-pointer-sales-b", "proposal-latest-pointer-review", dependent, reviewPolicy.policy_id, "sales_owner", "decision-latest-pointer-sales-b");
+  store.set(keyFor.latestDecision("proposal-latest-pointer-review", 1, "fulfillment_owner", fulfillment.org_id, fulfillment.actor_id), { decision_id: "decision-latest-pointer-sales-a" });
+  await expectDomain("STALE_DECISION", () => activate(store, admin, 10, "cmd-latest-pointer-activate", "proposal-latest-pointer-review", "agreement-latest-pointer-review", null));
 });
 
 test("active objections and approval retractions suspend without reviving prior approvals", async () => {

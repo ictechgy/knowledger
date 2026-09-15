@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { keyFor } from '../../packages/domain/index.ts';
 
 const actor = { org_id: 'SalesMSP', actor_id: 'person-sales', kind: 'human' as const };
 function fixture(t: any) {
@@ -55,4 +57,34 @@ test('unknown write-set prefix stops commit and does not advance the checkpoint'
     await ctx.put('kcl:v999:unknown', { value: true });
   }), /write-set/i);
   assert.equal(ledger.checkpoint(), null);
+});
+
+test('a known revision prefix with an invalid body or key cannot advance projection', async t => {
+  const ledger = fixture(t);
+  await assert.rejects(ledger.transact(actor, async ctx => {
+    await ctx.put('kcl:v1:revision:forged', { revision_digest: 'forged', payload: { body_markdown: 'unvalidated' } });
+  }), /write-set/i);
+  assert.equal(ledger.checkpoint(), null);
+});
+
+test('a revision ID index cannot point to a missing immutable revision', async t => {
+  const ledger = fixture(t);
+  await assert.rejects(ledger.transact(actor, async ctx => {
+    await ctx.put(keyFor.revisionId('revision-missing'), { revision_digest: `sha256:${'a'.repeat(64)}` });
+  }), /write-set/i);
+  assert.equal(ledger.checkpoint(), null);
+});
+
+test('current reads detect projection divergence from the historical write-set view', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'kcl-projection-test-'));
+  const path = join(directory, 'ledger.sqlite');
+  const ledger = new LocalLedger(path, 'channel-test');
+  t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });
+  await ledger.transact(actor, async ctx => { await ctx.put(keyFor.eligibilityEpoch(), 1); });
+  const external = new DatabaseSync(path);
+  external.prepare('UPDATE projection SET value_json = ? WHERE state_key = ?').run('999', keyFor.eligibilityEpoch());
+  external.close();
+  assert.throws(() => ledger.read(keyFor.eligibilityEpoch()), /projection.*integrity/i);
+  ledger.rebuildProjection();
+  assert.equal(ledger.read(keyFor.eligibilityEpoch()), 1);
 });

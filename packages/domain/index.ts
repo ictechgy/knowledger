@@ -1018,6 +1018,68 @@ export function validateAgreement(value: unknown): AgreementRecord {
   return cloneCanonical(value as AgreementRecord);
 }
 
+function corruptApprovalState(message: string): never {
+  fail("CORRUPT_STATE", message, { status: 500, retryable: true });
+}
+
+/**
+ * Validate the immutable approval manifest attached to an agreement against
+ * the current immutable policy and the decision records it names.  This is
+ * intentionally separate from activation's latest-decision read: activation
+ * selects the latest decision for each representative, while this helper
+ * proves that an already committed agreement still cites exactly one valid
+ * approval from every required representative.
+ */
+export async function validateAgreementApprovals(
+  get: (key: string) => Promise<unknown | undefined>,
+  agreementInput: AgreementRecord,
+): Promise<ApprovalDecision[]> {
+  let agreement: AgreementRecord;
+  let config: DomainConfig;
+  try {
+    agreement = validateAgreement(agreementInput);
+    const configValue = await get(keyFor.config());
+    if (configValue === undefined || configValue === null) corruptApprovalState("agreement approval validation has no channel config");
+    config = validateConfig(configValue);
+  } catch (error) {
+    if (error instanceof DomainError && error.code === "CORRUPT_STATE") throw error;
+    corruptApprovalState("agreement approval manifest or channel config is malformed");
+  }
+  if (agreement.membership_epoch !== config.membership_epoch || agreement.role_binding_version !== config.role_binding_version) corruptApprovalState("agreement approval manifest uses a stale entitlement epoch");
+  const policy = config.policies.find((candidate) => candidate.policy_id === agreement.policy_id && candidate.policy_version === agreement.policy_version);
+  if (!policy || !sameSlot(policy, agreement)) corruptApprovalState("agreement approval manifest does not match its immutable policy and slot");
+  if (agreement.approval_decision_ids.length !== policy.required_domain_roles.length) corruptApprovalState("agreement approval manifest does not contain exactly one decision per required role");
+  const selected = new Set<string>();
+  const decisions: ApprovalDecision[] = [];
+  for (const role of policy.required_domain_roles) {
+    const representative = policy.role_representatives.find((candidate) => candidate.domain_role === role);
+    if (!representative) corruptApprovalState(`agreement policy has no representative for ${role}`);
+    let found: ApprovalDecision | undefined;
+    for (const candidateId of agreement.approval_decision_ids) {
+      if (selected.has(candidateId)) continue;
+      const value = await get(keyFor.decision(candidateId));
+      if (value === undefined || value === null) corruptApprovalState("agreement approval manifest points to a missing decision");
+      let decision: ApprovalDecision;
+      try {
+        decision = validateDecision(value);
+      } catch {
+        corruptApprovalState("agreement approval manifest points to a malformed decision");
+      }
+      if (decision.decision !== "approve") corruptApprovalState("agreement approval manifest points to a non-approval decision");
+      if (decision.actor_domain_role === role && decision.actor_org_id === representative.actor_org_id && decision.actor_id === representative.actor_id) {
+        found = decision;
+        selected.add(candidateId);
+        break;
+      }
+    }
+    if (!found) corruptApprovalState(`agreement approval manifest has no approval from required role ${role}`);
+    if (found.revision_digest !== agreement.revision_digest || found.proposal_id !== agreement.proposal_id || !sameSlot(found, agreement) || found.policy_id !== agreement.policy_id || found.policy_version !== agreement.policy_version || found.membership_epoch !== agreement.membership_epoch || found.role_binding_version !== agreement.role_binding_version) corruptApprovalState(`agreement approval for ${role} is bound to a different immutable target`);
+    decisions.push(found);
+  }
+  if (selected.size !== agreement.approval_decision_ids.length) corruptApprovalState("agreement approval manifest contains an approval for an unrequired representative");
+  return decisions;
+}
+
 async function suspendActiveAgreement(ctx: TxContext, slot: Slot, reason: string, expectedProposalId?: string): Promise<AgreementRecord | undefined> {
   const active = await getActiveAgreement(ctx, slot);
   if (!active || active.status !== "active") return undefined;
@@ -1143,7 +1205,9 @@ async function executeActivate(ctx: TxContext, config: DomainConfig, input: Reco
     if (decisionValue === undefined || decisionValue === null) fail("CORRUPT_STATE", "latest decision points to a missing decision", { status: 500, retryable: true });
     const decision = validateDecision(decisionValue);
     if (decision.decision !== "approve") fail("APPROVAL_INCOMPLETE", `required role ${role} does not currently approve`, { status: 409 });
+    if (decision.actor_org_id !== representative.actor_org_id || decision.actor_id !== representative.actor_id || decision.actor_domain_role !== representative.domain_role) fail("STALE_DECISION", `required role ${role} was approved by a different representative`, { status: 409 });
     if (decision.revision_digest !== proposal.revision_digest || decision.proposal_id !== proposal.proposal_id || !sameSlot(decision, proposal) || decision.policy_id !== proposal.policy_id || decision.policy_version !== proposal.policy_version || decision.membership_epoch !== proposal.membership_epoch || decision.role_binding_version !== proposal.role_binding_version) fail("STALE_DECISION", `required role ${role} approved a different immutable target`, { status: 409 });
+    if (approvalDecisionIds.includes(decision.decision_id)) fail("CORRUPT_STATE", "multiple required roles selected the same immutable approval decision", { status: 500, retryable: true });
     approvalDecisionIds.push(decision.decision_id);
   }
   await dependencyEligible(ctx, revision);
@@ -1305,6 +1369,12 @@ async function resolveInternal(get: (key: string) => Promise<unknown | undefined
   if (agreement.membership_epoch !== config.membership_epoch || agreement.role_binding_version !== config.role_binding_version) return { eligible: false, reason: "STALE_CONFIGURATION" };
   const policy = config.policies.find((candidate) => candidate.policy_id === agreement.policy_id && candidate.policy_version === agreement.policy_version);
   if (!policy || !sameSlot(policy, agreement)) return { eligible: false, reason: "STALE_POLICY" };
+  try {
+    await validateAgreementApprovals(get, agreement);
+  } catch (error) {
+    if (error instanceof DomainError && error.code === "CORRUPT_STATE") return { eligible: false, reason: "CORRUPT_APPROVALS" };
+    throw error;
+  }
   const revisionValue = await get(keyFor.revision(agreement.revision_digest));
   if (revisionValue === undefined || revisionValue === null) return { eligible: false, reason: "MISSING_REVISION" };
   let revision: DocumentRevision;

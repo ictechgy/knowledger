@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { validateStateWrite as validateWrite, validateStateLinks, IMMUTABLE_KINDS } from './state-validation.ts';
+import { canonicalize } from '../domain/index.ts';
 
 export interface Checkpoint {
   channel_id: string;
@@ -28,25 +30,7 @@ export interface LedgerEvent {
   writes: [string, any][];
 }
 
-const PREFIXES = new Set([
-  'config', 'revision', 'revision_id', 'policy', 'proposal', 'decision',
-  'latest_decision', 'review_counter', 'agreement', 'active_slot',
-  'eligibility_epoch', 'idempotency', 'fence', 'role_binding', 'entitlement',
-  'publication_gate',
-]);
 const ZERO_HASH = '0'.repeat(64);
-
-function validateWrite(key: string, value: any): void {
-  const parts = key.split(':');
-  if (parts[0] !== 'kcl' || parts[1] !== 'v1' || !PREFIXES.has(parts[2]) || key.includes('\0')) {
-    throw new Error('Unsupported ledger write-set key; projection halted');
-  }
-  if (value === undefined || value === null || (typeof value !== 'object' && typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean')) {
-    throw new Error('Invalid ledger write-set value; projection halted');
-  }
-  if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error('Invalid ledger write-set number');
-  if (Buffer.byteLength(JSON.stringify(value)) > 2 * 1024 * 1024) throw new Error('Oversized ledger write-set value');
-}
 
 function hashRecord(record: Omit<LedgerEvent, 'checkpoint'> & { checkpoint: Omit<Checkpoint, 'block_hash'> }): string {
   return createHash('sha256').update(JSON.stringify(record)).digest('hex');
@@ -102,8 +86,13 @@ export class LocalLedger {
       row = this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 1').get(key, at.block_number);
     } else {
       row = this.db.prepare('SELECT value_json FROM projection WHERE state_key = ?').get(key);
+      const history = this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? ORDER BY sequence DESC LIMIT 1').get(key) as any;
+      if (row?.value_json !== history?.value_json) throw new Error('Projection integrity check failed; rebuild the derived view');
     }
-    return row ? JSON.parse(row.value_json) : undefined;
+    if (!row) return undefined;
+    const value = JSON.parse(row.value_json);
+    validateWrite(key, value);
+    return value;
   }
 
   entries(prefix: string, at?: Checkpoint | null): [string, any][] {
@@ -113,12 +102,20 @@ export class LocalLedger {
           (SELECT state_key, MAX(sequence) sequence FROM projection_history WHERE sequence <= ? GROUP BY state_key) latest
           ON h.state_key = latest.state_key AND h.sequence = latest.sequence ORDER BY h.state_key`).all(at.block_number)
       : this.db.prepare('SELECT state_key, value_json FROM projection ORDER BY state_key').all();
-    return (rows as any[]).filter(row => row.state_key.startsWith(prefix)).map(row => [row.state_key, JSON.parse(row.value_json)]);
+    return (rows as any[]).filter(row => row.state_key.startsWith(prefix)).map(row => [row.state_key, this.read(row.state_key, at)]);
   }
 
   checkpoint(): Checkpoint | null {
     const row = this.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence DESC LIMIT 1').get() as any;
     return row ? JSON.parse(row.record_json).checkpoint : null;
+  }
+
+  checkpointForTransaction(transactionId: string): Checkpoint {
+    const row = this.db.prepare('SELECT record_json FROM ledger_transactions WHERE transaction_id = ?').get(transactionId) as any;
+    if (!row) throw new Error('Committed transaction checkpoint is missing');
+    const checkpoint = JSON.parse(row.record_json).checkpoint;
+    this.assertCheckpoint(checkpoint);
+    return checkpoint;
   }
 
   assertCheckpoint(at: Checkpoint): void {
@@ -142,7 +139,7 @@ export class LocalLedger {
       try {
         const previous = this.checkpoint();
         const timestamp = new Date().toISOString();
-        const txId = `local-${randomUUID()}`;
+        const txId = createHash('sha256').update(`local:${randomUUID()}`).digest('hex');
         const writes = new Map<string, any>();
         const ctx: TransactionContext = {
           actor, channel_id: this.channelId, tx_id: txId, timestamp,
@@ -200,10 +197,13 @@ export class LocalLedger {
     if (event.reducer_version !== 1) throw new Error('Unknown write-set reducer');
     for (const [key, value] of event.writes) {
       validateWrite(key, value);
+      const prior = this.read(key);
+      if (prior !== undefined && IMMUTABLE_KINDS.has(key.split(':')[2]) && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
       const encoded = JSON.stringify(value);
       this.db.prepare('INSERT INTO projection VALUES (?, ?) ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json').run(key, encoded);
       this.db.prepare('INSERT INTO projection_history VALUES (?, ?, ?)').run(key, event.checkpoint.block_number, encoded);
     }
+    for (const [key, value] of event.writes) validateStateLinks(key, value, referenced => this.read(referenced));
     this.db.prepare('INSERT INTO projection_cursor VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET sequence = excluded.sequence').run(event.checkpoint.block_number);
   }
 }
