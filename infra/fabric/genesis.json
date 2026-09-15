@@ -1,0 +1,46 @@
+{
+  "channel_id": "kcl-demo",
+  "membership_epoch": 1,
+  "role_binding_version": 1,
+  "config_version": 1,
+  "serving_enabled": true,
+  "identities": [
+    {"org_id": "SalesMSP", "actor_id": "person-sales-owner", "kind": "human", "publish_contexts": ["context-sales"], "can_propose": true},
+    {"org_id": "FulfillmentMSP", "actor_id": "person-fulfillment-owner", "kind": "human", "publish_contexts": ["context-fulfillment", "context-coordination"], "can_propose": true},
+    {"org_id": "SettlementMSP", "actor_id": "person-settlement-owner", "kind": "human", "publish_contexts": ["context-settlement", "context-coordination"], "can_propose": true},
+    {"org_id": "FulfillmentMSP", "actor_id": "agent-knowledge-drafter", "kind": "agent", "publish_contexts": ["context-coordination"], "can_propose": true}
+  ],
+  "policies": [
+    {
+      "contract_type": "AgreementPolicy", "contract_version": 1, "policy_id": "policy-sales-v1", "policy_version": 1,
+      "channel_id": "kcl-demo", "document_id": "doc-sales-order-definition-001", "context_id": "context-sales", "scope_id": "scope-order-2026-001", "usage_scope": "domain-definition/v1",
+      "membership_epoch": 1, "role_binding_version": 1, "acceptance_slot": "sales_definition",
+      "required_domain_roles": ["sales_owner"], "allowed_decisions": ["approve", "object", "abstain", "retract"], "role_decision_rule": "named_representatives",
+      "role_representatives": [{"domain_role": "sales_owner", "actor_org_id": "SalesMSP", "actor_id": "person-sales-owner"}]
+    },
+    {
+      "contract_type": "AgreementPolicy", "contract_version": 1, "policy_id": "policy-fulfillment-v1", "policy_version": 1,
+      "channel_id": "kcl-demo", "document_id": "doc-fulfillment-delivery-definition-001", "context_id": "context-fulfillment", "scope_id": "scope-order-2026-001", "usage_scope": "domain-definition/v1",
+      "membership_epoch": 1, "role_binding_version": 1, "acceptance_slot": "fulfillment_definition",
+      "required_domain_roles": ["fulfillment_owner"], "allowed_decisions": ["approve", "object", "abstain", "retract"], "role_decision_rule": "named_representatives",
+      "role_representatives": [{"domain_role": "fulfillment_owner", "actor_org_id": "FulfillmentMSP", "actor_id": "person-fulfillment-owner"}]
+    },
+    {
+      "contract_type": "AgreementPolicy", "contract_version": 1, "policy_id": "policy-settlement-v1", "policy_version": 1,
+      "channel_id": "kcl-demo", "document_id": "doc-settlement-accounting-definition-001", "context_id": "context-settlement", "scope_id": "scope-order-2026-001", "usage_scope": "domain-definition/v1",
+      "membership_epoch": 1, "role_binding_version": 1, "acceptance_slot": "settlement_definition",
+      "required_domain_roles": ["settlement_owner"], "allowed_decisions": ["approve", "object", "abstain", "retract"], "role_decision_rule": "named_representatives",
+      "role_representatives": [{"domain_role": "settlement_owner", "actor_org_id": "SettlementMSP", "actor_id": "person-settlement-owner"}]
+    },
+    {
+      "contract_type": "AgreementPolicy", "contract_version": 1, "policy_id": "policy-review-invitation-v1", "policy_version": 1,
+      "channel_id": "kcl-demo", "document_id": "doc-review-invitation-001", "context_id": "context-coordination", "scope_id": "scope-order-2026-001", "usage_scope": "review-invitation/v1",
+      "membership_epoch": 1, "role_binding_version": 1, "acceptance_slot": "review_after_delivery",
+      "required_domain_roles": ["fulfillment_owner", "settlement_owner"], "allowed_decisions": ["approve", "object", "abstain", "retract"], "role_decision_rule": "named_representatives",
+      "role_representatives": [
+        {"domain_role": "fulfillment_owner", "actor_org_id": "FulfillmentMSP", "actor_id": "person-fulfillment-owner"},
+        {"domain_role": "settlement_owner", "actor_org_id": "SettlementMSP", "actor_id": "person-settlement-owner"}
+      ]
+    }
+  ]
+}
