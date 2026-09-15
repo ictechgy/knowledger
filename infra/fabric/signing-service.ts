@@ -92,7 +92,16 @@ function parseRequest(body: Buffer): SignRequest {
   return request as SignRequest;
 }
 
-function loadKeys(): Map<DevelopmentSigningKeyId, LoadedKey> {
+function signingKeyIds(value: unknown): readonly DevelopmentSigningKeyId[] {
+  if (value === undefined) return [...DEVELOPMENT_SIGNING_KEY_IDS];
+  if (!Array.isArray(value) || value.length === 0 || value.length > DEVELOPMENT_SIGNING_KEY_IDS.length
+    || value.some(id => typeof id !== 'string' || !KEY_ID_SET.has(id)) || new Set(value).size !== value.length) {
+    throw new TypeError('Signing key allowlist must contain unique approved identity IDs');
+  }
+  return Object.freeze([...value]) as readonly DevelopmentSigningKeyId[];
+}
+
+function loadKeys(keyIds: readonly DevelopmentSigningKeyId[]): Map<DevelopmentSigningKeyId, LoadedKey> {
   const root = resolve(fileURLToPath(new URL("../../.data/fabric-smoke/crypto", import.meta.url)));
   const sdk = requireFabric("@hyperledger/fabric-gateway") as FabricGatewayModule;
   const config: Record<DevelopmentSigningKeyId, { domain: string }> = {
@@ -101,7 +110,7 @@ function loadKeys(): Map<DevelopmentSigningKeyId, LoadedKey> {
     "person-settlement-owner": { domain: "settlement.kcl.test" },
   };
   const loaded = new Map<DevelopmentSigningKeyId, LoadedKey>();
-  for (const keyId of DEVELOPMENT_SIGNING_KEY_IDS) {
+  for (const keyId of keyIds) {
     const domain = config[keyId].domain;
     const user = `User1@${domain}`;
     const msp = resolve(root, "peerOrganizations", domain, "users", user, "msp");
@@ -192,7 +201,8 @@ async function signWithTimeout(sign: (digest: Uint8Array) => Promise<Uint8Array>
   }
 }
 
-export async function startDevelopmentSigningService(options: { socketPath: string }): Promise<DevelopmentSigningService> {
+export async function startDevelopmentSigningService(options: { socketPath: string; keyIds?: readonly DevelopmentSigningKeyId[] }): Promise<DevelopmentSigningService> {
+  const keyIds = signingKeyIds(options.keyIds);
   const socketPath = options.socketPath;
   if (typeof socketPath !== "string" || socketPath.length === 0 || !isAbsolute(socketPath) || socketPath.includes("\u0000") || Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) throw new TypeError("A valid Unix socket path is required");
   if (pathAlreadyExists(socketPath)) throw new Error("Signing socket already exists; refusing to replace it");
@@ -200,7 +210,7 @@ export async function startDevelopmentSigningService(options: { socketPath: stri
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
-  const keys = loadKeys();
+  const keys = loadKeys(keyIds);
   let active = 0;
   const connections = new Set<Socket>();
   const server: Server = createServer(socket => {
@@ -260,11 +270,17 @@ export async function startDevelopmentSigningService(options: { socketPath: stri
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const socketPath = args[0] === "--socket" ? args[1] : undefined;
-  if (args.length !== 2 || !socketPath) {
-    throw new Error("Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH");
+  let socketPath: string | undefined;
+  let keyId: string | undefined;
+  for (let i = 0; i < args.length; i += 2) {
+    const value = args[i + 1];
+    if (!value || value.startsWith('--')) throw new Error('Signing service options require values');
+    if (args[i] === '--socket' && socketPath === undefined) socketPath = value;
+    else if (args[i] === '--key-id' && keyId === undefined) keyId = value;
+    else throw new Error('Unknown or duplicate signing service option');
   }
-  const service = await startDevelopmentSigningService({ socketPath });
+  if (!socketPath) throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH [--key-id ID]');
+  const service = await startDevelopmentSigningService({ socketPath, keyIds: keyId === undefined ? undefined : signingKeyIds([keyId]) });
   const stop = (): void => { void service.close().finally(() => process.exit(0)); };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);

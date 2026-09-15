@@ -1,6 +1,6 @@
 /** In-memory browser for local OIDC acceptance tests. Never logs cookie/token URLs. */
 export class OidcTestBrowser {
-  private readonly cookies = new Map<string, Map<string, string>>();
+  private readonly cookies = new Map<string, Map<string, { name: string; value: string; path: string; secure: boolean }>>();
   private callback: URL | undefined;
   private readonly origins: string[];
   constructor(origins: string[]) { this.origins = [...origins]; }
@@ -8,16 +8,22 @@ export class OidcTestBrowser {
   async request(target: string | URL, init: RequestInit = {}): Promise<Response> {
     const url = new URL(target);
     if (!this.origins.includes(url.origin)) throw new Error('Test browser refused an unexpected origin');
-    const jar = this.cookies.get(url.origin) ?? new Map<string, string>();
+    // Browser cookies are scoped to a host and path, not a TCP port.
+    const jar = this.cookies.get(url.hostname) ?? new Map();
     const headers = new Headers(init.headers);
-    headers.set('Cookie', [...jar].map(([name, value]) => `${name}=${value}`).join('; '));
+    headers.set('Cookie', [...jar.values()].filter(cookie => (!cookie.secure || url.protocol === 'https:')
+      && (url.pathname === cookie.path || url.pathname.startsWith(cookie.path.endsWith('/') ? cookie.path : `${cookie.path}/`)))
+      .sort((a, b) => b.path.length - a.path.length).map(cookie => `${cookie.name}=${cookie.value}`).join('; '));
     const response = await fetch(url, { ...init, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) });
     for (const value of response.headers.getSetCookie()) {
       const pair = value.split(';')[0]; const separator = pair.indexOf('=');
       const name = pair.slice(0, separator); const content = pair.slice(separator + 1);
-      if (/Max-Age=0(?:;|$)/i.test(value)) jar.delete(name); else jar.set(name, content);
+      const path = /(?:^|;\s*)Path=([^;]*)/i.exec(value)?.[1] || url.pathname.slice(0, url.pathname.lastIndexOf('/')) || '/';
+      const key = `${name}\u0000${path}`;
+      if (/Max-Age=0(?:;|$)/i.test(value)) jar.delete(key);
+      else jar.set(key, { name, value: content, path, secure: /(?:^|;\s*)Secure(?:;|$)/i.test(value) });
     }
-    this.cookies.set(url.origin, jar);
+    this.cookies.set(url.hostname, jar);
     return response;
   }
 

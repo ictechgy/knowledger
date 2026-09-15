@@ -31,6 +31,7 @@ npm run check
 로그인 흐름은 [개발용 OIDC·서명 서비스 가이드](13-DEVELOPMENT-LOGIN.md)의
 `npm run start:login`으로 실행한다. 이 모드는 계정 로그인 뒤 서버의 subject 바인딩으로
 actor를 정하며 역할 전환 API를 거부한다. 비밀번호 없는 개발 계정이고 실제 회사 SSO는 아니다.
+[조직별 실행](17-ORGANIZATION-RUNTIME.md)에서는 해당 조직의 subject·키·outbox·private 폴더만 사용한다.
 
 ## KB / LLM 위키 연결
 
@@ -84,7 +85,7 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | 로컬 보존 | SQLite 원자적 명령, 전체 이력·projection 재구축, 비공개 초안 재개, 앱 종료 후 DB 백업·복원 | 독립 조직 운영·외부 백업·전체 인프라 복구 목표 |
 | Fabric | 같은 엔진의 shim/Gateway, 실제 로컬 3 peer·3 Raft orderer 배포, VALID commit·MVCC INVALID·outbox 복구 검증 | 독립 조직/호스트·운영 인증·네트워크 partition 시험 |
 | resolver | 정확한 fence 거래 시점, 영속 Fabric projection·재시작, 실제 HTTP 승인·철회·peer 단절 후 fail-closed 검증 | 큰 원장 catch-up 성능, 운영 보관/백업 정책 |
-| 인증/기밀 | loopback·출처/CSRF, actor별 초안·manifest, 개발 OIDC·subject 바인딩·권한 회수, 별도 서명 프로세스 | 실제 회사 SSO·계정 저장, 조직별 권한·KMS·vault 격리 |
+| 인증/기밀 | loopback·출처/CSRF, actor별 초안·manifest, OIDC·권한 회수, 조직별 개발 프로세스·키 선택·데이터 폴더·복원 범위 | 실제 회사 SSO·계정 저장, 독립 OS/host·KMS·vault 관리 경계 |
 | 운영 | 고정된 genesis·정책, 명시적 실패 처리 | 동적 governance, 실제 channel config 변경 감지·freeze·조직 migration |
 
 로컬 원장은 **블록당 거래 한 개**다. 체크포인트의 `transaction_index`는 0이다. 이것을 Fabric에서 fence와 철회가 한 블록에 들어가는 경우의 실증으로 주장하지 않는다. 테스트의 MVCC 모델은 동시 read/write 집합의 기대 동작을 검증한다.

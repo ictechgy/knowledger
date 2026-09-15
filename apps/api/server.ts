@@ -11,6 +11,8 @@ import type { ApplicationAuthentication, AuthenticatedSession } from '../../pack
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KclService, onlyFields } from './service.ts';
 import { parseJsonStrict } from './json.ts';
+import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
+import type { DevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
 import { CHANNEL_ID, PERSONAS, actorIdentity } from './demo-config.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -19,13 +21,15 @@ const MAX_BODY = 768 * 1024;
 const token = () => randomBytes(32).toString('hex');
 const equal = (a: string, b: string) => a.length > 0 && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-export async function createApp(options: { dataDir: string; seed?: boolean; ledger?: ApplicationLedger; personas?: typeof PERSONAS; authentication?: ApplicationAuthentication }) {
-  let ledger: ApplicationLedger | undefined;
+export async function createApp(options: { dataDir: string; seed?: boolean; ledger?: ApplicationLedger; personas?: typeof PERSONAS; authentication?: ApplicationAuthentication; organization?: DevelopmentOrganization }) {
+  let ledger: ApplicationLedger | undefined = options.ledger;
   let vault: PrivateStore | undefined;
   let service: KclService | undefined;
   const authentication = options.authentication;
   const personas = options.personas ?? PERSONAS;
   try {
+    if (options.organization && (options.ledger?.mode !== 'fabric-test-network' || !authentication)) throw new Error('Organization scope requires an authenticated Fabric runtime');
+    ensureRuntimeScope(options.dataDir, options.organization);
     ledger = options.ledger ?? new LocalLedger(join(options.dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
     if (ledger.mode === 'fabric-test-network' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));

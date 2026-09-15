@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-공통 합의 엔진, API/UI·resolver/manifest, 실제 로컬 Fabric 네트워크와 영속 full-block projection까지 개발 알파로 구현했다. 개발 OIDC·별도 서명·권한 회수, Markdown 가져오기·비공개 초안 재개, 앱 DB 백업·복원도 연결했다. [실행 가이드](11-RUNTIME.md)가 실제 지원 범위다. 아래 P0–P3의 운영 통합 전체가 완료된 것은 아니다. 실제 회사 SSO/KMS, 독립 조직·호스트 장애, 전체 인프라 재해 복구와 성능 시험은 남아 있다. 실행한 140개 테스트와 실제 네트워크 검증의 범위는 [검증 기록](VALIDATION.md)에 분리했다.
+공통 합의 엔진, API/UI·resolver/manifest, 실제 로컬 Fabric 네트워크와 영속 full-block projection까지 개발 알파로 구현했다. OIDC·서명·권한 회수, 조직별 개발 실행, Markdown 가져오기·비공개 초안 재개, 조직 scope를 보존하는 DB 복원도 연결했다. [실행 가이드](11-RUNTIME.md)가 실제 지원 범위다. 아래 P0–P3의 운영 통합 전체가 완료된 것은 아니다. 실제 회사 SSO/KMS, 독립 조직·호스트 장애, 전체 인프라 재해 복구와 성능 시험은 남아 있다. 실행한154개 테스트와 실제 네트워크 검증은 [검증 기록](VALIDATION.md)에 분리했다. 웹 디자인의 후속 방향은 [DESIGN.md](../DESIGN.md)에 있다.
 
 ## 단계별 실행
 

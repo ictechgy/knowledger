@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { exportJWK, generateKeyPair } from 'jose';
@@ -49,6 +49,7 @@ export interface StartDevelopmentIssuerOptions {
   port: number;
   redirectUri: string;
   clientId?: string;
+  subjects?: readonly string[];
 }
 
 function assertLoopbackRedirect(redirectUri: string): URL {
@@ -124,12 +125,12 @@ function setSecurityHeaders(res: ServerResponse): void {
   res.setHeader('Content-Security-Policy', "default-src 'none'; form-action 'self'; base-uri 'none'; style-src 'unsafe-inline'");
 }
 
-function setCsrfCookie(res: ServerResponse, token: string): void {
-  res.setHeader('Set-Cookie', `${CSRF_COOKIE}=${encodeURIComponent(token)}; Path=/interaction; Max-Age=300; HttpOnly; SameSite=Lax`);
+function setCsrfCookie(res: ServerResponse, name: string, token: string): void {
+  res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(token)}; Path=/interaction; Max-Age=300; HttpOnly; SameSite=Lax`);
 }
 
-function clearCsrfCookie(res: ServerResponse): void {
-  res.setHeader('Set-Cookie', `${CSRF_COOKIE}=; Path=/interaction; Max-Age=0; HttpOnly; SameSite=Lax`);
+function clearCsrfCookie(res: ServerResponse, name: string): void {
+  res.setHeader('Set-Cookie', `${name}=; Path=/interaction; Max-Age=0; HttpOnly; SameSite=Lax`);
 }
 
 interface HtmlContext {
@@ -221,10 +222,15 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
   assertLoopbackRedirect(options.redirectUri);
   const clientId = options.clientId ?? DEFAULT_CLIENT_ID;
   assertClientId(clientId);
+  if (options.subjects !== undefined && (!Array.isArray(options.subjects) || options.subjects.length === 0 || new Set(options.subjects).size !== options.subjects.length
+    || options.subjects.some(subject => !ACCOUNT_DEFINITIONS.some(account => account.subject === subject)))) throw new TypeError('Unknown or duplicate development account selection');
+  const selectedAccounts = ACCOUNT_DEFINITIONS.filter(account => options.subjects === undefined || options.subjects.includes(account.subject));
   const port = await reservePort(options.port);
   const issuer = `http://127.0.0.1:${port}`;
+  const cookieNamespace = createHash('sha256').update(issuer).digest('hex').slice(0, 16);
+  const csrfCookieName = `${CSRF_COOKIE}_${cookieNamespace}`;
 
-  const accounts = new Map<string, DevelopmentAccount>(ACCOUNT_DEFINITIONS.map((definition) => [definition.subject, {
+  const accounts = new Map<string, DevelopmentAccount>(selectedAccounts.map((definition) => [definition.subject, {
     ...definition,
     enabled: true,
     version: 1,
@@ -248,7 +254,7 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
   const cookieKey = randomBytes(32).toString('base64url');
   const provider = new Provider(issuer, {
     jwks: { keys: [privateJwk] },
-    cookies: { keys: [cookieKey] },
+    cookies: { keys: [cookieKey], names: { session: `kcl_idp_session_${cookieNamespace}`, interaction: `kcl_idp_interaction_${cookieNamespace}`, resume: `kcl_idp_resume_${cookieNamespace}` } },
     clients: [{
       client_id: clientId,
       redirect_uris: [options.redirectUri],
@@ -327,7 +333,7 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
         const csrf = randomBytes(32).toString('base64url');
         csrfByInteraction.set(path.uid, { token: csrf, expires: Date.now() + CSRF_TTL_MS });
         cleanupCsrf();
-        setCsrfCookie(ctx.res, csrf);
+        setCsrfCookie(ctx.res, csrfCookieName, csrf);
         sendHtml(ctx, 200, interactionPage(path.uid, csrf, [...accounts.values()], prompt, account));
       } catch {
         sendInteractionError(ctx, 400);
@@ -356,8 +362,8 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
     const csrfEntry = csrfByInteraction.get(path.uid);
     const submittedCsrf = form.get('csrf') ?? undefined;
     csrfByInteraction.delete(path.uid);
-    clearCsrfCookie(ctx.res);
-    if (!csrfEntry || !constantTimeEqual(csrfEntry.token, submittedCsrf) || !constantTimeEqual(csrfEntry.token, csrfCookie.get(CSRF_COOKIE))) {
+    clearCsrfCookie(ctx.res, csrfCookieName);
+    if (!csrfEntry || !constantTimeEqual(csrfEntry.token, submittedCsrf) || !constantTimeEqual(csrfEntry.token, csrfCookie.get(csrfCookieName))) {
       sendInteractionError(ctx, 403);
       return;
     }

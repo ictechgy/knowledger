@@ -82,4 +82,6 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 genesis
 
 [내 비공개 초안](docs/15-PRIVATE-DRAFTS.md)에서 검토를 재개하고, [런타임 DB 백업·복원](docs/16-RUNTIME-BACKUP.md)으로 초안·원장 view·명령 기록을 새 데이터 폴더에 복구할 수 있다.
 
+[조직별 개발 앱](docs/17-ORGANIZATION-RUNTIME.md)은 계정·서명 키·private 데이터 폴더를 조직 단위로 제한한다. 웹 디자인은 [Claude 검토](docs/18-DESIGN-REVIEW.md)를 바탕으로 [DESIGN.md](DESIGN.md)에 후속 방향을 정리했다.
+
 [MIT 라이선스](LICENSE)로 제공한다. [기여 가이드](CONTRIBUTING.md)와 [보안 안내](SECURITY.md)를 참고한다. 예제의 이름과 ID는 모두 가상이며 실제 인증정보가 없다.

@@ -1,5 +1,49 @@
 # 검증 기록
 
+## 조직별 실행과 Claude 디자인 논의 — 2026-09-16
+
+`npm run check`: **154 passed / 0 failed / 0 skipped**, `npm run check:types`와
+`npm run demo` 통과. 의존성·runtime 파일이 없는 source copy도 **119 passed / 0 failed /
+35 optional skipped**로 통과했다. 마지막 manifest의 문자열 mode 검증을 보강한 뒤 snapshot
+검사15개와 타입 검사를 다시 통과했다.
+
+조직 scope 검사8개는 새 폴더 바인딩, 기존 DB 자동 채택 거부, 다른 조직/로컬/비인증 재사용 거부,
+권한·symlink·불완전 파일·잘못된 JSON과 재시작을 확인했다. 서명 서비스는 선택한 조직의 파일만
+읽고 다른 key ID를 거부하는지 실제 승인된 테스트 키와 SDK 서명 검증으로 확인했다.
+CLI의 누락/잘못된 organization 옵션은 data 파일 생성 전에 실패한다.
+
+실제 브라우저 쿠키는 포트를 구분하지 않는다는 점을 테스트 helper에도 반영했다.
+서로 다른 두 앱에 로그인할 때 첫 세션이401이 되는 실패를 재현했고, 앱·IdP 이름을
+origin별로 나눠 두 로그인과 독립 로그아웃을 검증했다. origin별 쿠키 이름은 같은 호스트의
+악의적인 서비스에 대한 보안 경계로 취급하지 않는다.
+
+`npm run organization:smoke`의 최종 근거는
+`.data/organization-smoke-yggNNy/organization-evidence.json`이다. 사용자와 같은 CLI 진입점으로
+**별도 앱 프로세스3개**와 각 IdP·단일 키 signer를 실행했다.
+
+- 세 앱의 동시 로그인 유지, 자기 outbox1개와 private 초안·개수 격리.
+- 다른 subject 로그인·다른 조직 초안 조회·잘못된 조직 승인 거부.
+- 명시적으로 게시한 개정은 다른 조직에서도 열람, 사람 승인·활성 뒤 provided, 철회 뒤 withheld.
+- 한 조직 프로세스 종료→version2 scoped 백업→새 폴더 복원→새 프로세스 로그인·초안/철회 상태 확인.
+  그동안 다른 조직 세션 유지, 다른 조직과 unscoped 모드로 복원 폴더를 여는 요청 거부.
+
+기존3조직 통합 모드의 `auth:smoke`도 재검증했다. 근거는
+`.data/auth-smoke-rsdSdP/auth-evidence.json`이며 게시/승인은 VALID block128/130이었다.
+권한 회수·미제출 취소·signer 장애 복구·version1 백업/복원 흐름을 유지했다.
+
+웹 디자인은 사용자 요청에 따라 화면 코드3개만 정리해 실제 Claude Sonnet5와 논의했다.
+제안과 소스 대조, 전달 범위는 [검토 기록](18-DESIGN-REVIEW.md)에 남겼다.
+`DESIGN.md`는 필수 heading·placeholder 검사와 문서 링크 검사를 통과했다.
+
+브라우저에서 HTTP202 응답을 주입해 pending 안내가6.5초 뒤 사라지는 동작을 재현하고,
+수정 후6.8초에도 유지됨을 확인했다. 새 게시본은 “공유 게시됨·합의 전”, 기존 제안은 “합의 검토 중”,
+활성 문서는 “합의 활성”으로 구별했다. 390/1440px에서 가로 넘침은 없었다.
+이는 상태 동작 검증이며 전체 디자인 재구성이나 스크린샷 비교 완료가 아니다.
+
+현재4319 통합 앱과4321/4331/4341 조직 앱을 최신 소스로 실행하고 healthz200·block144를 확인했다.
+세 peer·Raft orderer와 앱들은 같은 로컬 환경이다. 실제 회사 인증·독립 기관/OS/host·HSM/KMS,
+운영 재해 복구·성능 SLA를 검증한 것으로 확대하지 않는다.
+
 ## 비공개 초안 재개와 런타임 백업·복원 — 2026-09-16 02:30 KST
 
 `npm run check`: **140 passed / 0 failed / 0 skipped**, `npm run check:types`와

@@ -90,3 +90,17 @@ test('OIDC binding removal and missing authorization context fail closed', { ski
   await f.browser.login(f.origin, 'dev-sales-owner'); f.revokeBinding();
   assert.equal((await f.browser.request(`${f.origin}/session`)).status, 403);
 });
+
+test('two loopback applications keep independent browser sessions and logout boundaries', { skip: !available }, async t => {
+  const first = await fixture(t);
+  const second = await fixture(t);
+  const browser = new OidcTestBrowser([first.origin, first.issuer.issuer, second.origin, second.issuer.issuer]);
+  assert.equal((await browser.login(first.origin, 'dev-sales-owner')).status, 200);
+  assert.equal((await browser.login(second.origin, 'dev-sales-owner')).status, 200);
+  const response = await browser.request(`${first.origin}/session`);
+  assert.equal(response.status, 200);
+  const session = await response.json();
+  assert.equal((await browser.request(`${first.origin}/auth/logout`, { method: 'POST', headers: { Origin: first.origin, 'X-KCL-CSRF': session.csrf } })).status, 204);
+  assert.equal((await browser.request(`${first.origin}/session`)).status, 401);
+  assert.equal((await browser.request(`${second.origin}/session`)).status, 200);
+});

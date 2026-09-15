@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { PERSONAS, actorIdentity, demoFixtures } from './demo-config.ts';
+import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
+import type { DevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
+import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
 import { connectOfficialFabricGateway, FabricGatewayTransport } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
@@ -14,11 +17,14 @@ import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 
 export interface FabricTestRuntimeOptions {
+  organization?: DevelopmentOrganization;
   signerProvider?: (actor: Actor, certificate: Uint8Array) => (digest: Uint8Array) => Promise<Uint8Array>;
   authorizeActor?: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
 }
 
 export async function createFabricTestRuntime(dataDir: string, options: FabricTestRuntimeOptions = {}) {
+  const organization = options.organization === undefined ? undefined : getDevelopmentOrganization(options.organization);
+  ensureRuntimeScope(dataDir, organization);
   const require = createRequire(new URL('../../packages/fabric/package.json', import.meta.url));
   const grpc = require('@grpc/grpc-js');
   const sdk = require('@hyperledger/fabric-gateway');
@@ -29,9 +35,12 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
   const gateways: any[] = [];
   let projection: SqliteFabricProjection | undefined;
   try {
-    for (const [index, name] of ['sales', 'fulfillment', 'settlement'].entries()) {
-      const actor = actorIdentity(PERSONAS[index]);
-      const domain = `${name}.kcl.test`;
+    const selectedOrganizations = organization ? [organization] : DEVELOPMENT_ORGANIZATIONS;
+    for (const selected of selectedOrganizations) {
+      const persona = PERSONAS.find(candidate => candidate.actor_id === selected.key_id && candidate.org_id === selected.org_id && candidate.kind === 'human');
+      if (!persona) throw new Error('Development organization has no human signing persona');
+      const actor = actorIdentity(persona);
+      const domain = `${selected.domain}.kcl.test`;
       const base = join(cryptoRoot, domain);
       const msp = join(base, 'users', `User1@${domain}`, 'msp');
       const certificate = readFileSync(join(msp, 'signcerts', `User1@${domain}-cert.pem`));
@@ -48,7 +57,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       }
       const identity = new ClientIdentity({ getCreator: () => ({ mspid: actor.org_id, idBytes: certificate }), getChannelID: () => 'kcl-demo', getTxID: () => 'identity-validation' });
       if (identity.getAttributeValue('kcl.actor_id') !== actor.actor_id || identity.getAttributeValue('kcl.actor_kind') !== actor.kind) throw new Error('Test certificate attributes do not match the signing route');
-      const rpc = new grpc.Client(`127.0.0.1:${17051 + index * 1000}`, grpc.credentials.createSsl(readFileSync(join(base, 'peers', `peer0.${domain}`, 'tls/ca.crt'))), {
+      const rpc = new grpc.Client(`127.0.0.1:${selected.peer_port}`, grpc.credentials.createSsl(readFileSync(join(base, 'peers', `peer0.${domain}`, 'tls/ca.crt'))), {
         'grpc.ssl_target_name_override': `peer0.${domain}`, 'grpc.default_authority': `peer0.${domain}`,
       });
       let client: Awaited<ReturnType<typeof connectOfficialFabricGateway>> | undefined;
@@ -64,7 +73,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
-    const qscc = gateways[1].getNetwork('kcl-demo').getContract('qscc');
+    const qscc = (gateways[1] ?? gateways[0]).getNetwork('kcl-demo').getContract('qscc');
     const ledger = new FabricApplicationLedger({ projection, routes, source: {
       async getTip() {
         const bytes = await qscc.evaluateTransaction('GetChainInfo', 'kcl-demo');
@@ -74,7 +83,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       getBlock: number => qscc.evaluateTransaction('GetBlockByNumber', 'kcl-demo', String(number)),
     } });
     await ledger.recoverPending();
-    return { ledger, personas: PERSONAS.filter(persona => persona.kind === 'human') };
+    return { ledger, personas: PERSONAS.filter(persona => persona.kind === 'human' && (!organization || persona.org_id === organization.org_id)), ...(organization ? { organization } : {}) };
   } catch (error) {
     for (const route of routes) await route.close?.();
     projection?.close();

@@ -25,9 +25,12 @@ npm run start:login -- --data .data/login-restored-20260916
 | --- | --- |
 | 로컬 시뮬레이션 | `shared-ledger.sqlite`, `private-local.sqlite` |
 | Fabric 테스트/개발 로그인 | `fabric-projection.sqlite`, `private-local.sqlite`, Sales·Fulfillment·Settlement의 세 actor outbox DB |
+| 조직별 Fabric 개발 로그인 | `fabric-projection.sqlite`, `private-local.sqlite`, 해당 actor outbox, `runtime-scope.json` |
 
 정확한 프로필의 DB 파일이 모두 있어야 한다. 빠진 파일·섞인 프로필·알 수 없는 SQLite 파일은
 거부한다. 인증서·개인키·환경 파일·브라우저 세션은 읽거나 복사하지 않는다.
+조직 프로필은 version2 manifest의 organization과 scope 파일을 함께 검증한다. 기존 두 프로필의
+version1 백업은 그대로 지원한다. 자세한 실행 경계는 [조직별 앱 가이드](17-ORGANIZATION-RUNTIME.md)를 참조한다.
 DB 안에는 비공개 본문과 실행 기록이 들어 있으므로 백업 폴더도 해당 데이터의 비공개 경계를 유지한다.
 새 폴더는0700, 파일은0600으로 만든다. 암호화된 원격 백업 서비스는 별도 운영 구성이다.
 

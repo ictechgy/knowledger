@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as oidc from 'openid-client';
 import type { Actor } from '../storage/local-ledger.ts';
@@ -42,6 +42,7 @@ export class OidcAuthentication implements ApplicationAuthentication {
   private readonly issuer: string;
   private readonly redirectUri: string;
   private readonly secure: boolean;
+  private readonly cookieNamespace: string;
   private readonly flows = new Map<string, LoginFlow>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly context = new AsyncLocalStorage<string>();
@@ -54,6 +55,7 @@ export class OidcAuthentication implements ApplicationAuthentication {
     this.redirectUri = new URL(options.redirectUri).href;
     this.origin = new URL(options.redirectUri).origin;
     this.secure = this.origin.startsWith('https:');
+    this.cookieNamespace = createHash('sha256').update(this.origin).digest('hex').slice(0, 16);
     this.mode = options.development ? 'oidc-development' : 'oidc';
     this.now = options.now ?? Date.now;
   }
@@ -80,8 +82,8 @@ export class OidcAuthentication implements ApplicationAuthentication {
   private cookieValue(name: string, value: string, maxAge: number, path = '/'): string {
     return `${name}=${value}; HttpOnly; SameSite=Lax; Path=${path}; Max-Age=${maxAge}${this.secure ? '; Secure' : ''}`;
   }
-  private sessionCookie() { return this.secure ? '__Host-kcl_oidc_session' : 'kcl_oidc_session'; }
-  private flowCookie() { return this.secure ? '__Host-kcl_oidc_flow' : 'kcl_oidc_flow'; }
+  private sessionCookie() { return `${this.secure ? '__Host-' : ''}kcl_oidc_session_${this.cookieNamespace}`; }
+  private flowCookie() { return `${this.secure ? '__Host-' : ''}kcl_oidc_flow_${this.cookieNamespace}`; }
   private cleanup() {
     for (const [id, value] of this.flows) if (value.expires <= this.now()) this.flows.delete(id);
     for (const [id, value] of this.sessions) if (value.expires <= this.now()) this.sessions.delete(id);

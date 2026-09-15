@@ -13,6 +13,7 @@
     "start:fabric": "node apps/api/main.ts --ledger fabric-test-network --port 4318",
     "start:login": "node tools/development-auth.ts",
     "auth:smoke": "node tools/auth-smoke.ts",
+    "organization:smoke": "node tools/organization-smoke.ts",
     "data:backup": "node tools/runtime-snapshot.ts backup",
     "data:restore": "node tools/runtime-snapshot.ts restore",
     "dev": "node --watch apps/api/main.ts",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
-import { createRequire } from "node:module";
+import { generateKeyPairSync, X509Certificate } from "node:crypto";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import fs from 'node:fs';
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { createRemoteSigner, RemoteSignerError } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService } from "../../infra/fabric/signing-service.ts";
+import type { DevelopmentSigningKeyId } from '../../packages/fabric/remote-signer.ts';
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
 let sdkAvailable = true;
@@ -160,4 +162,48 @@ test('signing service bounds idle connections and closes partial frames', async 
       sockets[0].once('close', () => { clearTimeout(timer); resolve(); });
     });
   } finally { for (const socket of sockets) socket.destroy(); await service.close(); }
+});
+
+test('scoped signer reads only the selected organization identity and refuses every other key', async t => {
+  const certificatePath = join(process.cwd(), '.data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem');
+  if (!sdkAvailable || !existsSync(certificatePath)) { t.skip('Fabric SDK and disposable identities are required'); return; }
+  const originalRead = fs.readFileSync;
+  const accessed: string[] = [];
+  t.mock.method(fs, 'readFileSync', (path: any, ...args: any[]) => {
+    if (String(path).includes('/crypto/')) {
+      assert.ok(String(path).includes('/sales.kcl.test/'), 'unselected identity must not be read');
+      accessed.push(String(path));
+    }
+    return (originalRead as any)(path, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const keyIds: DevelopmentSigningKeyId[] = ['person-sales-owner'];
+  const directory = mkdtempSync('/tmp/kcl-scoped-signer-');
+  const service = await startDevelopmentSigningService({ socketPath: join(directory, 'sign.sock'), keyIds });
+  try {
+    keyIds.push('person-settlement-owner');
+    const certificate = originalRead(certificatePath);
+    const digest = Buffer.alloc(32, 11);
+    const signature = await createRemoteSigner({ socketPath: service.socketPath, keyId: 'person-sales-owner', certificate })(digest);
+    const publicJwk = new X509Certificate(certificate).publicKey.export({ format: 'jwk' });
+    const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, 'base64url'), Buffer.from(publicJwk.y!, 'base64url')]);
+    const { p256 } = requireFabric('@noble/curves/nist.js');
+    assert.equal(p256.verify(signature, digest, rawPublicKey, { format: 'der', prehash: false }), true);
+    for (const keyId of ['person-settlement-owner', 'person-fulfillment-owner'] as const) {
+      await assert.rejects(createRemoteSigner({ socketPath: service.socketPath, keyId, certificate })(digest),
+        (error: unknown) => error instanceof RemoteSignerError && error.code === 'unknown_key');
+    }
+    assert.ok(accessed.length >= 2);
+  } finally { await service.close(); }
+});
+
+test('signer rejects empty, duplicate and unknown key allowlists before opening the service', async () => {
+  const directory = mkdtempSync('/tmp/kcl-invalid-signer-');
+  for (const keyIds of [[], ['person-sales-owner', 'person-sales-owner'], ['unknown-key'], null]) {
+    await assert.rejects(async () => {
+      const service = await startDevelopmentSigningService({ socketPath: join(directory, 'sign.sock'), keyIds } as any);
+      await service.close();
+    }, (error: unknown) => error instanceof TypeError);
+  }
 });

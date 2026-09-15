@@ -49,7 +49,7 @@ function showStatus(message, tone = 'success') {
   node.dataset.tone = tone;
   node.hidden = false;
   window.clearTimeout(showStatus.timer);
-  if (tone !== 'error') showStatus.timer = window.setTimeout(() => { node.hidden = true; }, 6500);
+  if (tone !== 'error' && tone !== 'pending') showStatus.timer = window.setTimeout(() => { node.hidden = true; }, 6500);
 }
 
 function clearStatus() { const node = el('global-status'); if (node) node.hidden = true; }
@@ -302,7 +302,8 @@ function renderDocumentList(documents) {
     const title = document.createElement('span'); title.className = 'document-card-title'; title.textContent = payload.title || '제목 없는 문서';
     const meta = document.createElement('span'); meta.className = 'document-card-meta';
     const context = document.createElement('span'); context.className = 'document-card-context'; context.textContent = contextLabel(payload.context_id);
-    const status = document.createElement('span'); status.className = `status-chip ${doc.eligible ? 'state-chip-active' : 'state-chip-neutral'}`; status.textContent = doc.eligible ? '사용 가능' : '검토 필요';
+    const presentation = statusForDocument(doc);
+    const status = document.createElement('span'); status.className = `status-chip ${presentation.className}`; status.textContent = presentation.label;
     meta.append(context, status); button.append(title, meta); list.append(button);
     button.addEventListener('click', () => { state.selectedDocumentKey = key; renderOverview(); el('document-title')?.focus?.(); });
   });
@@ -315,10 +316,13 @@ function contextLabel(contextId) {
 
 function statusForDocument(doc) {
   if (!doc) return { label: '문서 선택 필요', className: 'state-chip-neutral' };
-  if (doc.eligible && doc.agreement?.status === 'active') return { label: '활성 · 사용 가능', className: 'state-chip-active' };
+  if (doc.eligible && doc.agreement?.status === 'active') return { label: '합의 활성', className: 'state-chip-active' };
   if (doc.agreement?.status === 'suspended') return { label: '정지됨', className: 'state-chip-blocked' };
   if (doc.agreement?.status === 'withdrawn') return { label: '철회됨', className: 'state-chip-blocked' };
-  return { label: '합의 검토 필요', className: 'state-chip-review' };
+  if (doc.agreement?.status === 'superseded') return { label: '대체됨', className: 'state-chip-neutral' };
+  if (doc.agreement?.status === 'active') return { label: '합의 활성 · 현재 사용 보류', className: 'state-chip-withheld' };
+  const proposed = (state.overview?.proposals || []).some(proposal => proposal.revision_digest === doc.revision_digest);
+  return proposed ? { label: '합의 검토 중', className: 'state-chip-review' } : { label: '공유 게시됨 · 합의 전', className: 'state-chip-neutral' };
 }
 
 function reasonLabel(reason) {
