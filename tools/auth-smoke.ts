@@ -12,6 +12,8 @@ import { startDevelopmentIssuer } from '../packages/auth/development-issuer.ts';
 import { OidcAuthentication } from '../packages/auth/oidc.ts';
 import { createApp } from '../apps/api/server.ts';
 import { createFabricTestRuntime } from '../apps/api/fabric-test-runtime.ts';
+import { createDevelopmentAuthRuntime } from '../apps/api/development-auth-runtime.ts';
+import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
 import { PERSONAS, actorIdentity } from '../apps/api/demo-config.ts';
 import { createRemoteSigner, DEVELOPMENT_SIGNING_KEY_IDS } from '../packages/fabric/remote-signer.ts';
 import { OidcTestBrowser } from './oidc-test-browser.ts';
@@ -87,6 +89,12 @@ try {
     }
     throw new Error('Command stayed pending');
   }
+  async function get(path: string, expected = 200): Promise<any> {
+    const response = await browser.request(`${origin}/v1/workspaces/demo${path}`);
+    const value = await response.json();
+    assert.equal(response.status, expected, `${path}: ${value.code ?? value.status}`);
+    return value;
+  }
   assert.equal((await browser.request(`${origin}/v1/workspaces/demo/overview`)).status, 401);
   const initialSession = await (await browser.request(`${origin}/api/session`)).json(); assert.equal(initialSession.actor, null);
   phase = 'login and publication';
@@ -101,12 +109,25 @@ try {
   const importInput = { import_id: `markdown-${runId}`, filename: importFilename, content_base64: Buffer.from(importedBody).toString('base64'), base_revision_digest: base.revision_digest, title: `OIDC 승인 검증 ${runId}` };
   phase = 'Markdown import';
   await runtime.ledger.refresh(); const beforeImport = runtime.ledger.checkpoint();
-  const draft = await post('/draft-imports/markdown', importInput);
-  assert.equal(draft.revision.payload.body_markdown, importedBody);
-  assert.deepEqual(await post('/draft-imports/markdown', importInput), draft);
+  const importedDraft = await post('/draft-imports/markdown', importInput);
+  assert.equal(importedDraft.revision.payload.body_markdown, importedBody);
+  assert.deepEqual(await post('/draft-imports/markdown', importInput), importedDraft);
   await runtime.ledger.refresh(); assert.deepEqual(runtime.ledger.checkpoint(), beforeImport);
-  await login('dev-fulfillment-owner'); await post('/publication-previews', { draft_id: draft.draft_id }, 404);
+  const firstList = await get('/drafts'); assert.equal(firstList.total, 1);
+  assert.equal(firstList.drafts[0].draft_id, importedDraft.draft_id);
+  assert.equal(JSON.stringify(firstList).includes(importFilename), false);
+  assert.deepEqual(await get(`/drafts/${importedDraft.draft_id}`), importedDraft);
+  await login('dev-fulfillment-owner'); await post('/publication-previews', { draft_id: importedDraft.draft_id }, 404);
+  assert.equal((await get('/drafts')).total, 0); await get(`/drafts/${importedDraft.draft_id}`, 404);
   await login('dev-sales-owner');
+  phase = 'private draft editing';
+  assert.deepEqual(await get(`/drafts/${importedDraft.draft_id}`), importedDraft);
+  const editInput = { edit_id: `edit-${runId}`, title: `다시 검토한 OIDC 문서 ${runId}`, body_markdown: `${importedBody}\r\n다시 연 초안의 검토 내용을 추가합니다.\r\n` };
+  const draft = await post(`/drafts/${importedDraft.draft_id}/edits`, editInput);
+  assert.deepEqual(await post(`/drafts/${importedDraft.draft_id}/edits`, editInput), draft);
+  assert.deepEqual(await get(`/drafts/${importedDraft.draft_id}`), importedDraft);
+  assert.equal(draft.revision.payload.document_id, importedDraft.revision.payload.document_id);
+  await runtime.ledger.refresh(); assert.deepEqual(runtime.ledger.checkpoint(), beforeImport);
   const preview = await post('/publication-previews', { draft_id: draft.draft_id });
   phase = 'Markdown publication';
   const publication = await post('/revisions', { preview_id: preview.preview_id, confirm_shared: true, command_id: `oidc-publish-${runId}` });
@@ -151,8 +172,29 @@ try {
   assert.equal((await post('/resolve', scope)).status, 'withheld');
   await post('/auth/logout', {}, 204);
   assert.equal((await browser.request(`${origin}/v1/workspaces/demo/overview`)).status, 401);
+  phase = 'offline backup and restore';
+  const beforeRestore = runtime.ledger.checkpoint();
+  await app.close(); app = undefined;
+  const snapshotDir = join(root, '.data', `auth-snapshot-${runId}`);
+  const restoredDir = join(root, '.data', `auth-restored-${runId}`);
+  const snapshot = createRuntimeSnapshot({ dataDir, snapshotDir });
+  const restored = restoreRuntimeSnapshot({ snapshotDir, dataDir: restoredDir });
+  assert.equal(snapshot.mode, 'fabric'); assert.equal(restored.mode, 'fabric');
+  const restoredRuntime = await createDevelopmentAuthRuntime({ dataDir: restoredDir, origin, issuer: issuer.issuer, socketPath });
+  app = await createApp({ dataDir: restoredDir, ...restoredRuntime });
+  await app.listen(Number(new URL(origin).port));
+  assert.deepEqual(restoredRuntime.ledger.checkpoint(), beforeRestore);
+  assert.equal((await (await browser.request(`${origin}/api/session`)).json()).actor, null);
+  await login('dev-sales-owner');
+  const restoredList = await get('/drafts'); assert.equal(restoredList.total, 2);
+  assert.deepEqual(await get(`/drafts/${importedDraft.draft_id}`), importedDraft);
+  assert.deepEqual(await get(`/drafts/${draft.draft_id}`), draft);
+  assert.deepEqual(await post(`/drafts/${importedDraft.draft_id}/edits`, editInput), draft);
+  assert.equal((await post('/resolve', scope)).status, 'withheld');
+  await post('/auth/logout', {}, 204);
+  console.log('Offline recovery: Fabric projection, private drafts, edit retries and withdrawal state restored');
   const evidence = { verified_at: new Date().toISOString(), mode: 'oidc-development-fabric', passed: true, publication_checkpoint: publication.checkpoint, approval_checkpoint: approval.checkpoint,
-    no_anonymous_actor: true, markdown_import_exact_bytes: true, markdown_import_idempotent: true, markdown_import_no_ledger_write: true, import_filename_private_after_publish: true, role_switch_rejected: true, disabled_account_rejected: true, changed_version_rejected: true, logout_prevented_submit: true, cancelled_outbox_terminal: true, separate_signer_failure_status: 503, signer_recovery: true, withdrawal_withheld: true };
+    no_anonymous_actor: true, markdown_import_exact_bytes: true, markdown_import_idempotent: true, markdown_import_no_ledger_write: true, import_filename_private_after_publish: true, private_draft_list_isolated: true, private_draft_reopened_and_edited: true, offline_snapshot_restored: true, restored_edit_idempotent: true, restored_withdrawal_withheld: true, snapshot_directory: snapshotDir, restored_directory: restoredDir, role_switch_rejected: true, disabled_account_rejected: true, changed_version_rejected: true, logout_prevented_submit: true, cancelled_outbox_terminal: true, separate_signer_failure_status: 503, signer_recovery: true, withdrawal_withheld: true };
   writeFileSync(join(dataDir, 'auth-evidence.json'), JSON.stringify(evidence, null, 2) + '\n', { mode: 0o600 });
   console.log(`OIDC acceptance passed. Evidence: ${join(dataDir, 'auth-evidence.json')}`);
 } catch {

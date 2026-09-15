@@ -4,7 +4,7 @@ import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { decodeMarkdownImport } from '../../packages/import/markdown.ts';
+import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { demoFixtures, BOOTSTRAP_ACTOR, PERSONAS, slotFields, actorIdentity } from './demo-config.ts';
 
 const P = 'kcl:v1:';
@@ -134,6 +134,51 @@ export class KclService {
     return revision;
   }
 
+  private buildResumedRevision(actor: Actor, base: any, title: string, bodyMarkdown: string, sourceKind: 'human_authored' | 'approved_import' | 'llm_drafted') {
+    const payload = structuredClone(base.payload);
+    Object.assign(payload, {
+      revision_id: newId('rev'), title, body_markdown: bodyMarkdown,
+      metadata: { ...payload.metadata, author_id: actor.actor_id, author_org_id: actor.org_id, created_at: new Date().toISOString(), source_kind: sourceKind },
+    });
+    const revision = { revision_digest: domain.digestPayload(payload), payload };
+    domain.validateRevision(revision);
+    return revision;
+  }
+
+  private readPrivateDraft(actor: Actor, draftId: string, storedOverride?: any): { stored: any; revision: any } {
+    let stored = storedOverride;
+    if (stored === undefined) {
+      try { stored = this.vault.get('draft', draftId, actor); }
+      catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
+    }
+    if (!stored) throw new ApiError('NOT_FOUND', '초안을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    try {
+      const revision = domain.validateRevision(stored.revision);
+      if (revision.payload.metadata.author_id !== actor.actor_id || revision.payload.metadata.author_org_id !== actor.org_id) throw new Error('author binding');
+      return { stored, revision };
+    } catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
+  }
+
+  private privateDraftMetadata(stored: any): { import?: any; source_draft_id?: string } {
+    const metadata: { import?: any; source_draft_id?: string } = {};
+    if (stored.import !== undefined) {
+      const value = stored.import;
+      try {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.kind !== 'local_markdown') throw new Error('invalid import');
+        validateMarkdownFilename(value.filename);
+        const body = stored.revision.payload.body_markdown;
+        if (!Number.isSafeInteger(value.byte_length) || value.byte_length < 1 || value.byte_length > MAX_MARKDOWN_BYTES || value.byte_length !== Buffer.byteLength(body)
+          || value.sha256 !== createHash('sha256').update(body, 'utf8').digest('hex')) throw new Error('import bytes mismatch');
+      } catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
+      metadata.import = { kind: value.kind, filename: value.filename, byte_length: value.byte_length, sha256: value.sha256 };
+    }
+    if (stored.source_draft_id !== undefined) {
+      try { metadata.source_draft_id = identifier(stored.source_draft_id); }
+      catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
+    }
+    return metadata;
+  }
+
   async overview(actor: Actor) {
     await this.refresh();
     this.actor(actor);
@@ -171,6 +216,61 @@ export class KclService {
     const draftId = newId('draft');
     this.vault.put('draft', draftId, actor, { revision });
     return { draft_id: draftId, revision };
+  }
+
+  async listDrafts(actor: Actor, limit: number, cursor?: string) {
+    await this.refresh();
+    this.actor(actor);
+    const result = this.vault.listDrafts(actor, limit, cursor);
+    if (result.total < 0) throw new ApiError('NOT_FOUND', '초안을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    if (result.corrupt) throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true);
+    return {
+      drafts: result.rows.map(row => ({ draft_id: row.record_id, title: row.title, revision_digest: row.revision_digest,
+        document_id: row.document_id, context_id: row.context_id, scope_id: row.scope_id, usage_scope: row.usage_scope, source_kind: row.source_kind, created_at: row.created_at })),
+      total: result.total, next_cursor: result.nextCursor,
+    };
+  }
+
+  async getDraft(actor: Actor, draftId: string) {
+    await this.refresh();
+    this.actor(actor);
+    identifier(draftId);
+    const { stored, revision } = this.readPrivateDraft(actor, draftId);
+    const response: any = { draft_id: draftId, revision };
+    Object.assign(response, this.privateDraftMetadata(stored));
+    return response;
+  }
+
+  async resumeDraft(actor: Actor, draftId: string, input: any) {
+    onlyFields(input, ['edit_id', 'title', 'body_markdown', 'source_kind']);
+    identifier(draftId);
+    identifier(input.edit_id);
+    if (typeof input.title !== 'string' || typeof input.body_markdown !== 'string') throw new ApiError('INVALID_INPUT', '초안 제목과 본문이 필요합니다.');
+    if (input.source_kind !== undefined && !['human_authored', 'approved_import', 'llm_drafted'].includes(input.source_kind)) throw new ApiError('INVALID_INPUT', '올바른 초안 source_kind가 필요합니다.');
+    const run = this.commandQueue.then(async () => {
+      await this.refresh();
+      this.actor(actor);
+      const source = this.readPrivateDraft(actor, draftId);
+      const base = source.revision;
+      const requestDigest = createHash('sha256').update(domain.canonicalize({ route: 'draft-edit', source_draft_id: draftId, input })).digest('hex');
+      const newDraftId = `draft-edit-${createHash('sha256').update(`${actor.org_id}:${actor.actor_id}:${input.edit_id}`).digest('hex').slice(0, 48)}`;
+      let existing: any;
+      try { existing = this.vault.get('draft', newDraftId, actor); }
+      catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
+      if (existing) {
+        if (existing.request_digest !== requestDigest || existing.source_draft_id !== draftId) throw new ApiError('IDEMPOTENCY_CONFLICT', '같은 edit_id로 다른 요청을 보낼 수 없습니다.', 409);
+        const existingRevision = this.readPrivateDraft(actor, newDraftId, existing).revision;
+        return { draft_id: newDraftId, revision: existingRevision, source_draft_id: draftId };
+      }
+      const sourceKind = input.source_kind ?? base.payload.metadata.source_kind;
+      let revision: any;
+      try { revision = this.buildResumedRevision(actor, base, input.title, input.body_markdown, sourceKind); }
+      catch { throw new ApiError('INVALID_INPUT', '초안 제목 또는 본문이 올바르지 않습니다.'); }
+      this.vault.put('draft', newDraftId, actor, { revision, source_draft_id: draftId, request_digest: requestDigest });
+      return { draft_id: newDraftId, revision, source_draft_id: draftId };
+    });
+    this.commandQueue = run.catch(() => undefined);
+    return run;
   }
 
   async importMarkdown(actor: Actor, input: any) {

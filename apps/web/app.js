@@ -9,6 +9,10 @@ const state = {
   draftBaseDigest: null,
   composerVersion: 0,
   markdownImportRequest: null,
+  draftSourceId: null,
+  draftEditRequest: null,
+  privateDrafts: { drafts: [], total: 0, next_cursor: null },
+  draftListVersion: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -70,7 +74,7 @@ async function request(path, options = {}) {
       state.session = null;
       state.overview = null;
       if (authMode) renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
-      else { state.selectedDocumentKey = null; resetComposer(); renderOverview(); }
+      else { state.selectedDocumentKey = null; resetComposer(); clearPrivateDrafts(); renderOverview(); }
     }
     const apiError = body && body.code ? `${body.code}: ${body.message || '요청이 거절되었습니다.'}` : `요청 실패 (${response.status})`;
     const error = new Error(apiError);
@@ -133,12 +137,95 @@ function renderAuthState(session) {
     state.overview = null;
     state.selectedDocumentKey = null;
     resetComposer();
+    clearPrivateDrafts();
     renderOverview();
     const result = el('resolver-result');
     if (result) { result.replaceChildren(); result.hidden = true; }
     el('resolver-form')?.reset();
     text(el('resolver-status'), '로그인 후 다시 조회해 주세요.');
     text(el('footer-actor'), '로그인 필요');
+  }
+}
+
+function clearPrivateDrafts() {
+  state.draftListVersion++;
+  state.privateDrafts = { drafts: [], total: 0, next_cursor: null };
+  el('private-draft-list').replaceChildren();
+  text(el('private-draft-count'), '—');
+  text(el('private-draft-status'), '');
+  el('more-drafts').hidden = true;
+  el('refresh-drafts').disabled = false;
+}
+
+function renderPrivateDrafts() {
+  const list = el('private-draft-list'); list.replaceChildren();
+  text(el('private-draft-count'), state.privateDrafts.total);
+  for (const draft of state.privateDrafts.drafts) {
+    const item = document.createElement('li');
+    const button = document.createElement('button'); button.type = 'button';
+    const title = document.createElement('strong'); title.textContent = draft.title;
+    const details = document.createElement('span');
+    const origin = draft.source_kind === 'approved_import' ? '가져온 문서' : draft.source_kind === 'llm_drafted' ? 'AI 초안' : '작성한 초안';
+    details.textContent = `${formatDate(draft.created_at)} · ${origin}`;
+    button.append(title, details); button.addEventListener('click', () => openSavedDraft(draft.draft_id));
+    item.append(button); list.append(item);
+  }
+  if (!state.privateDrafts.drafts.length) {
+    const item = document.createElement('li'); item.className = 'form-hint'; item.textContent = '저장한 비공개 초안이 없습니다.'; list.append(item);
+  }
+  el('more-drafts').hidden = !state.privateDrafts.next_cursor;
+}
+
+async function loadPrivateDrafts(append = false) {
+  if (!state.session?.actor) { clearPrivateDrafts(); return; }
+  const session = state.session; const version = ++state.draftListVersion;
+  const cursor = append ? state.privateDrafts.next_cursor : null;
+  text(el('private-draft-status'), '내 초안을 불러오는 중…');
+  el('refresh-drafts').disabled = true; el('more-drafts').disabled = true;
+  try {
+    const page = await request(`${apiBase}/drafts?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    if (version !== state.draftListVersion || session !== state.session) return;
+    const drafts = append ? [...state.privateDrafts.drafts, ...page.drafts] : page.drafts;
+    state.privateDrafts = { ...page, drafts: [...new Map(drafts.map(draft => [draft.draft_id, draft])).values()] };
+    renderPrivateDrafts(); text(el('private-draft-status'), '');
+  } catch (error) {
+    if (version === state.draftListVersion && session === state.session) text(el('private-draft-status'), `초안을 불러오지 못했습니다. ${error.message}`);
+  } finally {
+    if (version === state.draftListVersion) { el('refresh-drafts').disabled = false; el('more-drafts').disabled = false; }
+  }
+}
+
+function setDraftSlotReadOnly(readOnly) {
+  for (const id of ['draft-context', 'draft-scope', 'draft-usage']) el(id).readOnly = readOnly;
+}
+
+function enterSavedDraftMode(draft) {
+  state.draft = draft; state.draftSourceId = draft.draft_id;
+  setDraftSlotReadOnly(true); document.querySelector('.markdown-import').hidden = true;
+  text(el('composer-title'), '저장한 초안 검토');
+  text(el('save-draft'), '수정 내용을 새 초안으로 저장');
+  text(el('draft-origin'), draft.import ? `가져온 원본 파일: ${draft.import.filename}. 수정하면 원래 초안을 보존하고 새 초안으로 저장합니다.` : '수정하면 문서의 범위와 원래 초안을 보존하고 새 초안으로 저장합니다.');
+  el('draft-origin').hidden = false;
+  setDraftBusy(false);
+}
+
+async function openSavedDraft(id) {
+  resetComposer();
+  const version = state.composerVersion; const session = state.session;
+  text(el('private-draft-status'), '선택한 초안을 여는 중…');
+  try {
+    const draft = await request(`${apiBase}/drafts/${encodeURIComponent(id)}`);
+    if (version !== state.composerVersion || session !== state.session) return;
+    const payload = draft.revision.payload;
+    state.draftBaseDigest = payload.parents[0] ?? null;
+    for (const [field, input] of [['title', 'draft-title'], ['body_markdown', 'draft-body'], ['context_id', 'draft-context'], ['scope_id', 'draft-scope'], ['usage_scope', 'draft-usage']]) setValue(el(input), payload[field]);
+    setValue(el('draft-source-kind'), payload.metadata.source_kind);
+    enterSavedDraftMode(draft);
+    text(el('draft-status'), '저장한 초안입니다. 그대로 공유 검토하거나 수정 후 새 초안으로 저장하세요.');
+    text(el('private-draft-status'), '');
+    renderPreviewStep(draft); el('composer-panel').hidden = false; el('draft-title').focus();
+  } catch (error) {
+    if (version === state.composerVersion && session === state.session) text(el('private-draft-status'), `초안을 열지 못했습니다. ${error.message}`);
   }
 }
 
@@ -394,16 +481,24 @@ async function onDraftSubmit(event) {
   const base = state.draftBaseDigest ? (state.overview?.documents || []).find((doc) => doc.revision_digest === state.draftBaseDigest) : null;
   if (base?.payload) { payload.base_revision_digest = base.revision_digest; payload.document_id = base.payload.document_id; }
   try {
-    const draft = await request(`${apiBase}/drafts`, { method: 'POST', body: jsonBody(payload) });
+    let path = `${apiBase}/drafts`; let input = payload;
+    if (state.draftSourceId) {
+      path += `/${encodeURIComponent(state.draftSourceId)}/edits`;
+      input = { title: payload.title, body_markdown: payload.body_markdown, source_kind: payload.source_kind };
+      const fingerprint = JSON.stringify({ source: state.draftSourceId, input });
+      if (state.draftEditRequest?.fingerprint !== fingerprint) state.draftEditRequest = { fingerprint, editId: nowCommand() };
+      input.edit_id = state.draftEditRequest.editId;
+    }
+    const draft = await request(path, { method: 'POST', body: jsonBody(input) });
     if (version !== state.composerVersion || session !== state.session) return;
-    state.draft = draft; text(el('draft-status'), 'private draft가 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('private draft가 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft);
+    enterSavedDraftMode(draft); text(el('draft-status'), 'private draft가 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('private draft가 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft); void loadPrivateDrafts();
   } catch (error) {
     if (version === state.composerVersion && session === state.session) { text(el('draft-status'), error.message); showStatus(`draft 저장 실패: ${error.message}`, 'error'); }
   } finally { if (version === state.composerVersion) setDraftBusy(false); }
 }
 
 function setDraftBusy(busy) {
-  el('save-draft').disabled = busy;
+  el('save-draft').disabled = busy || Boolean(state.draft);
   el('import-markdown').disabled = busy;
 }
 
@@ -411,6 +506,7 @@ function invalidateDraftPreview() {
   state.composerVersion++;
   state.draft = null;
   state.markdownImportRequest = null;
+  state.draftEditRequest = null;
   const preview = el('preview-section'); preview.replaceChildren(); preview.hidden = true;
   setDraftBusy(false);
 }
@@ -436,12 +532,13 @@ async function importMarkdown() {
     if (state.markdownImportRequest?.fingerprint !== fingerprint) state.markdownImportRequest = { fingerprint, importId: nowCommand() };
     const draft = await request(`${apiBase}/draft-imports/markdown`, { method: 'POST', body: jsonBody({ ...payload, import_id: state.markdownImportRequest.importId }) });
     if (version !== state.composerVersion || session !== state.session) return;
-    state.draft = draft;
+    enterSavedDraftMode(draft);
     setValue(el('draft-body'), draft.revision.payload.body_markdown);
     setValue(el('draft-source-kind'), 'approved_import');
     text(el('draft-status'), `${draft.import.byte_length.toLocaleString()} bytes를 비공개 초안으로 저장했습니다. 원문을 확인한 뒤 공유 미리보기를 생성하세요.`);
     showStatus('파일을 비공개 초안으로 가져왔습니다. 공유 게시와 합의 승인은 별도 단계입니다.', 'success');
     renderPreviewStep(draft); el('draft-body').focus();
+    void loadPrivateDrafts();
   } catch (error) {
     if (version === state.composerVersion && session === state.session) { text(el('draft-status'), error.message); showStatus(`Markdown 가져오기 실패: ${error.message}`, 'error'); }
   } finally { if (version === state.composerVersion) setDraftBusy(false); }
@@ -513,12 +610,17 @@ function renderResolverResult(response) {
 
 async function switchPersona(event) {
   const actorId = event.target.value; if (!actorId || actorId === state.session?.actor?.actor_id) return; event.target.disabled = true;
-  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ actor_id: actorId }) }); state.session = session; resetComposer(); showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; }
+  resetComposer(); clearPrivateDrafts();
+  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ actor_id: actorId }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); }
 }
 
 function resetComposer() {
   invalidateDraftPreview();
   state.draft = null; state.draftBaseDigest = null;
+  state.draftSourceId = null;
+  setDraftSlotReadOnly(false); document.querySelector('.markdown-import').hidden = false;
+  text(el('composer-title'), '새 개정본 작성'); text(el('save-draft'), 'private draft 저장');
+  text(el('draft-origin'), ''); el('draft-origin').hidden = true;
   const form = el('draft-form'); form?.reset();
   const preview = el('preview-section'); if (preview) { preview.replaceChildren(); preview.hidden = true; }
   text(el('draft-status'), '저장 전에는 공용 원장에 기록되지 않습니다.');
@@ -526,7 +628,7 @@ function resetComposer() {
 }
 
 function openComposer(mode, doc = null) {
-  invalidateDraftPreview();
+  resetComposer();
   state.draft = null; state.draftBaseDigest = mode === 'revise' ? doc?.revision_digest || null : null;
   const form = el('draft-form'); form?.reset();
   if (mode === 'revise' && doc?.payload) {
@@ -543,6 +645,8 @@ function openComposer(mode, doc = null) {
 
 function bindEvents() {
   el('refresh-overview').addEventListener('click', async () => { clearStatus(); try { await loadOverview(); showStatus('원장 체크포인트에서 최신 상태를 읽었습니다.', 'success'); } catch (error) { showStatus(error.message, 'error'); } });
+  el('refresh-drafts').addEventListener('click', () => loadPrivateDrafts());
+  el('more-drafts').addEventListener('click', () => loadPrivateDrafts(true));
   el('persona-select').addEventListener('change', switchPersona);
   el('logout-button')?.addEventListener('click', async () => {
     try {
@@ -574,6 +678,7 @@ async function init() {
     await loadSession();
     if (state.session?.auth_mode && !state.session.actor) return;
     await loadOverview({ preserveSelection: false });
+    await loadPrivateDrafts();
   } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
 }
 

@@ -180,6 +180,8 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
+        let draftMatch = /^\/v1\/workspaces\/demo\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(path);
+        if (draftMatch) { respond(await run(() => service.resumeDraft(actor, draftMatch![1], input))); return; }
         let match = /^\/v1\/workspaces\/demo\/agreement-proposals\/([A-Za-z0-9._:-]+)\/(decisions|activate)$/.exec(path);
         if (match) { respond(await run(() => match![2] === 'decisions' ? service.decide(actor, match![1], input) : service.activate(actor, match![1], input))); return; }
         match = /^\/v1\/workspaces\/demo\/agreements\/([A-Za-z0-9._:-]+)\/(withdraw|suspend)$/.exec(path);
@@ -188,6 +190,22 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if (path === '/v1/workspaces/demo/drafts') {
+          const allowed = new Set(['limit', 'cursor']);
+          const seen = new Set<string>();
+          for (const [key] of url.searchParams) {
+            if (!allowed.has(key) || seen.has(key)) throw new ApiError('INVALID_QUERY', '올바른 초안 목록 조회 조건이 필요합니다.');
+            seen.add(key);
+          }
+          const rawLimit = url.searchParams.get('limit');
+          const limit = rawLimit === null ? 20 : /^\d+$/.test(rawLimit) ? Number(rawLimit) : NaN;
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new ApiError('INVALID_QUERY', '초안 목록 limit은 1에서 50 사이여야 합니다.');
+          const cursor = url.searchParams.get('cursor') ?? undefined;
+          if (cursor !== undefined && !/^[A-Za-z][A-Za-z0-9._:-]{2,63}$/.test(cursor)) throw new ApiError('INVALID_QUERY', '올바른 초안 cursor가 필요합니다.');
+          json(res, 200, await run(() => service.listDrafts(actor, limit, cursor))); return;
+        }
+        const draftDetail = /^\/v1\/workspaces\/demo\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})$/.exec(path);
+        if (draftDetail) { json(res, 200, await run(() => service.getDraft(actor, draftDetail[1]))); return; }
         if (path === '/v1/workspaces/demo/overview') { json(res, 200, await run(() => service.overview(actor))); return; }
         if (path === '/v1/workspaces/demo/events') {
           const cursor = Number(url.searchParams.get('cursor') ?? 0);

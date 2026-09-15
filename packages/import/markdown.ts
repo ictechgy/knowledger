@@ -42,7 +42,7 @@ function decodeCanonicalBase64(value: unknown): Buffer {
   return bytes;
 }
 
-function validateFilename(value: unknown): string {
+export function validateMarkdownFilename(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_FILENAME_BYTES || value.includes('/') || value.includes('\\') || /[\u0000-\u001F\u007F-\u009F]/u.test(value) || !/\.(?:md|markdown)$/iu.test(value)) {
     invalid('파일명은 경로가 아닌 .md 또는 .markdown 파일이어야 합니다.');
   }
@@ -50,7 +50,7 @@ function validateFilename(value: unknown): string {
 }
 
 export function decodeMarkdownImport(filename: unknown, contentBase64: unknown): DecodedMarkdownImport {
-  const safeFilename = validateFilename(filename);
+  const safeFilename = validateMarkdownFilename(filename);
   const bytes = decodeCanonicalBase64(contentBase64);
   let content: string;
   try {

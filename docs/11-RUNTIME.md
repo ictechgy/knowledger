@@ -40,6 +40,9 @@ Markdown 본문은 문서 유형에 종속되지 않는다. 기존 KB나 LLM 위
 저장한다. 최대 256 KiB의 UTF-8 원문을 보존하며, 파일명·가져오기 기록은 공용 원장에 넣지 않는다.
 공개 검토와 사람의 합의 승인은 기존 절차로 진행한다.
 
+[내 비공개 초안](15-PRIVATE-DRAFTS.md)에서 저장된 문서를 다시 열고 원본을 보존하면서
+수정본을 만들 수 있다. 앱을 종료한 상태의 [DB 백업·복원](16-RUNTIME-BACKUP.md)도 지원한다.
+
 v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받는다. 합의와 전이 의존성을 검사하고 실제 반환한 문서만 manifest에 적는다. `query`는 공용 fence 거래에 기록하지 않는다. 의존 문서의 본문은 자동으로 반환하지 않는다. 필요한 추가 지식은 별도로 범위를 지정해 해석해야 한다.
 
 초기 검색은 권한이 있는 공유 문서의 문자열 검색이다. embedding/vector DB, 원격 KB 동기화, 외부 모델 호출, 임의 도구 실행은 아직 연결하지 않았다. 화면에는 Markdown 원문을 안전한 텍스트로 표시한다.
@@ -54,6 +57,8 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | `POST /api/session` | 데모 역할 전환; OIDC 로그인 모드에서는 403 |
 | `GET /overview` | 공유 개정·합의·제안·역할 정책·체크포인트 |
 | `POST /drafts` | actor별 로컬 비공개 초안 |
+| `GET /drafts`, `GET /drafts/{id}` | 본인 초안의 페이지 목록·개수·원문 조회 |
+| `POST /drafts/{id}/edits` | 범위·의존성과 원본을 보존하는 새 수정본; edit_id 재시도 보존 |
 | `POST /draft-imports/markdown` | UTF-8 파일 → actor별 비공개 초안; import_id 재시도 보존 |
 | `POST /publication-previews` | 본문 digest·현재 config·조직·5분 만료에 묶인 공개 검토 |
 | `POST /revisions` | `confirm_shared: true`로 검토한 개정 게시 |
@@ -76,7 +81,7 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | 영역 | 구현 | 아직 검증·연결이 필요한 부분 |
 |---|---|---|
 | 불변 본문/합의 | 공유 TS 도메인 엔진, 엄격 입력 검증, 전체 본문 해시, 최신 대표 승인, CAS, 철회 | 실제 기관의 역할·공개 정책 확정 |
-| 로컬 보존 | SQLite 원자적 명령, 전체 write-set 이력, 시점별 projection 재구축 | 독립 조직 운영·외부 백업·복구 목표 |
+| 로컬 보존 | SQLite 원자적 명령, 전체 이력·projection 재구축, 비공개 초안 재개, 앱 종료 후 DB 백업·복원 | 독립 조직 운영·외부 백업·전체 인프라 복구 목표 |
 | Fabric | 같은 엔진의 shim/Gateway, 실제 로컬 3 peer·3 Raft orderer 배포, VALID commit·MVCC INVALID·outbox 복구 검증 | 독립 조직/호스트·운영 인증·네트워크 partition 시험 |
 | resolver | 정확한 fence 거래 시점, 영속 Fabric projection·재시작, 실제 HTTP 승인·철회·peer 단절 후 fail-closed 검증 | 큰 원장 catch-up 성능, 운영 보관/백업 정책 |
 | 인증/기밀 | loopback·출처/CSRF, actor별 초안·manifest, 개발 OIDC·subject 바인딩·권한 회수, 별도 서명 프로세스 | 실제 회사 SSO·계정 저장, 조직별 권한·KMS·vault 격리 |

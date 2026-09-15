@@ -1,5 +1,48 @@
 # 검증 기록
 
+## 비공개 초안 재개와 런타임 백업·복원 — 2026-09-16 02:30 KST
+
+`npm run check`: **140 passed / 0 failed / 0 skipped**, `npm run check:types`와
+`npm run demo` 통과. 외부 패키지·runtime 데이터가 없는 별도 source copy의 `npm test`도
+**107 passed / 0 failed / 33 optional skipped**로 통과했다.
+
+초안 API 검사 10개는 본인 목록·본문·개수, 타 actor와 cursor의404, 익명401·CSRF403,
+수동/가져온/공유 개정 기반 초안의 재개, 원본·slot·dependency·parent 보존,
+동시 수정·재시작 후 같은 edit_id 결과, 변경된 요청409를 확인한다. 새로 저장한 초안에
+private 출처나 원본 파일 hash를 공유 metadata로 복사하지 않는다.
+저장된 revision의 digest·author 바인딩을 검증하고 손상된 상세/목록은503으로 보류한다.
+
+동일 timestamp와 페이지 사이 insert를 검사했다. malformed JSON의 정렬 값이 null이어도
+cursor 뒤에서 조용히 누락되지 않는다. 긴255-byte 파일명·대문자 `.MARKDOWN`을
+가져온 뒤 재조회가503으로 실패하던 검증 불일치는 실패 테스트 후 공통 파일명 검증기로 수정했다.
+목록은 body를 JS로 올리지 않고 SQLite JSON projection으로 필요한 요약만 읽는다.
+실제 페이지 조회의 `EXPLAIN QUERY PLAN`은 `private_draft_actor_order`를 사용했고
+추가 임시 정렬은 없었다. startup마다 index를 삭제·재생성하지 않는다.
+
+백업 검사 13개는 local/Fabric 파일 프로필, 읽기 전용 SQLite 무결성, 원본 hash·stat 보존,
+WAL/SHM/journal·손상 manifest·hash 변조·잘못된 파일·symlink·실제 중첩 경로 거부를 확인한다.
+단순히 순서대로 호출하지 않고 **별도 Node 프로세스 두 개**를 동시에 시작해 한 백업만
+대상을 확보하는지 확인했다. 첫 DB 복사 직후 원본 DB 변경과 두 번째 복사 전 실패를 주입했고,
+잘못된 출력이나 소유 staging 잔여물을 남기지 않았다. CLI 상대경로 backup/restore도 통과했다.
+복원은 새 디렉터리에만 수행하고 파일0600·디렉터리0700을 유지한다. 파일·디렉터리를 flush한다.
+
+격리 브라우저에서 저장→새로고침→키보드로 다시 열기→수정본 저장→원본 재조회,
+계정 전환 후 제목·개수·본문 제거를 확인했다. 이전 계정의 목록 응답을 지연시킨 뒤 계정을
+바꿔도 늦은 응답이 목록을 복구하지 않았다. 390/1440px에서 가로 넘침이 없었다.
+근거는 `.artifacts/private-drafts/ui-evidence.json`이며 브라우저/별도4321 서버는 종료했다.
+스크린샷 검증은 하지 않았다.
+
+실제 OIDC·서명·Fabric 검증은 `.data/auth-smoke-LeU5Zr/auth-evidence.json`에 있다.
+private import·목록·재조회·수정 동안 원장 checkpoint가 같았고 명시적 게시/승인은
+peer VALID block **111/113**에서 확인했다. 권한 회수·서명 서비스 장애 복구·철회 검증 후 앱을
+종료하고 `.data/auth-snapshot-8221ca3a`에 DB를 백업했다. `.data/auth-restored-8221ca3a`로
+복원한 새 앱의 projection checkpoint가 일치했으며, 재로그인 후 두 초안·원문·수정 재시도와
+철회된 지식의 withheld를 재검증했다. 로그인 세션은 복원되지 않았다.
+
+최신 기능은 `http://127.0.0.1:4319`에 반영했다. 이 검증은 로컬 앱 데이터 복구다.
+peer/orderer·CA·키의 전체 인프라 재해 복구, 독립 조직 운영, 운영 RTO/RPO·대규모 성능은
+아직 측정하지 않았다. [초안 가이드](15-PRIVATE-DRAFTS.md)와 [백업 가이드](16-RUNTIME-BACKUP.md)를 참조한다.
+
 ## Markdown 비공개 초안 가져오기 — 2026-09-16 01:49 KST
 
 `npm run check`: **117 passed / 0 failed / 0 skipped**, `npm run check:types`와

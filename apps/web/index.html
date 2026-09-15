@@ -90,6 +90,17 @@
               <div class="skeleton-list" aria-label="문서 불러오는 중"><span></span><span></span><span></span></div>
             </div>
             <button class="outline-button full-width" id="open-composer" type="button"><span aria-hidden="true">＋</span> 새 지식 문서 작성</button>
+            <section class="private-drafts" aria-labelledby="private-drafts-title">
+              <div class="panel-heading">
+                <h2 id="private-drafts-title">내 비공개 초안</h2>
+                <span id="private-draft-count" class="count-pill">—</span>
+              </div>
+              <p class="form-hint">저장한 초안을 다시 열어 검토하거나 새 초안으로 수정할 수 있습니다.</p>
+              <button id="refresh-drafts" class="outline-button" type="button">초안 새로고침</button>
+              <p id="private-draft-status" class="form-hint" role="status"></p>
+              <ul id="private-draft-list" class="private-draft-list"></ul>
+              <button id="more-drafts" class="outline-button full-width" type="button" hidden>초안 더 보기</button>
+            </section>
           </aside>
 
           <div class="detail-column">
@@ -111,6 +122,7 @@
                 <button class="icon-button" id="close-composer" type="button" aria-label="작성 닫기">×</button>
               </div>
               <p class="panel-lead">먼저 부서의 private draft를 저장합니다. 공유 게시 전 미리보기에서 본문과 수신 조직을 다시 확인해야 합니다.</p>
+              <p id="draft-origin" class="form-hint" hidden></p>
               <form id="draft-form" class="draft-form">
                 <div class="form-row two-col">
                   <label>문서 제목<input id="draft-title" name="title" type="text" maxlength="200" required placeholder="예: 주문 완료 정의의 교차 도메인 매핑"></label>

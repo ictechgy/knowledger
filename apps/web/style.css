@@ -161,6 +161,13 @@ input::placeholder, textarea::placeholder { color: #596475; }
 .markdown-import input { min-width: 0; }
 .markdown-import p { margin: 0; line-height: 1.6; }
 .markdown-import button { justify-self: start; white-space: normal; }
+.private-drafts { margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+.private-drafts h2 { font-size: .95rem; }
+.private-draft-list { display: grid; gap: .5rem; list-style: none; margin: .7rem 0; padding: 0; }
+.private-draft-list button { display: grid; gap: .3rem; width: 100%; padding: .7rem; text-align: left; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.private-draft-list button:hover { border-color: var(--teal); }
+.private-draft-list strong { font-size: .77rem; overflow-wrap: anywhere; }
+.private-draft-list span { color: var(--muted); font-size: .67rem; overflow-wrap: anywhere; }
 .form-row { display: grid; gap: .75rem; }
 .two-col { grid-template-columns: 1.5fr 1fr; }
 .resolver-fields { grid-template-columns: repeat(3, 1fr); }
