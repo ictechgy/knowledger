@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kcl/run-context-manifest",
+  "title": "KCL RunContextManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "manifest_id",
+    "run_id",
+    "context_id",
+    "scope_id",
+    "usage_scope",
+    "policy_id",
+    "policy_version",
+    "membership_epoch",
+    "checkpoint",
+    "provided_revisions",
+    "approval_decisions",
+    "private_sources",
+    "retrieval_profile_id",
+    "authorization_snapshot_id",
+    "model_egress_policy_version"
+  ],
+  "properties": {
+    "contract_type": {
+      "const": "RunContextManifest"
+    },
+    "contract_version": {
+      "const": 1
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/id"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "context_id": {
+      "$ref": "#/$defs/id"
+    },
+    "scope_id": {
+      "$ref": "#/$defs/id"
+    },
+    "usage_scope": {
+      "$ref": "#/$defs/usage_scope"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/id"
+    },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "membership_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "checkpoint_id",
+        "channel_id",
+        "block_number",
+        "transaction_index",
+        "transaction_id",
+        "block_hash",
+        "eligibility_epoch"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "strict",
+            "historical"
+          ]
+        },
+        "checkpoint_id": {
+          "$ref": "#/$defs/id"
+        },
+        "channel_id": {
+          "$ref": "#/$defs/id"
+        },
+        "block_number": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "transaction_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "transaction_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "block_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "eligibility_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "provided_revisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/revision_ref"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "approval_decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/decision_ref"
+      },
+      "uniqueItems": true
+    },
+    "private_sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/private_source"
+      },
+      "uniqueItems": true
+    },
+    "retrieval_profile_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authorization_snapshot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "model_egress_policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "usage_scope": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,40}/v[1-9][0-9]*$",
+      "minLength": 4,
+      "maxLength": 48
+    },
+    "revision_ref": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/normative_ref"
+        },
+        {
+          "$ref": "#/$defs/reference_ref"
+        }
+      ]
+    },
+    "decision_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "revision_digest",
+        "proposal_id"
+      ],
+      "properties": {
+        "decision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "private_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "private_id",
+        "revision_digest",
+        "custodian_org_id",
+        "source_classification"
+      ],
+      "properties": {
+        "private_id": {
+          "$ref": "#/$defs/id"
+        },
+        "revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "custodian_org_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_classification": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "normative_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_digest",
+        "purpose",
+        "reference_kind",
+        "target_context_id",
+        "target_scope_id",
+        "usage_scope",
+        "agreement_id"
+      ],
+      "properties": {
+        "revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "purpose": {
+          "$ref": "#/$defs/id"
+        },
+        "reference_kind": {
+          "const": "normative"
+        },
+        "target_context_id": {
+          "$ref": "#/$defs/id"
+        },
+        "target_scope_id": {
+          "$ref": "#/$defs/id"
+        },
+        "usage_scope": {
+          "$ref": "#/$defs/usage_scope"
+        },
+        "agreement_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "reference_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_digest",
+        "purpose",
+        "reference_kind",
+        "target_context_id",
+        "target_scope_id",
+        "usage_scope"
+      ],
+      "properties": {
+        "revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "purpose": {
+          "$ref": "#/$defs/id"
+        },
+        "reference_kind": {
+          "const": "reference"
+        },
+        "target_context_id": {
+          "$ref": "#/$defs/id"
+        },
+        "target_scope_id": {
+          "$ref": "#/$defs/id"
+        },
+        "usage_scope": {
+          "$ref": "#/$defs/usage_scope"
+        }
+      }
+    }
+  }
+}

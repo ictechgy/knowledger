@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kcl/approval-decision",
+  "title": "KCL ApprovalDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "decision_id",
+    "revision_digest",
+    "document_id",
+    "context_id",
+    "scope_id",
+    "usage_scope",
+    "channel_id",
+    "policy_id",
+    "policy_version",
+    "membership_epoch",
+    "role_binding_version",
+    "actor_org_id",
+    "actor_id",
+    "subject_id",
+    "actor_domain_role",
+    "decision",
+    "rationale",
+    "decided_at",
+    "proposal_id"
+  ],
+  "properties": {
+    "contract_type": {
+      "const": "ApprovalDecision"
+    },
+    "contract_version": {
+      "const": 1
+    },
+    "decision_id": {
+      "$ref": "#/$defs/id"
+    },
+    "revision_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "document_id": {
+      "$ref": "#/$defs/id"
+    },
+    "context_id": {
+      "$ref": "#/$defs/id"
+    },
+    "scope_id": {
+      "$ref": "#/$defs/id"
+    },
+    "usage_scope": {
+      "$ref": "#/$defs/usage_scope"
+    },
+    "channel_id": {
+      "$ref": "#/$defs/id"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/id"
+    },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "membership_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "role_binding_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "actor_org_id": {
+      "$ref": "#/$defs/id"
+    },
+    "actor_id": {
+      "$ref": "#/$defs/id"
+    },
+    "subject_id": {
+      "$ref": "#/$defs/id"
+    },
+    "actor_domain_role": {
+      "$ref": "#/$defs/id"
+    },
+    "decision": {
+      "$ref": "#/$defs/id"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "decided_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "retracts_decision_id": {
+      "$ref": "#/$defs/id"
+    },
+    "proposal_id": {
+      "$ref": "#/$defs/id"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "usage_scope": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,40}/v[1-9][0-9]*$",
+      "minLength": 4,
+      "maxLength": 48
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "decision": {
+          "enum": [
+            "approve",
+            "object",
+            "abstain"
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "decision": {
+          "const": "retract"
+        }
+      },
+      "required": [
+        "retracts_decision_id"
+      ]
+    }
+  ]
+}

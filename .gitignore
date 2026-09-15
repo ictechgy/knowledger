@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.data/
+.tools/
+.artifacts/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite*
+*.log
+__pycache__/
+.DS_Store

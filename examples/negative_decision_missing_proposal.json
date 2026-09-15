@@ -1,0 +1,22 @@
+{
+  "contract_type": "ApprovalDecision",
+  "contract_version": 1,
+  "decision_id": "decision-settlement-001",
+  "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+  "document_id": "doc-review-invitation-001",
+  "context_id": "context-coordination",
+  "scope_id": "scope-order-2026-001",
+  "usage_scope": "review-invitation/v1",
+  "channel_id": "channel-order-review-001",
+  "policy_id": "policy-review-invitation-v1",
+  "policy_version": 1,
+  "membership_epoch": 7,
+  "role_binding_version": 3,
+  "actor_org_id": "org-nuri-settlement",
+  "actor_id": "person-hyejin-choi",
+  "subject_id": "subject-review-invitation-001",
+  "actor_domain_role": "settlement_owner",
+  "decision": "approve",
+  "rationale": "정산 조건은 배송 완료와 독립적으로 확인해야 한다.",
+  "decided_at": "2026-09-15T09:30:00+09:00"
+}

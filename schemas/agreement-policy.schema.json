@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kcl/agreement-policy",
+  "title": "KCL AgreementPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "policy_id",
+    "policy_version",
+    "document_id",
+    "context_id",
+    "scope_id",
+    "usage_scope",
+    "channel_id",
+    "membership_epoch",
+    "role_binding_version",
+    "acceptance_slot",
+    "required_domain_roles",
+    "allowed_decisions",
+    "role_decision_rule",
+    "role_representatives"
+  ],
+  "properties": {
+    "contract_type": {
+      "const": "AgreementPolicy"
+    },
+    "contract_version": {
+      "const": 1
+    },
+    "policy_id": {
+      "$ref": "#/$defs/id"
+    },
+    "policy_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "document_id": {
+      "$ref": "#/$defs/id"
+    },
+    "context_id": {
+      "$ref": "#/$defs/id"
+    },
+    "scope_id": {
+      "$ref": "#/$defs/id"
+    },
+    "usage_scope": {
+      "$ref": "#/$defs/usage_scope"
+    },
+    "channel_id": {
+      "$ref": "#/$defs/id"
+    },
+    "membership_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "role_binding_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "acceptance_slot": {
+      "$ref": "#/$defs/id"
+    },
+    "required_domain_roles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "allowed_decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "role_decision_rule": {
+      "const": "named_representatives"
+    },
+    "role_representatives": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain_role",
+          "actor_org_id",
+          "actor_id"
+        ],
+        "properties": {
+          "domain_role": {
+            "$ref": "#/$defs/id"
+          },
+          "actor_org_id": {
+            "$ref": "#/$defs/id"
+          },
+          "actor_id": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "usage_scope": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,40}/v[1-9][0-9]*$",
+      "minLength": 4,
+      "maxLength": 48
+    }
+  }
+}

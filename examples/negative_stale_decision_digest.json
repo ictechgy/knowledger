@@ -1,0 +1,23 @@
+{
+  "contract_type": "ApprovalDecision",
+  "contract_version": 1,
+  "decision_id": "decision-unknown-revision-001",
+  "revision_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "document_id": "doc-review-invitation-001",
+  "context_id": "context-coordination",
+  "scope_id": "scope-order-2026-001",
+  "usage_scope": "review-invitation/v1",
+  "channel_id": "channel-order-review-001",
+  "policy_id": "policy-review-invitation-v1",
+  "policy_version": 1,
+  "membership_epoch": 7,
+  "role_binding_version": 3,
+  "actor_org_id": "org-nuri-settlement",
+  "actor_id": "person-hyejin-choi",
+  "subject_id": "subject-review-invitation-001",
+  "actor_domain_role": "settlement_owner",
+  "decision": "approve",
+  "rationale": "알 수 없는 개정본 digest를 가리키는 의도적인 오류다. 런타임 stale 여부를 검증하는 예제가 아니다.",
+  "decided_at": "2026-09-15T09:30:00+09:00",
+  "proposal_id": "proposal-review-invitation-001"
+}

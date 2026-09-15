@@ -1,0 +1,56 @@
+{
+  "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+  "payload": {
+    "contract_type": "DocumentRevision",
+    "contract_version": 1,
+    "revision_id": "rev-review-invitation-001",
+    "document_id": "doc-review-invitation-001",
+    "context_id": "context-coordination",
+    "scope_id": "scope-order-2026-001",
+    "usage_scope": "review-invitation/v1",
+    "channel_id": "channel-order-review-001",
+    "visibility": "shared_channel",
+    "title": "배송 후 고객 리뷰 요청 기준",
+    "body_markdown": "# 배송 후 고객 리뷰 요청 기준\n\n리뷰 요청은 물류 도메인의 배송 완료를 기준으로 한다. 계약 체결이나 대금 수납 완료는 이를 대체하지 않는다.\n\n부분 배송이면 리뷰 대상 품목 모두의 배송 완료를 확인한다. 주문 취소 또는 반품 처리 중이면 리뷰 요청을 보류한다. 이 규칙은 정산 도메인의 수납 상태를 변경하지 않는다.",
+    "parents": [],
+    "dependencies": [
+      {
+        "revision_digest": "sha256:70e93965252e63f9730a539b915313455d1ed283b1973042a29c97f0dad91900",
+        "context_id": "context-sales",
+        "usage_scope": "domain-definition/v1",
+        "relationship": "order_definition",
+        "enforcement": "requires_active",
+        "document_id": "doc-sales-order-definition-001",
+        "scope_id": "scope-order-2026-001",
+        "channel_id": "channel-order-review-001"
+      },
+      {
+        "revision_digest": "sha256:2284929089e78541db6d1478269d315330fbdd7f519d5f7b7612a7b0e22bc3f8",
+        "context_id": "context-fulfillment",
+        "usage_scope": "domain-definition/v1",
+        "relationship": "delivery_definition",
+        "enforcement": "requires_active",
+        "document_id": "doc-fulfillment-delivery-definition-001",
+        "scope_id": "scope-order-2026-001",
+        "channel_id": "channel-order-review-001"
+      },
+      {
+        "revision_digest": "sha256:cfcd608822b162574eee7a5f862aae07ab800f8b808c371ce7538e7750a78f8e",
+        "context_id": "context-settlement",
+        "usage_scope": "domain-definition/v1",
+        "relationship": "accounting_independence_rule",
+        "enforcement": "requires_active",
+        "document_id": "doc-settlement-accounting-definition-001",
+        "scope_id": "scope-order-2026-001",
+        "channel_id": "channel-order-review-001"
+      }
+    ],
+    "metadata": {
+      "author_id": "agent-knowledge-drafter",
+      "created_at": "2026-09-15T09:25:00+09:00",
+      "source_kind": "llm_drafted",
+      "shared_assertions": [],
+      "author_org_id": "org-nuri-fulfillment"
+    }
+  }
+}

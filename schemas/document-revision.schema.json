@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kcl/document-revision",
+  "title": "KCL immutable DocumentRevision wrapper",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "revision_digest",
+    "payload"
+  ],
+  "properties": {
+    "revision_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_type",
+        "contract_version",
+        "revision_id",
+        "document_id",
+        "context_id",
+        "scope_id",
+        "usage_scope",
+        "channel_id",
+        "visibility",
+        "title",
+        "body_markdown",
+        "parents",
+        "dependencies",
+        "metadata"
+      ],
+      "properties": {
+        "contract_type": {
+          "const": "DocumentRevision"
+        },
+        "contract_version": {
+          "const": 1
+        },
+        "revision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "document_id": {
+          "$ref": "#/$defs/id"
+        },
+        "context_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope_id": {
+          "$ref": "#/$defs/id"
+        },
+        "usage_scope": {
+          "$ref": "#/$defs/usage_scope"
+        },
+        "channel_id": {
+          "$ref": "#/$defs/id"
+        },
+        "visibility": {
+          "enum": [
+            "shared_channel"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "body_markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 262144
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          },
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "author_id",
+            "created_at",
+            "source_kind",
+            "shared_assertions",
+            "author_org_id"
+          ],
+          "properties": {
+            "author_id": {
+              "$ref": "#/$defs/id"
+            },
+            "created_at": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "source_kind": {
+              "enum": [
+                "human_authored",
+                "approved_import",
+                "llm_drafted"
+              ]
+            },
+            "shared_assertions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/shared_assertion"
+              },
+              "uniqueItems": true
+            },
+            "author_org_id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._:-]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "usage_scope": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,40}/v[1-9][0-9]*$",
+      "minLength": 4,
+      "maxLength": 48
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_digest",
+        "context_id",
+        "usage_scope",
+        "relationship",
+        "enforcement",
+        "document_id",
+        "scope_id",
+        "channel_id"
+      ],
+      "properties": {
+        "revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "context_id": {
+          "$ref": "#/$defs/id"
+        },
+        "usage_scope": {
+          "$ref": "#/$defs/usage_scope"
+        },
+        "relationship": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_:-]{2,63}$"
+        },
+        "enforcement": {
+          "enum": [
+            "requires_active",
+            "informational"
+          ]
+        },
+        "document_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope_id": {
+          "$ref": "#/$defs/id"
+        },
+        "channel_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "shared_assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertion_id",
+        "statement",
+        "source_visibility"
+      ],
+      "properties": {
+        "assertion_id": {
+          "$ref": "#/$defs/id"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "source_visibility": {
+          "const": "private_shared_assertion"
+        }
+      }
+    }
+  }
+}

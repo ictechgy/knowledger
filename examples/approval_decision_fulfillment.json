@@ -1,0 +1,23 @@
+{
+  "contract_type": "ApprovalDecision",
+  "contract_version": 1,
+  "decision_id": "decision-fulfillment-001",
+  "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+  "document_id": "doc-review-invitation-001",
+  "context_id": "context-coordination",
+  "scope_id": "scope-order-2026-001",
+  "usage_scope": "review-invitation/v1",
+  "channel_id": "channel-order-review-001",
+  "policy_id": "policy-review-invitation-v1",
+  "policy_version": 1,
+  "membership_epoch": 7,
+  "role_binding_version": 3,
+  "actor_org_id": "org-nuri-fulfillment",
+  "actor_id": "person-junseo-lee",
+  "subject_id": "subject-review-invitation-001",
+  "actor_domain_role": "fulfillment_owner",
+  "decision": "approve",
+  "rationale": "배송 완료 후 검토 요청을 생성하는 규칙을 확인했다.",
+  "decided_at": "2026-09-15T09:29:00+09:00",
+  "proposal_id": "proposal-review-invitation-001"
+}

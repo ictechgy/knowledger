@@ -1,0 +1,73 @@
+{
+  "contract_type": "RunContextManifest",
+  "contract_version": 1,
+  "manifest_id": "manifest-order-review-001",
+  "run_id": "run-order-review-001",
+  "context_id": "context-coordination",
+  "scope_id": "scope-order-2026-001",
+  "usage_scope": "review-invitation/v1",
+  "policy_id": "policy-review-invitation-v1",
+  "policy_version": 1,
+  "membership_epoch": 7,
+  "checkpoint": {
+    "mode": "strict",
+    "checkpoint_id": "checkpoint-ledger-2026-09-15-001",
+    "channel_id": "channel-order-review-001",
+    "block_number": 1842,
+    "transaction_index": 3,
+    "transaction_id": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "block_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "eligibility_epoch": 12
+  },
+  "provided_revisions": [
+    {
+      "revision_digest": "sha256:70e93965252e63f9730a539b915313455d1ed283b1973042a29c97f0dad91900",
+      "purpose": "sales_definition",
+      "reference_kind": "reference",
+      "target_context_id": "context-sales",
+      "target_scope_id": "scope-order-2026-001",
+      "usage_scope": "domain-definition/v1"
+    },
+    {
+      "revision_digest": "sha256:2284929089e78541db6d1478269d315330fbdd7f519d5f7b7612a7b0e22bc3f8",
+      "purpose": "fulfillment_definition",
+      "reference_kind": "reference",
+      "target_context_id": "context-fulfillment",
+      "target_scope_id": "scope-order-2026-001",
+      "usage_scope": "domain-definition/v1"
+    },
+    {
+      "revision_digest": "sha256:cfcd608822b162574eee7a5f862aae07ab800f8b808c371ce7538e7750a78f8e",
+      "purpose": "settlement_definition",
+      "reference_kind": "reference",
+      "target_context_id": "context-settlement",
+      "target_scope_id": "scope-order-2026-001",
+      "usage_scope": "domain-definition/v1"
+    },
+    {
+      "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+      "purpose": "review_mapping",
+      "reference_kind": "normative",
+      "target_context_id": "context-coordination",
+      "target_scope_id": "scope-order-2026-001",
+      "usage_scope": "review-invitation/v1",
+      "agreement_id": "agreement-order-review-001"
+    }
+  ],
+  "approval_decisions": [
+    {
+      "decision_id": "decision-fulfillment-001",
+      "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+      "proposal_id": "proposal-review-invitation-001"
+    },
+    {
+      "decision_id": "decision-settlement-001",
+      "revision_digest": "sha256:af81556aeed543d98161cb8ce14f161df6898e11c5d1235cd4d5fcba5abeca4e",
+      "proposal_id": "proposal-review-invitation-001"
+    }
+  ],
+  "private_sources": [],
+  "retrieval_profile_id": "retrieval-markdown-chunks-v1",
+  "authorization_snapshot_id": "authz-snapshot-local-001",
+  "model_egress_policy_version": 1
+}

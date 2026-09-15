@@ -1,0 +1,31 @@
+{
+  "revision_digest": "sha256:2284929089e78541db6d1478269d315330fbdd7f519d5f7b7612a7b0e22bc3f8",
+  "payload": {
+    "contract_type": "DocumentRevision",
+    "contract_version": 1,
+    "revision_id": "rev-fulfillment-delivery-001",
+    "document_id": "doc-fulfillment-delivery-definition-001",
+    "context_id": "context-fulfillment",
+    "scope_id": "scope-order-2026-001",
+    "usage_scope": "domain-definition/v1",
+    "channel_id": "channel-order-review-001",
+    "visibility": "shared_channel",
+    "title": "이행 관점의 주문 완료",
+    "body_markdown": "# 주문 완료\n\n물류 도메인에서는 주문의 배송이 완료된 상태를 주문 완료로 정의한다. 부분 배송, 취소, 반품은 별도 상태로 관리하며 계약 체결이나 대금 수납만으로 배송 완료를 추론하지 않는다.",
+    "parents": [],
+    "dependencies": [],
+    "metadata": {
+      "author_id": "person-junseo-lee",
+      "created_at": "2026-09-15T09:10:00+09:00",
+      "source_kind": "human_authored",
+      "shared_assertions": [
+        {
+          "assertion_id": "assertion-private-vault-fulfillment-001",
+          "statement": "Private vault evidence was shared as an opaque assertion; no private content is included here.",
+          "source_visibility": "private_shared_assertion"
+        }
+      ],
+      "author_org_id": "org-nuri-fulfillment"
+    }
+  }
+}
