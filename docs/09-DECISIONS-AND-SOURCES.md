@@ -22,7 +22,9 @@
 
 근거: [Endorsement Policies](https://hyperledger-fabric.readthedocs.io/en/latest/endorsement-policies.html), [Ordering Service](https://hyperledger-fabric.readthedocs.io/en/latest/orderer/ordering_service.html).
 
-## ADR-004 — Fabric은 참조 adapter이며 신뢰 프로필을 표시한다
+## ADR-004 — Hyperledger Fabric을 기본 원장으로 채택하고 신뢰 프로필을 표시한다
+
+상태: 사용자 채택 확정. 자체 분산 합의 알고리즘을 새로 구현하지 않고 Hyperledger Fabric을 활용한다. 제품과 기반 기술의 책임 구분은 [구현 결정](10-IMPLEMENTATION-DECISIONS.md)에 기록한다.
 
 결정: PoC는 Raft CFT, BFT 목표는 독립 관리의 최소 4 orderer다. v3 계열의 정확한 patch/이미지 digest·지원 기간·SDK 호환성은 구현 P0에서 확인해 고정한다.
 

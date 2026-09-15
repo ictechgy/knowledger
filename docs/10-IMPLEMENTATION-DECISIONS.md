@@ -1,5 +1,13 @@
 # 10. v0.1 구현 결정
 
+## 채택 확정 — Hyperledger Fabric 기반
+
+사용자 결정: 기존에 검증된 Hyperledger Fabric을 분산원장 기반으로 사용한다. Microsoft Fabric과는 다른 제품이다. 자체 분산 합의 알고리즘이나 범용 블록체인 플랫폼 개발은 현재 제품 범위에 넣지 않는다.
+
+Fabric의 조직 신원·원장 복제·거래 순서 합의·커밋 검증 기능을 활용한다. KCL은 도메인별 해석, 정확한 개정본에 대한 사람의 승인, 채택·철회·의존성, 부서 기밀 경계, KB·LLM 위키 및 AI 작업에 제공할 지식 패킷을 구현한다. 사람의 의미 합의와 Fabric 노드의 거래 합의를 구분한다.
+
+도입 편의성은 노드 구성과 운영 절차를 제품에서 안내·자동화하는 방향으로 개선한다. 원장 adapter 경계는 테스트와 유지보수를 위해 유지하고, 실제 운영 통합의 기본 대상은 Fabric으로 고정한다. 로컬 SQLite 모드는 개발·체험용이다. 이 기술 선택의 확정은 실제 Fabric 네트워크 검증 완료를 뜻하지 않는다.
+
 ## 공통 TypeScript 합의 엔진
 
 참조 설계의 Go 체인코드를 TypeScript 공통 도메인 엔진과 Node.js Fabric adapter로 변경한다. 로컬에서 쉽게 실행하고, 로컬 모드와 실제 Fabric에서 승인·철회·멱등 규칙을 동일하게 유지하기 위한 선택이다. [Fabric 공식 문서](https://hyperledger-fabric.readthedocs.io/en/latest/cc_service.html)는 Node.js chaincode shim을 지원한다.

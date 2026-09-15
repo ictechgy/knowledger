@@ -49,7 +49,7 @@ npm run check  # 도메인·API·저장소·adapter 테스트와 문서 계약 �
 - **합의는 범위가 있다.** `(document, context, business scope, usage scope)`에 대해 채택한 정확한 개정본을 기록한다. 전사적 단일 정의나 LLM 다수결을 강제하지 않는다.
 - **기밀은 배포 경계로 보호한다.** 부서 비공개 원문은 private vault에 남기고 존재·해시도 자동 공개하지 않는다. 공용 channel의 과거 평문은 모든 channel 참여 피어에 복제된다.
 - **검색은 파생 계층이다.** 벡터 유사도만으로 사용 권위를 정하지 않는다. context·접근 권한·합의·의존성·철회 상태를 별도로 확인한다.
-- **참조 기반은 Fabric v3 계열이다.** PoC는 3-orderer Raft(CFT), 악의적 orderer를 위협으로 포함할 때는 독립 관리의 4-orderer BFT 프로필을 별도 검증한다. 구체 patch/image digest는 구현 착수 시 고정한다.
+- **기본 원장은 Hyperledger Fabric으로 채택했다.** 자체 분산 합의 알고리즘을 새로 만들지 않고 지식의 의미 합의와 도입 편의성에 집중한다. 참조 버전은 v3 계열이며 PoC는 3-orderer Raft(CFT), 악의적 orderer를 위협으로 포함할 때는 독립 관리의 4-orderer BFT 프로필을 별도 검증한다. 구체 patch/image digest는 네트워크 통합 시 고정한다.
 
 ```mermaid
 flowchart LR
