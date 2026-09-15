@@ -47,7 +47,12 @@ interface OfficialGateway {
 
 interface OfficialGatewayModule {
   hash?: { sha256: unknown };
-  connect(options: { client: unknown; identity: { mspId: string; credentials: Uint8Array }; signer: OfficialGatewayCredentials["signer"]; hash?: unknown }): OfficialGateway;
+  connect(options: {
+    client: unknown; identity: { mspId: string; credentials: Uint8Array };
+    signer: OfficialGatewayCredentials["signer"]; hash?: unknown;
+    evaluateOptions: () => { deadline: number }; endorseOptions: () => { deadline: number };
+    submitOptions: () => { deadline: number }; commitStatusOptions: () => { deadline: number };
+  }): OfficialGateway;
 }
 
 export interface OfficialGatewayConnectionOptions {
@@ -55,6 +60,8 @@ export interface OfficialGatewayConnectionOptions {
   channel_id: string;
   chaincode_name: string;
   credentials: OfficialGatewayCredentials;
+  /** Per-call deadlines; unknown commit status remains recoverable in the outbox. */
+  timeouts_ms?: Partial<Record<'evaluate' | 'endorse' | 'submit' | 'commit_status', number>>;
   module?: OfficialGatewayModule;
 }
 
@@ -263,12 +270,20 @@ export async function connectOfficialFabricGateway(options: OfficialGatewayConne
   if (!options.credentials || options.credentials.certificate.byteLength === 0 || typeof options.credentials.signer !== "function") {
     throw new Error("caller-provided gateway identity and signer are required");
   }
+  const timeouts = { evaluate: 5000, endorse: 15000, submit: 15000, commit_status: 30000, ...options.timeouts_ms };
+  for (const value of Object.values(timeouts)) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error('Gateway timeouts must be positive integer milliseconds');
+  }
   const load = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<OfficialGatewayModule>;
   const module = options.module ?? await load("@hyperledger/fabric-gateway");
   const gateway = module.connect({
     client: options.client,
     identity: { mspId: options.credentials.msp_id, credentials: options.credentials.certificate },
     signer: options.credentials.signer,
+    evaluateOptions: () => ({ deadline: Date.now() + timeouts.evaluate }),
+    endorseOptions: () => ({ deadline: Date.now() + timeouts.endorse }),
+    submitOptions: () => ({ deadline: Date.now() + timeouts.submit }),
+    commitStatusOptions: () => ({ deadline: Date.now() + timeouts.commit_status }),
     ...(module.hash?.sha256 ? { hash: module.hash.sha256 } : {}),
   });
   const network = gateway.getNetwork(options.channel_id);

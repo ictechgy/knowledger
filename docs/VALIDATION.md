@@ -1,5 +1,49 @@
 # 검증 기록
 
+## Fabric 통합 준비 — 2026-09-15
+
+환경: macOS arm64, Node 24.18.0, npm 11.16.0, 실행 중인 Colima Docker.
+기존 로그인 셸의 Node 22.20.0은 도구 사전 검사에서 거부하며, 설치된 Node 24를
+명시적으로 PATH에 넣어 실행했다.
+
+- `packages/fabric`의 공식 SDK/shim과 전이 의존성을 설치했다. Gateway 1.12.1,
+  shim 2.5.8, gRPC 1.14.4, Fabric protos 0.3.7을 고정했다.
+- adapter와 chaincode의 lockfile을 생성·검토했다. 양쪽 `npm audit`는 알려진
+  취약점 0건을 보고했다. npm 패키지 라이선스는 MIT, Apache-2.0, BSD, ISC,
+  Unlicense 계열로 기록됐다. 정적 타입 검사는 아직 실행하지 않았다.
+- 공식 Fabric 2.5.16 macOS arm64 도구와 Compose 5.5.1을 다운로드하고
+  GitHub release asset SHA-256을 검증했다. peer/orderer/nodeenv 이미지를
+  digest로 고정했다. 실제 컨테이너의 peer 버전은 2.5.16, nodeenv는 Node 22.12.0이다.
+- `node infra/fabric/build.mjs`, 생성 패키지 `npm ci`, 공식
+  `peer lifecycle chaincode package`를 실행했다. `metadata.json`/`code.tar.gz`,
+  package lock 포함 및 인증서·node_modules 미포함을 확인했다.
+- 공식 shim의 `getArgs()`는 문자열이며 잘못된 UTF-8 바이트를 치환한다.
+  원본 `getBufferArgs()`를 사용하도록 수정하고 실제 공식 stub으로 잘못된
+  UTF-8 입력 거부를 검증했다.
+- 공식 Gateway SDK와 loopback gRPC 서버를 사용해 응답 없는 commit-status
+  조회를 재현했다. 제한 시간 추가 후 DEADLINE_EXCEEDED와 재조회 VALID를
+  확인했다. 이는 실제 Fabric peer 커밋의 증거는 아니다.
+- 세 peer·3-orderer Raft의 공개 설정을 생성하고 Compose 구문과 도구 사전
+  검사를 통과했다. 기존 로컬 데모도 `withheld → provided → withheld`를 유지했다.
+- 최종 `npm run check`: **69 passed, 0 failed, 0 skipped**. 별도 의존성 없는
+  소스 복사본에서는 **56 passed, 0 failed, 13 skipped**로 기존 로컬 검사를 유지했다.
+  선택적 공식 SDK/protobuf 검사만 패키지 부재로 건너뛴다.
+- full-block reader의 합성 protobuf 검사는 실제 도메인 엔진 write-set으로
+  동일 블록 fence·철회 후 withheld, INVALID·미검증 filter, genesis/lifecycle,
+  원자적 상태 보존을 확인했다. 헤더 해시는 OpenSSL ASN.1 생성 결과와
+  7/128/256/65536/최대 안전 정수 블록 번호에서 비교했다.
+
+### 아직 실행하지 않은 네트워크 단계
+
+사용자가 의존성·도구·이미지 다운로드를 포함한 네트워크 접근을 승인했다.
+별도 전역 지침에 따라 새 테스트 CA/MSP/TLS 인증서 생성·사용 승인을 요청한
+상태다. 따라서 `npm run fabric:up`과 `npm run fabric:smoke`는 아직 실행하지
+않았으며, 실제 endorsement·VALID commit·동일 블록 철회가 검증됐다고 주장하지 않는다.
+준비된 시나리오와 도구 pin은 [Fabric 통합 가이드](../infra/fabric/README.md)를 참조한다.
+
+추가 CI job은 공식 의존성 설치 후 Fabric 경계 테스트를 실행하도록 작성했다.
+원격 CI·운영 인증·조직별 독립 장애 시험은 미실행이다.
+
 ## v0.1 런타임 — 2026-09-15
 
 환경: macOS arm64, Node.js 26.5.0, npm 11.17.0, Python 3.14.7. 로컬 런타임은 새 외부 패키지 없이 실행했다.

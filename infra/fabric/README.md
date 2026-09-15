@@ -15,10 +15,12 @@ Reference API sources: [Fabric chaincode shim](https://hyperledger-fabric.readth
 [`fabric-shim` package](https://www.npmjs.com/package/fabric-shim), and
 [Fabric Gateway Node API](https://hyperledger.github.io/fabric-gateway/main/api/node/).
 
-They are pinned in the source manifests. They have not been downloaded or
-executed in this workspace. Tests inject the SDK/shim boundary and exercise the
-real domain engine. A real deployment still needs dependency installation,
-lockfile review and validation against the actual peer/SDK versions.
+They are installed and pinned, including transitive dependencies in committed
+lockfiles. The official shim argument/response API and Gateway deadline/retry
+path are exercised in optional SDK tests. Root tests still run without these
+dependencies; SDK-specific tests explicitly skip when the packages are absent.
+The pinned dependencies currently report zero known vulnerabilities in npm audit.
+That result is an advisory-database check, not a security certification.
 
 ## Chaincode package
 
@@ -33,8 +35,9 @@ The build uses Node's native TypeScript stripping and rewrites local `.ts`
 imports to `.js`. The generated entrypoint constructs the domain engine,
 pinned `infra/fabric/genesis.json`, pinned bootstrap identity, and real shim
 `ClientIdentity` decoder before starting the dynamic `fabric-shim` loader.
-The output includes a standalone `package.json` with `npm start` and a pinned
-shim dependency. Its local modules were built and loaded on Node 26.5.0.
+The output includes standalone `package.json` and `package-lock.json` files with
+`npm start` and a pinned shim dependency. Its local modules were built and loaded
+on Node 24.18.0; the pinned nodeenv image provides Node 22.12.0.
 The build does not perform TypeScript static type checking. Use `--output DIR`
 to produce a separate package directory; generated directories are not source.
 
@@ -47,9 +50,11 @@ create identities:
 sh infra/fabric/package-chaincode.sh infra/fabric/dist ./build/kcl-fabric.tar.gz
 ```
 
-For a real network smoke test, install the pinned dependency in the generated
-chaincode package, review the resulting lockfile, then lifecycle-package it
-with the peer CLI. The peer starts it using `npm start` with the normal shim
+For a real network smoke test, run `npm ci --prefix infra/fabric/dist` after
+building, then lifecycle-package it with the peer CLI. Official peer 2.5.16
+packaging has been verified locally, including the `metadata.json` and
+`code.tar.gz` layout and exclusion of credentials and `node_modules`.
+The peer starts it using `npm start` with the normal shim
 connection arguments. `Init` accepts the standard `Init`
 function argument without extra payload, rejects arbitrary first-user genesis
 input, and only accepts the configured founder. The shim `ClientIdentity`
@@ -79,7 +84,11 @@ and `credentials: { msp_id, certificate, signer }` to the connector, then
 `{ client: connectedClient, outbox }` to the transport. `execute()` accepts
 `{ command_id, actor_org_id, type, input }`; organization metadata must match
 the certificate MSP. Close the outbox, returned client, and caller-owned gRPC
-client when finished. The HTTP demonstration server does not expose this
+client when finished. Every evaluate, endorse, submit and commit-status RPC has
+a fresh deadline (defaults: 5, 15, 15 and 30 seconds). `timeouts_ms` can override
+these durations with positive integer milliseconds. A peer that never responds
+therefore cannot prevent the outbox from retaining an unresolved attempt.
+The HTTP demonstration server does not expose this
 connector as a deployment mode.
 
 Every proposal transaction ID and command digest is durably recorded before
@@ -99,4 +108,87 @@ explicit publication preview and recipient/configuration checks in the design.
 Chaincode validation cannot prevent rejected content from remaining in a block.
 The adapter does not perform automatic DLP.
 
-No real Fabric network or Docker smoke test has been run in this workspace.
+## Local three-organization network
+
+`test-network.py` prepares a fixed `kcl-demo` channel with SalesMSP,
+FulfillmentMSP and SettlementMSP peers and three Raft orderers. All endpoints
+published to the host bind to loopback. The nodes share one local Docker host;
+this does not demonstrate independent organization administration or production
+fault tolerance. Peers use the Docker socket to launch the Node chaincode.
+
+The first integration profile pins Fabric **2.5.16**, shim **2.5.8**, Gateway
+**1.12.1**, and nodeenv **2.5.8**. The v3/BFT reference profile is a separate
+validation stage; see [the decision](../../docs/10-IMPLEMENTATION-DECISIONS.md).
+
+| Image | Verified repository digest |
+| --- | --- |
+| `hyperledger/fabric-peer:2.5.16` | `sha256:09ee75042de9983bfde31ca88a5bf033386351f10a990e4c48264ee50172dee0` |
+| `hyperledger/fabric-orderer:2.5.16` | `sha256:e322c57331d37e0a35ffae3cb3d3265a0e852211c0f801f2514cc15b964ffc93` |
+| `hyperledger/fabric-nodeenv:2.5.8` | `sha256:17e2d447ca0de5b4e3f6950a1c9b24ecfdeecdd90e111e11d771970d35159bf1` |
+
+The macOS arm64 harness expects the [official Fabric 2.5.16 release](https://github.com/hyperledger/fabric/releases/tag/v2.5.16)
+extracted under `.tools/fabric-2.5.16` and the [Compose 5.5.1 standalone binary](https://github.com/docker/compose/releases/tag/v5.5.1)
+at `.tools/docker-compose`, with a running `colima` Docker context. Archive SHA-256:
+`9f226e9c7e40f81b4f76db349438f8742beeb43d88519b73f2095e4f65f3ab42`;
+Compose binary SHA-256: `998735c9b6fe68a4f05895e6ea73d71ad06f9fc7046383ad89e47346781b6af5`.
+Downloaded tools, images, generated data and identities are excluded from Git.
+Use Node 24 or later in `PATH` and the `openssl` CLI.
+
+```sh
+npm ci --prefix packages/fabric --ignore-scripts
+npm run fabric:prepare  # public configuration only; no credentials
+```
+
+After authorization to generate and use disposable test credentials:
+
+```sh
+npm run fabric:up       # fresh test MSP/TLS identities, lifecycle deployment, Init
+npm run fabric:smoke    # real Gateway writes and peer full-block verification
+npm run fabric:stop     # stop nodes; preserve ledgers and identities
+```
+
+The harness uses only `.data/fabric-smoke/crypto`. `cryptogen` creates disposable
+CAs; OpenSSL issues seven-day fixture client certificates with the required
+`kcl.actor_id` and `kcl.actor_kind` attributes. This emulates fixture identities
+and does not integrate Fabric CA enrollment, SSO or a production key manager.
+Existing test identities are never overwritten by `fabric:up`.
+`fabric:deploy` resumes deployment after identity generation. Inspect partial
+lifecycle state before retrying a deployment that already committed a definition.
+There is no automatic volume or credential deletion command.
+
+The smoke script uses fictional document fixtures. It checks publication,
+organization approvals, activation, unauthorized endorsement rejection, outbox
+recovery after a child process exits, injected lost submit responses, competing
+transactions producing a real MVCC INVALID result, and a fence followed by
+dependency withdrawal in the same block. Source content and resolution are
+checked against peer full blocks. It writes non-secret results to
+`.data/fabric-smoke/evidence.json` only after all assertions pass.
+A completed fixture cannot be rerun as a fresh scenario after its withdrawal.
+
+Network deployment and smoke assertions remain **unexecuted** until test
+credential authorization is received. Configuration parsing, image/CLI versions,
+source build, official packaging, and SDK boundary tests have been executed.
+
+## Verified in-memory block reader
+
+After installing adapter dependencies, import `FabricBlockProjector` directly
+from [block-projector.ts](../../packages/fabric/block-projector.ts). Configure
+`channel_id`, `chaincode_name`, and the pinned `public_genesis`, then pass each
+peer-delivered full block's serialized bytes to `applyBlock()`, starting at block
+zero. `read(key)` returns a cloned value at the end of the last complete block;
+`checkpoint()` records its number and Fabric ASN.1 header hash.
+
+The reader verifies contiguous numbers, previous/data hashes, complete final
+validation codes, known transaction types and write schemas. It ignores INVALID
+transaction effects, admits the initial channel configuration and lifecycle
+transactions, and stops on later channel reconfiguration or unsupported writes.
+All state changes and the cursor advance together only after the entire block
+passes. Synthetic protobuf tests use the real domain engine to check resolution
+after a fence and withdrawal in one block; independent OpenSSL ASN.1 fixtures
+check header hashes across integer byte boundaries.
+
+The caller must supply blocks through an authenticated peer delivery connection.
+The reader does not independently verify peer identity, block signatures or
+endorsement signatures. State/cursor persistence, coordinated crash recovery,
+catch-up supervision and the HTTP serving integration are not implemented here.
+Persisting a cursor alone is insufficient to recover its in-memory state.

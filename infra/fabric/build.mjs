@@ -24,6 +24,7 @@ for (const name of ["canonical", "chaincode-loader", "chaincode", "types"]) {
 await mkdir(output, { recursive: true });
 await writeFile(resolve(output, "genesis.json"), await readFile(resolve(root, "infra/fabric/genesis.json")));
 await writeFile(resolve(output, 'package.json'), await readFile(resolve(root, 'infra/fabric/package.json')));
+await writeFile(resolve(output, 'package-lock.json'), await readFile(resolve(root, 'infra/fabric/package-lock.json')));
 let entrypoint = await readFile(resolve(root, "infra/fabric/entrypoint.mjs"), "utf8");
 entrypoint = entrypoint.replaceAll("../../packages/", "./packages/").replaceAll(".ts\"", ".js\"");
 await writeFile(resolve(output, "entrypoint.mjs"), entrypoint);

@@ -12,6 +12,11 @@
     "test": "node --test --test-reporter=spec 'test/**/*.test.ts'",
     "test:design": "python3 -B tools/validate_design.py && python3 -B tools/check_docs.py",
     "check": "npm test && npm run test:design",
-    "demo": "node tools/demo.ts"
+    "demo": "node tools/demo.ts",
+    "fabric:prepare": "python3 -B infra/fabric/test-network.py prepare",
+    "fabric:up": "python3 -B infra/fabric/test-network.py up",
+    "fabric:deploy": "python3 -B infra/fabric/test-network.py deploy",
+    "fabric:smoke": "node infra/fabric/smoke.ts",
+    "fabric:stop": "python3 -B infra/fabric/test-network.py stop"
   }
 }

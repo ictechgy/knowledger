@@ -47,14 +47,22 @@ export interface FabricStub {
   getTxID(): string;
   getChannelID(): string;
   getTxTimestamp?(): { seconds: number | bigint | { toNumber(): number }; nanos?: number };
-  getArgs?(): Uint8Array[];
+  /** fabric-shim 2.5.x exposes display arguments as strings and raw bytes separately. */
+  getArgs(): string[];
+  getBufferArgs(): Uint8Array[];
   getState(key: string): Promise<Uint8Array>;
   putState(key: string, value: Uint8Array): Promise<void>;
 }
 
 export interface FabricResponseFactory {
-  success(payload: Uint8Array): unknown;
-  error(message: string): unknown;
+  success(payload: Uint8Array): FabricChaincodeResponse;
+  error(message: string): FabricChaincodeResponse;
+}
+
+export interface FabricChaincodeResponse {
+  status: number;
+  message?: string;
+  payload?: Uint8Array;
 }
 
 export interface BootstrapIdentity {

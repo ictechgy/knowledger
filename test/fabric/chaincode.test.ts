@@ -13,7 +13,8 @@ class FakeStub implements FabricStub {
   getCreator(): unknown { return this.creator; }
   getTxID(): string { return this.tx_id; }
   getChannelID(): string { return this.channel; }
-  getArgs(): Uint8Array[] { return this.args; }
+  getArgs(): string[] { return this.args.map((arg) => new TextDecoder().decode(arg)); }
+  getBufferArgs(): Uint8Array[] { return this.args; }
   getState(key: string): Promise<Uint8Array> { return Promise.resolve(this.state.get(key) ?? new Uint8Array()); }
   putState(key: string, value: Uint8Array): Promise<void> { this.state.set(key, value); return Promise.resolve(); }
 }

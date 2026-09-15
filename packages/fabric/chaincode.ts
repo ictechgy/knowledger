@@ -4,6 +4,7 @@ import type {
   Command,
   CoreEngine,
   FabricChaincodeConfig,
+  FabricChaincodeResponse,
   FabricResponseFactory,
   FabricStub,
   IdentityDecoder,
@@ -95,6 +96,9 @@ function parseStoredCommand(value: Uint8Array): { payload_digest: string; result
   return { payload_digest: record.payload_digest, result: record.result };
 }
 
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+
 class BufferedContext implements TxContext {
   readonly writes = new Map<string, Uint8Array>();
   readonly actor: Actor;
@@ -139,41 +143,41 @@ export class FabricChaincode {
     if (!Array.isArray(config.registered_identities) || config.registered_identities.length === 0) throw new Error('Pinned registered identities are required');
   }
 
-  async Init(stub: FabricStub): Promise<unknown> {
+  async Init(stub: FabricStub): Promise<FabricChaincodeResponse> {
     try {
       if (stub.getChannelID() !== this.config.channel_id) throw new Error("channel mismatch");
       const actor = actorFromStub(stub, this.config);
       const pinned = this.config.bootstrap_identity;
       if (actor.org_id !== pinned.msp_id || actor.actor_id !== pinned.actor_id || actor.kind !== pinned.actor_kind) throw new Error("bootstrap identity is not pinned founder");
-      let args = stub.getArgs?.() ?? [];
-      if (args.length === 1 && new TextDecoder("utf-8", { fatal: true }).decode(args[0]) === "Init") args = [];
+      let args = stub.getBufferArgs();
+      if (args.length === 1 && decoder.decode(args[0]) === "Init") args = [];
       if (args.some((arg) => arg.byteLength > 0)) throw new Error("bootstrap input is not accepted");
       const existing = await stub.getState(INTERNAL_BOOTSTRAP_KEY);
       const digest = sha256Digest(this.config.public_genesis);
       if (existing.byteLength > 0) {
         const marker = parseStoredCommand(existing);
         if (marker.payload_digest !== digest) throw new Error("bootstrap manifest conflicts");
-        return this.responses.success(new TextEncoder().encode(JSON.stringify({ status: "already_bootstrapped" })));
+        return this.responses.success(encoder.encode(JSON.stringify({ status: "already_bootstrapped" })));
       }
       const ctx = new BufferedContext(actor, this.config.channel_id, stub.getTxID(), timestamp(stub), stub, this.config);
       const result = await this.core.bootstrap(ctx, this.config.public_genesis);
       ctx.writes.set(INTERNAL_BOOTSTRAP_KEY, jcsBytes({ payload_digest: digest, result }));
       await this.flush(ctx);
-      return this.responses.success(new TextEncoder().encode(JSON.stringify({ status: "bootstrapped", result })));
+      return this.responses.success(encoder.encode(JSON.stringify({ status: "bootstrapped", result })));
     } catch {
       return this.responses.error(safeMessage("BOOTSTRAP_REJECTED"));
     }
   }
 
-  async Invoke(stub: FabricStub): Promise<unknown> {
+  async Invoke(stub: FabricStub): Promise<FabricChaincodeResponse> {
     try {
       if (stub.getChannelID() !== this.config.channel_id) throw new Error("channel mismatch");
       const actor = actorFromStub(stub, this.config);
-      let args = stub.getArgs?.() ?? [];
-      if (args.length === 2 && new TextDecoder("utf-8", { fatal: true }).decode(args[0]) === "Execute") args = [args[1]];
-      if (args.length === 3 && new TextDecoder("utf-8", { fatal: true }).decode(args[0]) === "GetCommand") {
-        const requestedOrg = new TextDecoder("utf-8", { fatal: true }).decode(args[1]);
-        const requestedCommand = new TextDecoder("utf-8", { fatal: true }).decode(args[2]);
+      let args = stub.getBufferArgs();
+      if (args.length === 2 && decoder.decode(args[0]) === "Execute") args = [args[1]];
+      if (args.length === 3 && decoder.decode(args[0]) === "GetCommand") {
+        const requestedOrg = decoder.decode(args[1]);
+        const requestedCommand = decoder.decode(args[2]);
         if (requestedOrg !== actor.org_id || !validCommandId(requestedCommand)) throw new Error("command lookup is not authorized");
         const key = idempotencyKey(requestedOrg, requestedCommand);
         if (!keyAllowed(key, this.config.allowed_read_keys, "kcl:")) throw new Error("state key is not authorized");
@@ -196,7 +200,7 @@ export class FabricChaincode {
       const ctx = new BufferedContext(actor, this.config.channel_id, stub.getTxID(), timestamp(stub), stub, this.config);
       const result = await this.core.execute(ctx, command);
       await this.flush(ctx);
-      return this.responses.success(new TextEncoder().encode(JSON.stringify({ status: "executed", result })));
+      return this.responses.success(encoder.encode(JSON.stringify({ status: "executed", result })));
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error && error.code === 'IDEMPOTENCY_CONFLICT' ? 'IDEMPOTENCY_CONFLICT' : 'COMMAND_REJECTED';
       return this.responses.error(safeMessage(code));

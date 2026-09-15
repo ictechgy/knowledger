@@ -16,6 +16,10 @@ test('chaincode build creates a standalone Node package with pinned shim and loa
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.scripts.start, 'node entrypoint.mjs');
   assert.equal(manifest.dependencies['fabric-shim'], '2.5.8');
+  const lock = JSON.parse(readFileSync(join(output, 'package-lock.json'), 'utf8'));
+  assert.equal(lock.packages[''].dependencies['fabric-shim'], manifest.dependencies['fabric-shim']);
+  assert.equal(lock.packages['node_modules/fabric-shim'].version, '2.5.8');
+  assert.match(lock.packages['node_modules/fabric-shim'].integrity, /^sha512-/);
   const module = await import(pathToFileURL(join(output, 'packages/fabric/chaincode.js')).href);
   assert.equal(typeof module.FabricChaincode, 'function');
   const entrypoint = readFileSync(join(output, 'entrypoint.mjs'), 'utf8');

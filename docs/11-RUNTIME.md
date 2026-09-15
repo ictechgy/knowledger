@@ -68,8 +68,8 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 |---|---|---|
 | 불변 본문/합의 | 공유 TS 도메인 엔진, 엄격 입력 검증, 전체 본문 해시, 최신 대표 승인, CAS, 철회 | 실제 기관의 역할·공개 정책 확정 |
 | 로컬 보존 | SQLite 원자적 명령, 전체 write-set 이력, 시점별 projection 재구축 | 독립 조직 운영·외부 백업·복구 목표 |
-| Fabric | 같은 엔진의 shim/Gateway adapter와 테스트 | 실제 peer/orderer/CA 배포·endorsement·SDK 의존성 설치·네트워크 장애 시험 |
-| resolver | fresh local fence, 정확한 transaction 위치, 의존성 검증, 실제 승인 refs | Fabric 블록 해독·VALID write-set 이벤트 투영·동일 블록 여러 거래 통합 시험 |
+| Fabric | 같은 엔진의 shim/Gateway adapter, 공식 의존성·lockfile, 실제 SDK 경계 검사·공식 peer 패키징, 테스트 네트워크 스크립트 | 테스트 인증서 승인 후 실제 peer/orderer 배포·endorsement·VALID commit·네트워크 장애 시험 |
+| resolver | fresh local fence, 의존성 검증·승인 refs, Fabric full-block 메모리 reader와 합성 protobuf 검사 | 실제 peer 동일 블록 통합 시험, 영속 Fabric projector·복구·HTTP 연결 |
 | 인증/기밀 | loopback, 출처/CSRF 검사, actor별 초안·manifest, 공개 확인 | SSO/개별 사용자 서명, 조직별 프로세스·KMS·vault 분리 |
 | 운영 | 고정된 genesis·정책, 명시적 실패 처리 | 동적 governance, 실제 channel config 변경 감지·freeze·조직 migration |
 
