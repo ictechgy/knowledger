@@ -99,15 +99,22 @@ export class KclService {
     const documents = await Promise.all(revisions.map(async revision => {
       const eligibility = await domain.resolveAt(async key => this.ledger.read(key, checkpoint), slotFields(revision.payload));
       const agreement = eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement : agreements.filter(item => item.revision_digest === revision.revision_digest).sort((a, b) => a.activated_at.localeCompare(b.activated_at) || a.agreement_id.localeCompare(b.agreement_id)).at(-1);
-      return { ...revision, agreement, eligible: eligibility.eligible && eligibility.revision?.revision_digest === revision.revision_digest, reason: eligibility.reason,
-        history: revisions.filter(item => sameSlot(item.payload, revision.payload)).map(item => ({ revision_digest: item.revision_digest, title: item.payload.title, created_at: item.payload.metadata.created_at })) };
+      return { ...revision, published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)), agreement, eligible: eligibility.eligible && eligibility.revision?.revision_digest === revision.revision_digest, reason: eligibility.reason,
+        history: revisions.filter(item => sameSlot(item.payload, revision.payload)).map(item => ({ revision_digest: item.revision_digest, title: item.payload.title, created_at: item.payload.metadata.created_at, checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(item.revision_digest)) })) };
     }));
     const decisions = this.values('decision', checkpoint);
     const config = this.config(checkpoint);
-    const proposals = this.values('proposal', checkpoint).map(proposal => ({ ...proposal,
-      decisions: decisions.filter(decision => decision.proposal_id === proposal.proposal_id),
-      required_representatives: config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives,
-    }));
+    const proposals = this.values('proposal', checkpoint).map(proposal => {
+      const representatives = config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
+      return { ...proposal, agreement: agreements.find(item => item.agreement_id === proposal.agreement_id),
+        decision_history: decisions.filter(decision => decision.proposal_id === proposal.proposal_id),
+        decisions: representatives.map((rep: any) => {
+          const pointer = this.ledger.read(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id), checkpoint);
+          return pointer ? this.ledger.read(domain.keyFor.decision(pointer.decision_id), checkpoint) : undefined;
+        }).filter(Boolean),
+        required_representatives: representatives,
+      };
+    });
     this.actor(actor);
     return { mode: 'local-simulation', channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
   }

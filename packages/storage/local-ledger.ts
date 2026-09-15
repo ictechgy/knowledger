@@ -118,6 +118,12 @@ export class LocalLedger {
     return checkpoint;
   }
 
+  checkpointForStateCreation(key: string): Checkpoint {
+    const row = this.db.prepare('SELECT t.record_json FROM projection_history h JOIN ledger_transactions t ON t.sequence = h.sequence WHERE h.state_key = ? ORDER BY h.sequence LIMIT 1').get(key) as any;
+    if (!row) throw new Error('State creation checkpoint is missing');
+    return JSON.parse(row.record_json).checkpoint;
+  }
+
   assertCheckpoint(at: Checkpoint): void {
     if (at.channel_id !== this.channelId || at.transaction_index !== 0 || !Number.isSafeInteger(at.block_number)) throw new Error('Invalid checkpoint');
     const row = this.db.prepare('SELECT record_json FROM ledger_transactions WHERE sequence = ?').get(at.block_number) as any;
