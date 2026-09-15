@@ -84,7 +84,7 @@ function renderOverview() {
   const overview = state.overview || {};
   const docs = currentDocuments();
   const proposals = overview.proposals || [];
-  const active = docs.filter((doc) => doc.eligible && doc.agreement?.status === 'active').length;
+  const active = (overview.documents || []).filter((doc) => doc.eligible && doc.agreement?.status === 'active').length;
   text(el('metric-agreements'), active);
   text(el('metric-proposals'), proposals.filter((proposal) => !proposal.agreement_id).length);
   text(el('metric-documents'), docs.length);
@@ -159,7 +159,15 @@ function statusForDocument(doc) {
   if (doc.eligible && doc.agreement?.status === 'active') return { label: '활성 · 사용 가능', className: 'state-chip-active' };
   if (doc.agreement?.status === 'suspended') return { label: '정지됨', className: 'state-chip-blocked' };
   if (doc.agreement?.status === 'withdrawn') return { label: '철회됨', className: 'state-chip-blocked' };
-  return { label: doc.reason || '합의 검토 필요', className: 'state-chip-review' };
+  return { label: '합의 검토 필요', className: 'state-chip-review' };
+}
+
+function reasonLabel(reason) {
+  if (reason === 'NO_ACTIVE_AGREEMENT') return '아직 채택된 합의가 없습니다. 지정된 책임자의 검토가 필요합니다.';
+  if (reason?.startsWith('DEPENDENCY_')) return '이 문서가 의존하는 지식의 합의를 먼저 확인해 주세요.';
+  if (reason?.startsWith('CORRUPT_')) return '원문이나 승인 이력을 확인할 수 없어 사용을 보류합니다.';
+  if (reason === 'SERVING_FROZEN') return '공유 지식 제공이 일시 중지되어 있습니다.';
+  return '활성 합의와 사용 범위를 다시 확인해 주세요.';
 }
 
 function renderDocumentDetail(doc) {
@@ -172,7 +180,7 @@ function renderDocumentDetail(doc) {
   const chip = document.createElement('span'); chip.className = `status-chip ${status.className}`; chip.textContent = status.label; top.append(type, chip);
   const body = document.createElement('div'); body.className = 'detail-body';
   const title = document.createElement('h2'); title.id = 'document-title'; title.className = 'detail-title'; title.tabIndex = -1; title.textContent = payload.title || '제목 없는 문서';
-  const description = document.createElement('p'); description.className = 'detail-description'; description.textContent = doc.reason || '이 도메인이 책임지는 의미의 최신 개정본입니다.';
+  const description = document.createElement('p'); description.className = 'detail-description'; description.textContent = doc.reason ? reasonLabel(doc.reason) : '이 도메인이 책임지는 의미의 최신 개정본입니다.';
   const metadata = document.createElement('div'); metadata.className = 'metadata-row';
   [['revision', shortDigest(doc.revision_digest)], ['scope', payload.scope_id], ['작성', formatDate(payload.metadata?.created_at)]].forEach(([label, value]) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(value || '—')); metadata.append(item); });
   const source = document.createElement('div'); source.className = 'source-view';
@@ -184,7 +192,7 @@ function renderDocumentDetail(doc) {
     const history = document.createElement('div'); history.className = 'history-section'; const heading = document.createElement('h3'); heading.className = 'subheading'; heading.textContent = '개정 이력'; const list = document.createElement('div'); list.className = 'history-list';
     doc.history.forEach((item) => { const row = document.createElement('div'); row.className = 'history-item'; const name = document.createElement('strong'); name.textContent = item.title || '제목 없음'; const date = document.createElement('span'); date.textContent = `${shortDigest(item.revision_digest)} · ${formatDate(item.created_at)}`; row.append(name, date); list.append(row); }); history.append(heading, list); body.append(history);
   }
-  const note = document.createElement('div'); note.className = 'eligibility-note'; const noteStrong = document.createElement('strong'); noteStrong.textContent = doc.eligible ? '✓ 현재 fence에서 사용 가능' : '· 현재 사용 보류'; const noteText = document.createElement('span'); noteText.textContent = doc.eligible ? '활성 agreement와 의존성이 확인된 문서입니다.' : (doc.reason || '활성 agreement 또는 의존성 확인이 필요합니다.'); note.append(noteStrong, noteText); body.append(note);
+  const note = document.createElement('div'); note.className = 'eligibility-note'; const noteStrong = document.createElement('strong'); noteStrong.textContent = doc.eligible ? '✓ 조회 시점에 유효한 합의' : '· 이 개정본은 검토 필요'; const noteText = document.createElement('span'); noteText.textContent = doc.eligible ? '실제 사용 전 아래에서 실행 컨텍스트를 확인해 주세요.' : (!doc.reason && activeAgreementForSlot(doc) ? '새 개정본을 채택하기 전까지 조회에는 기존 채택본이 사용됩니다.' : reasonLabel(doc.reason)); note.append(noteStrong, noteText); body.append(note);
   container.append(top, body);
 }
 
