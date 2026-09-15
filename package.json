@@ -1,0 +1,17 @@
+{
+  "name": "knowledge-consensus-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Domain-scoped knowledge agreements for KB, LLM wiki and AI workflows",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node apps/api/main.ts",
+    "dev": "node --watch apps/api/main.ts",
+    "test": "node --test --test-reporter=spec 'test/**/*.test.ts'",
+    "test:design": "python3 -B tools/validate_design.py && python3 -B tools/check_docs.py",
+    "check": "npm test && npm run test:design",
+    "demo": "node tools/demo.ts"
+  }
+}
