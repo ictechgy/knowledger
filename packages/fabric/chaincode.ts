@@ -12,7 +12,6 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_COMMAND_TYPES = ["publish_revision", "propose", "decide", "activate", "suspend", "withdraw", "fence"] as const;
-const DEFAULT_ORGS = ["SalesMSP", "FulfillmentMSP", "SettlementMSP"] as const;
 const INTERNAL_BOOTSTRAP_KEY = "kcl:v1:bootstrap_manifest";
 
 const defaultResponses: FabricResponseFactory = {
@@ -37,7 +36,7 @@ function actorFromStub(stub: FabricStub, config: FabricChaincodeConfig): Actor {
   const decoder = config.identity_decoder;
   if (!decoder) throw new Error("authenticated Fabric ClientIdentity decoder is required");
   const identity = decoder(stub.getCreator(), stub);
-  const allowed = config.allowed_org_ids ?? DEFAULT_ORGS;
+  const allowed = config.allowed_org_ids ?? [...new Set(config.registered_identities.map((candidate) => candidate.msp_id))];
   if (!allowed.includes(identity.msp_id)) throw new Error("organization not allowed");
   if (!config.registered_identities.some((candidate) => candidate.msp_id === identity.msp_id && candidate.actor_id === identity.actor_id && candidate.actor_kind === identity.actor_kind)) {
     throw new Error("actor is not registered");
@@ -141,6 +140,30 @@ export class FabricChaincode {
     this.responses = config.responses ?? defaultResponses;
     if (config.channel_id.length === 0 || !config.public_genesis || !config.bootstrap_identity) throw new Error("immutable Fabric config is required");
     if (!Array.isArray(config.registered_identities) || config.registered_identities.length === 0) throw new Error('Pinned registered identities are required');
+    const registeredKeys = new Set<string>();
+    const registeredOrgs = new Set<string>();
+    for (const identity of config.registered_identities) {
+      if (!identity.msp_id || !identity.actor_id || (identity.actor_kind !== "human" && identity.actor_kind !== "agent")) {
+        throw new Error("pinned identity is malformed");
+      }
+      const key = `${identity.msp_id}|${identity.actor_id}|${identity.actor_kind}`;
+      if (registeredKeys.has(key)) throw new Error("pinned identities contain duplicates");
+      registeredKeys.add(key);
+      registeredOrgs.add(identity.msp_id);
+    }
+    const bootstrap = config.bootstrap_identity;
+    if (bootstrap.actor_kind !== "human" || !registeredKeys.has(`${bootstrap.msp_id}|${bootstrap.actor_id}|${bootstrap.actor_kind}`)) {
+      throw new Error("bootstrap identity must be a pinned human identity");
+    }
+    if (config.allowed_org_ids) {
+      const allowlist = new Set(config.allowed_org_ids);
+      if (allowlist.size !== config.allowed_org_ids.length || allowlist.size === 0 || !allowlist.has(bootstrap.msp_id)) {
+        throw new Error("organization allowlist is inconsistent with bootstrap identity");
+      }
+      for (const orgId of allowlist) {
+        if (!registeredOrgs.has(orgId)) throw new Error("organization allowlist contains an unregistered organization");
+      }
+    }
   }
 
   async Init(stub: FabricStub): Promise<FabricChaincodeResponse> {

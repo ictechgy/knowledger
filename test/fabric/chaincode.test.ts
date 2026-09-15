@@ -124,3 +124,34 @@ test("duplicate command JSON keys are rejected before core execution", async () 
   assert.equal(result.status, 500);
   assert.equal(executed, false);
 });
+
+test("organization authorization derives from pinned identities when no allowlist is supplied", async () => {
+  const alternateActor = { msp_id: "AcmeMSP", attrs: { "kcl.actor_id": "person-acme-owner", "kcl.actor_kind": "human" } };
+  const alternate = config({
+    bootstrap_identity: { msp_id: "AcmeMSP", actor_id: "person-acme-owner", actor_kind: "human" },
+    registered_identities: [
+      { msp_id: "AcmeMSP", actor_id: "person-acme-owner", actor_kind: "human" },
+      { msp_id: "OtherMSP", actor_id: "person-other-owner", actor_kind: "human" },
+    ],
+    identity_decoder: (creator) => {
+      const value = creator as { msp_id: string; attrs: Record<string, string> };
+      return { msp_id: value.msp_id, actor_id: value.attrs["kcl.actor_id"], actor_kind: value.attrs["kcl.actor_kind"] as "human" | "agent" };
+    },
+  });
+  const chaincode = new FabricChaincode({ bootstrap: async () => ({}), execute: async () => ({ ok: true }) }, alternate);
+  const accepted = new FakeStub(alternateActor, "tx-acme", "kcl-demo");
+  accepted.args = [new TextEncoder().encode(JSON.stringify({ command_id: "acme-1", type: "fence", input: {} }))];
+  assert.equal((await chaincode.Invoke(accepted)).status, 200);
+});
+
+test("pinned founder and explicit organization allowlist must be consistent", () => {
+  assert.throws(() => new FabricChaincode({ bootstrap: async () => ({}), execute: async () => ({}) }, config({
+    allowed_org_ids: ["UnknownMSP"],
+  })), /allowlist/);
+  assert.throws(() => new FabricChaincode({ bootstrap: async () => ({}), execute: async () => ({}) }, config({
+    allowed_org_ids: ["SettlementMSP"],
+  })), /bootstrap/);
+  assert.throws(() => new FabricChaincode({ bootstrap: async () => ({}), execute: async () => ({}) }, config({
+    bootstrap_identity: { msp_id: "SalesMSP", actor_id: "person-sales-owner", actor_kind: "agent" },
+  })), /human/);
+});

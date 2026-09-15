@@ -1,5 +1,32 @@
 # 검증 기록
 
+## 범용 조직 설정과 예제 분리 — 2026-09-16
+
+- `npm run check`: **178 passed / 0 failed / 0 skipped**, 설계 계약·문서 검사 통과.
+- `npm run check:types`, `npm run demo` 통과. 새 외부 의존성을 추가하지 않았다.
+- 의존성·runtime 없는 별도 source copy: **143 passed / 0 failed / 35 optional skipped**.
+  마지막 local snapshot 재기동·legacy channel 검사도 해당 copy에서13개 통과했다.
+- 임의 2·4조직의 빈 초기 상태, 중복 actor 이름의 조직 구분, 전원 승인 전 제공 보류,
+  actor별 비공개 초안, 설정/데이터 바인딩, 고정 HTTPS Host/Origin과 chaincode 패키징을 검증했다.
+- `npm run configured:smoke`: 기존 테스트 네트워크에 새 JSON 설정·OIDC·별도 generic key signer를 연결.
+  게시/승인 VALID block159/161, 미등록 subject·역할 변경 거부, 철회 후 withheld,
+  version3 snapshot 복원 뒤 비공개 초안·상태 재조회 통과.
+  `.data/configured-smoke-IUrZJI/evidence.json`에 근거가 있다. 선택하지 않은 조직의 인증서 경로는
+  존재하지 않는 값으로 두어 해당 파일을 읽지 않는 것도 확인했다.
+- 예제 회귀: `organization:smoke` 게시block167·3개 앱·단일 key/outbox·scope 복원;
+  `auth:smoke` 게시/승인block175/177·권한 회수·전송 전 취소·signer 복구·version1 복원 통과.
+  근거는 `.data/organization-smoke-WZUdAW/organization-evidence.json`,
+  `.data/auth-smoke-2ME3X7/auth-evidence.json`이다.
+- 새 프로필의 복원 manifest를 scope 검사가 거부하는 문제를 재현한 뒤 고쳤다.
+  복원 파일 존재 검사에 더해 `ensureConfigurationScope`와 앱 재기동을 회귀 검사에 포함했다.
+- 브라우저: 2조직 초안→미리보기→게시→승인→활성→제공, 계정 전환 시 private 목록 제거,
+  최신 개정이 있어도 검토함의 정확한 과거 개정 본문 선택, 내비게이션 focus를 확인했다.
+  390/600/1440px에서 가로 넘침 없음, 600px 문서 목록1열. 스크린샷 비교는 수행하지 못했다.
+  일부 native click이 반영되지 않아 DOM 이벤트를 사용했다. 근거는 `.artifacts/configuration/ui-evidence.json`이다.
+
+실제 물리적 2·4조직 Fabric 네트워크, 회사 SSO/KMS, 독립 호스트의 장애 내성은 이번 검사 범위가 아니다.
+chaincode는 재배포하지 않았으며 기존 테스트 원장·인증서·공유 이력을 보존했다. 원격 push와 CI 실행은 하지 않았다.
+
 ## 조직별 실행과 Claude 디자인 논의 — 2026-09-16
 
 `npm run check`: **154 passed / 0 failed / 0 skipped**, `npm run check:types`와

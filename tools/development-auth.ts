@@ -5,10 +5,10 @@ import { existsSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { startDevelopmentIssuer } from '../packages/auth/development-issuer.ts';
-import { createDevelopmentAuthRuntime } from '../apps/api/development-auth-runtime.ts';
-import { createApp } from '../apps/api/server.ts';
-import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from '../packages/fabric/development-organizations.ts';
+import { startDevelopmentIssuer } from '../examples/order-workflow/issuer.ts';
+import { createDevelopmentAuthRuntime } from '../examples/order-workflow/auth-runtime.ts';
+import { createDemoApp as createApp } from '../examples/order-workflow/application.ts';
+import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from '../examples/order-workflow/organizations.ts';
 import { ensureRuntimeScope } from '../packages/storage/runtime-scope.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -62,7 +62,7 @@ try {
   // Short, owner-only Unix socket path; no private key is copied here.
   socketDirectory = mkdtempSync('/tmp/kcl-signing-');
   const socketPath = join(socketDirectory, 'sign.sock');
-  signer = spawn(process.execPath, ['infra/fabric/signing-service.ts', '--socket', socketPath, ...(organization ? ['--key-id', organization.key_id] : [])], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
+  signer = spawn(process.execPath, ['infra/fabric/signing-service.ts', '--socket', socketPath, '--demo', ...(organization ? ['--key-id', organization.key_id] : [])], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
   signer.stderr?.on('data', () => { /* Do not relay arbitrary crypto/library diagnostics. */ });
   let signerError = false;
   signer.once('error', () => { signerError = true; });

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 import type { ApplicationAuthentication, AuthenticatedSession } from '../../packages/auth/types.ts';
-import { createApp } from '../../apps/api/server.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 import { performance } from 'node:perf_hooks';
 
 const actor: Actor = { org_id: 'FulfillmentMSP', actor_id: 'person-fulfillment-owner', kind: 'human' };
@@ -67,7 +67,7 @@ test('authentication mode does not create a demo identity for anonymous sessions
   const api = await fixture(t);
   const response = await fetch(`${api.url}/api/session`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { actor: null, personas: [], login_url: '/auth/login', auth_mode: 'oidc-development', mode: 'local-simulation' });
+  assert.deepEqual(await response.json(), { workspace: { id: 'demo', label: 'Order workflow demo' }, organizations: [], demo: true, capabilities: { publish_contexts: [], can_propose: false }, actor: null, personas: [], login_url: '/auth/login', auth_mode: 'oidc-development', mode: 'local-simulation' });
   assert.equal((await fetch(`${api.url}/v1/workspaces/demo/overview`)).status, 401);
 });
 
@@ -82,7 +82,7 @@ test('authenticated sessions cannot inject a role and protected work uses auth.r
   assert.equal(session.actor.actor_id, actor.actor_id);
   assert.deepEqual(session.personas, []);
   assert.equal(session.logout_url, '/auth/logout');
-  const injected = await fetch(`${api.url}/api/session`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify({ actor_id: 'person-settlement-owner' }) });
+  const injected = await fetch(`${api.url}/api/session`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify({ org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' }) });
   assert.equal(injected.status, 403);
   const overview = await fetch(`${api.url}/v1/workspaces/demo/overview`, { headers: { Cookie: cookie } });
   assert.equal(overview.status, 200);
@@ -119,7 +119,7 @@ test('a revoked OIDC session exposes only the anonymous login metadata', async t
   t.mock.method(api.authentication, 'session', async () => { throw Object.assign(new Error('Revoked'), { status: 401, code: 'AUTHORIZATION_REVOKED' }); });
   const response = await fetch(`${api.url}/api/session`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { actor: null, personas: [], login_url: '/auth/login', auth_mode: 'oidc-development', mode: 'local-simulation' });
+  assert.deepEqual(await response.json(), { workspace: { id: 'demo', label: 'Order workflow demo' }, organizations: [], demo: true, capabilities: { publish_contexts: [], can_propose: false }, actor: null, personas: [], login_url: '/auth/login', auth_mode: 'oidc-development', mode: 'local-simulation' });
   assert.equal((await fetch(`${api.url}/v1/workspaces/demo/overview`)).status, 401);
 });
 

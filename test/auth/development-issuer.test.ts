@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import type { DevelopmentIssuer, StartDevelopmentIssuerOptions } from '../../packages/auth/development-issuer.ts';
+import type { DevelopmentIssuer, StartDevelopmentIssuerOptions } from '../../examples/order-workflow/issuer.ts';
 
 const CLIENT_ID = 'kcl-development-client';
 const REDIRECT_URI = 'http://127.0.0.1:4399/auth/callback';
@@ -28,7 +28,7 @@ try {
 }
 
 async function startDevelopmentIssuer(options: StartDevelopmentIssuerOptions) {
-  const issuer = await import('../../packages/auth/development-issuer.ts');
+  const issuer = await import('../../examples/order-workflow/issuer.ts');
   return issuer.startDevelopmentIssuer(options);
 }
 

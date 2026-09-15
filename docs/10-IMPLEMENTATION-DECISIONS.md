@@ -96,3 +96,20 @@ v0.1은 고정된 채널·역할·합의 정책으로 시작한다. 임의 정�
 CI는 Node 24/26 로컬 검사를 실행하도록 작성했다. Actions는 [checkout v7.0.1](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1)과 [setup-node v6.5.0](https://github.com/actions/setup-node/commit/249970729cb0ef3589644e2896645e5dc5ba9c38)의 확인한 commit SHA에 고정했다. 원격 CI 실행은 아직 하지 않았다.
 
 기밀 초안과 run manifest는 로컬 저장소에만 둔다. 공용 원장에는 명시적으로 공개를 확인한 본문만 제출한다. 이 분리는 실제 배포에서 각 조직 gateway/vault를 분리하는 요구를 대체하지 않는다.
+
+### 설정 기반 제품과 선택형 업무 예제 — 2026-09-16
+
+MIT 오픈소스 제품이 특정 세 부서에 종속되지 않도록 workspace·조직·identity·역할·정책·연결을
+version1 프로젝트 JSON으로 받는다. `npm start`는 명시적 설정 또는 `kcl.config.json`이 필요하고,
+초기 문서·제안·가상 승인은 만들지 않는다. 주문 업무 seed와 고정 peer/계정/키 선택은
+`examples/order-workflow`와 명시적인 `demo:*` 실행으로 옮겼다.
+
+같은 actor ID를 여러 조직에서 사용할 수 있으므로 로컬 계정 선택은 조직과 actor 쌍으로 한다.
+Fabric은 선택 조직의 OIDC subject와 서명 route만 연다. 앱 설정의 개인키 본문은 받지 않으며
+별도 signer는 명시적인 인증서/키 파일 참조를 사용한다. 고정 HTTPS public origin을 사용하는
+reverse proxy 뒤에서도 listener는 loopback이며, 전달된 Host/Origin을 검증한다.
+
+기존 원장에 권한 변경을 조용히 적용하지 않도록 프로젝트 binding에 genesis·로그인 binding을
+묶는다. 표시 라벨과 연결 참조의 교체는 별도로 허용한다. 새 configured snapshot은 version3이며
+기존 예제의 version1·2를 유지한다. 범용 2·4조직 로컬/API·패키징 검사와 기존 3조직 실제 Fabric
+검증을 구분한다. 지식 승인 프로토콜과 인프라 합의 선택에는 변경이 없다.

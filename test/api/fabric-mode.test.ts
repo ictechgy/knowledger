@@ -7,9 +7,11 @@ import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import type { Actor, Checkpoint, LedgerEvent } from '../../packages/storage/local-ledger.ts';
 import type { ApplicationLedger, CommittedReceipt, PendingReceipt } from '../../packages/storage/ledger-port.ts';
 import type { DomainCommand } from '../../packages/domain/index.ts';
-import { demoFixtures, PERSONAS, BOOTSTRAP_ACTOR } from '../../apps/api/demo-config.ts';
-import { createApp } from '../../apps/api/server.ts';
+import { demoFixtures, PERSONAS, BOOTSTRAP_ACTOR } from '../../examples/order-workflow/config.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 import { KclService } from '../../apps/api/service.ts';
+import { seedDemo } from '../../examples/order-workflow/application.ts';
+import { demoDefinition } from '../../examples/order-workflow/config.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 
 class FabricTestPort implements ApplicationLedger {
@@ -66,7 +68,7 @@ test('Fabric mode does not seed and requires the injected signer list', async t 
   assert.equal((await fetch(`${api.url}/api/session`)).status, 200);
   const response = await fetch(`${api.url}/api/session`, {
     method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
-    body: JSON.stringify({ actor_id: 'agent-knowledge-drafter' }),
+    body: JSON.stringify({ org_id: 'FulfillmentMSP', actor_id: 'agent-knowledge-drafter' }),
   });
   assert.equal(response.status, 404);
 
@@ -116,8 +118,9 @@ test('a committed receipt without an idempotency record fails closed', async t =
 test('resolve withholds a fence superseded after full block refresh', async t => {
   const local = new LocalLedger(':memory:', 'kcl-demo');
   const seedVault = new PrivateStore(':memory:');
-  const seedService = new KclService(local, seedVault);
-  await seedService.initialize(true);
+  const seedService = new KclService(local, seedVault, demoDefinition());
+  await seedService.initialize();
+  await seedDemo(seedService);
   const port = new FabricTestPort(local);
   t.after(() => seedVault.close());
   const api = await appFixture(t, port, PERSONAS.slice(0, 3));

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { bootstrap, execute, keyFor, resolveAt } from "../../packages/domain/index.ts";
-import { actorIdentity, demoFixtures, PERSONAS } from "../../apps/api/demo-config.ts";
+import { actorIdentity, demoFixtures, PERSONAS } from "../../examples/order-workflow/config.ts";
 import { sha256Digest } from "../../packages/fabric/canonical.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));

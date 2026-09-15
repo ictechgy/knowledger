@@ -22,7 +22,7 @@
 
 ## HTTP 계약
 
-기본 경로는 `/v1/workspaces/demo`이며 모든 경로에서 기존 세션·actor 인가를 수행한다.
+경로는 `/v1/workspaces/{workspace.id}`(예제: `demo`)이며 모든 경로에서 기존 세션·actor 인가를 수행한다.
 OIDC 모드는 요청 전후에 현재 계정 권한도 확인한다.
 
 | 경로 | 동작 |

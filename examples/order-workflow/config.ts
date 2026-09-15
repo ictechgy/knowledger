@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { digestPayload } from '../../packages/domain/index.ts';
+import { digestPayload, validateConfig } from '../../packages/domain/index.ts';
+import type { ApplicationDefinition } from '../../packages/config/types.ts';
 
 export const CHANNEL_ID = 'kcl-demo';
 export const PERSONAS = [
@@ -10,7 +11,7 @@ export const PERSONAS = [
 ];
 export const actorIdentity = (persona: typeof PERSONAS[number]) => ({ org_id: persona.org_id, actor_id: persona.actor_id, kind: persona.kind });
 export const BOOTSTRAP_ACTOR = actorIdentity(PERSONAS[1]);
-const source = (name: string) => JSON.parse(readFileSync(new URL(`../../examples/${name}.json`, import.meta.url), 'utf8'));
+const source = (name: string) => JSON.parse(readFileSync(new URL(`../${name}.json`, import.meta.url), 'utf8'));
 const slotFields = (payload: any) => ({ channel_id: payload.channel_id, document_id: payload.document_id, context_id: payload.context_id, scope_id: payload.scope_id, usage_scope: payload.usage_scope });
 
 function wrap(payload: any) { return { revision_digest: digestPayload(payload), payload }; }
@@ -51,3 +52,15 @@ export function demoFixtures() {
 }
 
 export { slotFields };
+
+export function demoDefinition(): ApplicationDefinition {
+  const fixtures = demoFixtures();
+  const contextLabels: Record<string,string> = { 'context-sales':'영업 · 계약', 'context-fulfillment':'이행 · 배송', 'context-settlement':'정산 · 수납', 'context-coordination':'교차 도메인 합의' };
+  const roleLabels: Record<string,string> = { sales_owner:'영업 책임자', fulfillment_owner:'이행 책임자', settlement_owner:'정산 책임자' };
+  return { demo:true, workspace:{ id:'demo', label:'Order workflow demo',
+    contexts:Object.entries(contextLabels).map(([id,label])=>({id,label})),
+    usage_scopes:[...new Set(fixtures.policies.map(policy=>policy.usage_scope))].map(id=>({id,label:id})),
+    roles:Object.entries(roleLabels).map(([id,label])=>({id,label})) },
+    organizations:[...new Set(PERSONAS.map(persona=>persona.org_id))].map(org_id=>({org_id,label:org_id})),
+    personas:PERSONAS.map(persona=>({...persona})), genesis:validateConfig(fixtures.config), bootstrap_actor:BOOTSTRAP_ACTOR, default_actor:BOOTSTRAP_ACTOR };
+}

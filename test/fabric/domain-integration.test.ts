@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { demoFixtures } from "../../apps/api/demo-config.ts";
+import { demoFixtures } from "../../examples/order-workflow/config.ts";
 import { bootstrap, execute } from "../../packages/domain/index.ts";
 import { FabricChaincode } from "../../packages/fabric/chaincode.ts";
 import type { FabricChaincodeConfig, FabricStub } from "../../packages/fabric/types.ts";

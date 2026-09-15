@@ -11,7 +11,7 @@ for (const dependency of ['openid-client', 'oidc-provider', 'jose']) {
   try { requireAuth.resolve(dependency); }
   catch (error) { const e = error as NodeJS.ErrnoException; if (e.code !== 'MODULE_NOT_FOUND' || !e.message.startsWith(`Cannot find module '${dependency}'`)) throw error; available = false; }
 }
-const modules = available ? await Promise.all([import('../../packages/auth/oidc.ts'), import('../../packages/auth/development-issuer.ts')]) : undefined;
+const modules = available ? await Promise.all([import('../../packages/auth/oidc.ts'), import('../../examples/order-workflow/issuer.ts')]) : undefined;
 const sales: Actor = { org_id: 'SalesMSP', actor_id: 'person-sales-owner', kind: 'human' };
 
 async function fixture(t: any) {

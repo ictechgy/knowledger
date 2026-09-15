@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "workspace": {
+    "id": "research",
+    "label": "Knowledge workspace",
+    "contexts": [
+      {
+        "id": "context-shared",
+        "label": "Shared knowledge"
+      }
+    ],
+    "usage_scopes": [
+      {
+        "id": "reference/v1",
+        "label": "Reference knowledge"
+      }
+    ],
+    "roles": [
+      {
+        "id": "reviewer-1",
+        "label": "Organization 1 reviewer"
+      },
+      {
+        "id": "reviewer-2",
+        "label": "Organization 2 reviewer"
+      },
+      {
+        "id": "reviewer-3",
+        "label": "Organization 3 reviewer"
+      },
+      {
+        "id": "reviewer-4",
+        "label": "Organization 4 reviewer"
+      }
+    ]
+  },
+  "organizations": [
+    {
+      "org_id": "ResearchMSP",
+      "label": "Organization 1"
+    },
+    {
+      "org_id": "ReviewMSP",
+      "label": "Organization 2"
+    },
+    {
+      "org_id": "DeliveryMSP",
+      "label": "Organization 3"
+    },
+    {
+      "org_id": "AuditMSP",
+      "label": "Organization 4"
+    }
+  ],
+  "identities": [
+    {
+      "org_id": "ResearchMSP",
+      "actor_id": "maintainer",
+      "kind": "human",
+      "label": "Organization 1 maintainer"
+    },
+    {
+      "org_id": "ReviewMSP",
+      "actor_id": "maintainer",
+      "kind": "human",
+      "label": "Organization 2 maintainer"
+    },
+    {
+      "org_id": "DeliveryMSP",
+      "actor_id": "maintainer",
+      "kind": "human",
+      "label": "Organization 3 maintainer"
+    },
+    {
+      "org_id": "AuditMSP",
+      "actor_id": "maintainer",
+      "kind": "human",
+      "label": "Organization 4 maintainer"
+    }
+  ],
+  "genesis": {
+    "config_version": 1,
+    "channel_id": "research-channel",
+    "membership_epoch": 1,
+    "role_binding_version": 1,
+    "serving_enabled": true,
+    "identities": [
+      {
+        "org_id": "ResearchMSP",
+        "actor_id": "maintainer",
+        "kind": "human",
+        "publish_contexts": [
+          "context-shared"
+        ],
+        "can_propose": true
+      },
+      {
+        "org_id": "ReviewMSP",
+        "actor_id": "maintainer",
+        "kind": "human",
+        "publish_contexts": [
+          "context-shared"
+        ],
+        "can_propose": true
+      },
+      {
+        "org_id": "DeliveryMSP",
+        "actor_id": "maintainer",
+        "kind": "human",
+        "publish_contexts": [
+          "context-shared"
+        ],
+        "can_propose": true
+      },
+      {
+        "org_id": "AuditMSP",
+        "actor_id": "maintainer",
+        "kind": "human",
+        "publish_contexts": [
+          "context-shared"
+        ],
+        "can_propose": true
+      }
+    ],
+    "policies": [
+      {
+        "contract_type": "AgreementPolicy",
+        "contract_version": 1,
+        "policy_id": "policy-shared-guideline",
+        "policy_version": 1,
+        "document_id": "doc-shared-guideline",
+        "context_id": "context-shared",
+        "scope_id": "scope-primary",
+        "usage_scope": "reference/v1",
+        "channel_id": "research-channel",
+        "membership_epoch": 1,
+        "role_binding_version": 1,
+        "acceptance_slot": "shared-guideline",
+        "required_domain_roles": [
+          "reviewer-1",
+          "reviewer-2",
+          "reviewer-3",
+          "reviewer-4"
+        ],
+        "allowed_decisions": [
+          "approve",
+          "object",
+          "abstain",
+          "retract"
+        ],
+        "role_decision_rule": "named_representatives",
+        "role_representatives": [
+          {
+            "actor_id": "maintainer",
+            "actor_org_id": "ResearchMSP",
+            "domain_role": "reviewer-1"
+          },
+          {
+            "actor_id": "maintainer",
+            "actor_org_id": "ReviewMSP",
+            "domain_role": "reviewer-2"
+          },
+          {
+            "actor_id": "maintainer",
+            "actor_org_id": "DeliveryMSP",
+            "domain_role": "reviewer-3"
+          },
+          {
+            "actor_id": "maintainer",
+            "actor_org_id": "AuditMSP",
+            "domain_role": "reviewer-4"
+          }
+        ]
+      }
+    ]
+  },
+  "bootstrap_actor": {
+    "org_id": "ResearchMSP",
+    "actor_id": "maintainer",
+    "kind": "human"
+  },
+  "ledger": {
+    "mode": "local-simulation",
+    "channel_id": "research-channel"
+  },
+  "authentication": {
+    "mode": "local-development"
+  }
+}

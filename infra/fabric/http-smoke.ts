@@ -40,7 +40,7 @@ async function waitHealthy() {
 
 async function start() {
   const port = await freePort(); url = `http://127.0.0.1:${port}`;
-  child = spawn(process.execPath, ['apps/api/main.ts', '--port', String(port), '--data', dataDir, '--ledger', 'fabric-test-network'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(process.execPath, ['apps/api/main.ts', '--demo', '--port', String(port), '--data', dataDir, '--ledger', 'fabric-test-network'], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   // Drain output without printing auth material or unbounded child error traces.
   child.stdout?.on('data', () => {}); child.stderr?.on('data', () => {});
   exited = new Promise<void>((resolve, reject) => { child!.once('error', reject); child!.once('exit', () => resolve()); });

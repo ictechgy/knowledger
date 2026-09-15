@@ -8,8 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { createRemoteSigner, RemoteSignerError } from "../../packages/fabric/remote-signer.ts";
-import { startDevelopmentSigningService } from "../../infra/fabric/signing-service.ts";
-import type { DevelopmentSigningKeyId } from '../../packages/fabric/remote-signer.ts';
+import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
 let sdkAvailable = true;
@@ -97,6 +96,18 @@ test("remote signer rejects malformed, wrong certificate, and rejected responses
     await assert.rejects(() => createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate })(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "invalid_request");
     const wrongCertificate = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate: Buffer.from("wrong certificate") });
     await assert.rejects(() => wrongCertificate(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+  } finally { await mock.close(); }
+});
+
+test("remote signer accepts generic safe key IDs and rejects unsafe IDs", async () => {
+  const certificate = Buffer.from("public certificate");
+  const mock = await mockSigningSocket(request => ({ ok: true, signature: Buffer.from(String(request.key_id)).toString("base64url") }));
+  try {
+    const signer = createRemoteSigner({ socketPath: mock.path, keyId: "org_alpha.owner-01", certificate });
+    assert.deepEqual(await signer(Buffer.alloc(32)), Buffer.from("org_alpha.owner-01"));
+    for (const keyId of ["ab", "bad/key", "é-owner", "x".repeat(129)]) {
+      assert.throws(() => createRemoteSigner({ socketPath: mock.path, keyId, certificate }), /key ID/i);
+    }
   } finally { await mock.close(); }
 });
 

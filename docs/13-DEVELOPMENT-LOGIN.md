@@ -24,7 +24,7 @@ npm run start:login
 npm run start:login -- --port 4330 --issuer-port 4331 --data .data/login-other
 ```
 
-기존 `npm start`와 `npm run start:fabric`는 명시적인 시뮬레이션/가상 역할 테스트다.
+예제 `npm run demo:web`와 `npm run start:fabric`는 명시적인 시뮬레이션/가상 역할 테스트다.
 새 로그인 모드의 기본 데이터는 `.data/fabric-login`이며 기존 테스트 데이터를 덮어쓰지 않는다.
 
 `--organization SalesMSP` 등의 옵션으로 계정·서명 키·데이터 폴더를 조직별로 제한할 수 있다.

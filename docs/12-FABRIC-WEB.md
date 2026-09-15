@@ -26,7 +26,7 @@ npm run start:fabric
 npm run start:fabric -- --port 4320 --data .data/fabric-web-other
 ```
 
-기존 `npm start`는 로컬 SQLite 시뮬레이션을 실행한다. Fabric 모드로 앱을
+예제 `npm run demo:web`는 로컬 SQLite 시뮬레이션을 실행한다. Fabric 모드로 앱을
 시작할 때 Init, fixture 게시, 사람의 승인을 자동 실행하지 않는다. 이미 커밋된
 공개 genesis와 원장 상태를 읽는다.
 

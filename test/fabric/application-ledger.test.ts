@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
-import { demoFixtures, PERSONAS, actorIdentity } from '../../apps/api/demo-config.ts';
+import { demoFixtures, PERSONAS, actorIdentity } from '../../examples/order-workflow/config.ts';
 import { idempotencyDigest, keyFor } from '../../packages/domain/index.ts';
 
 const actor = actorIdentity(PERSONAS[1]);

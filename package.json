@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "node apps/api/main.ts",
-    "start:fabric": "node apps/api/main.ts --ledger fabric-test-network --port 4318",
+    "start:fabric": "node apps/api/main.ts --demo --ledger fabric-test-network --port 4318",
     "start:login": "node tools/development-auth.ts",
     "auth:smoke": "node tools/auth-smoke.ts",
     "organization:smoke": "node tools/organization-smoke.ts",
@@ -28,7 +28,12 @@
     "fabric:upgrade": "python3 -B infra/fabric/test-network.py upgrade",
     "fabric:smoke": "node infra/fabric/smoke.ts",
     "fabric:http-smoke": "node infra/fabric/http-smoke.ts",
-    "fabric:stop": "python3 -B infra/fabric/test-network.py stop"
+    "fabric:stop": "python3 -B infra/fabric/test-network.py stop",
+    "config:init": "node tools/config-init.ts",
+    "demo:web": "node apps/api/main.ts --demo",
+    "demo:fabric": "node apps/api/main.ts --demo --ledger fabric-test-network --port 4318",
+    "demo:login": "node tools/development-auth.ts",
+    "configured:smoke": "node tools/configured-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.4",

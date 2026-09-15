@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,8 +12,11 @@ import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KclService, onlyFields } from './service.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
-import type { DevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
-import { CHANNEL_ID, PERSONAS, actorIdentity } from './demo-config.ts';
+import type { RuntimeScopeOrganization } from '../../packages/storage/runtime-scope.ts';
+import { ensureConfigurationScope, readConfigurationScope } from '../../packages/storage/configuration-scope.ts';
+import type { ConfiguredRuntimeBinding } from '../../packages/storage/configuration-scope.ts';
+import { actorIdentity } from '../../packages/config/types.ts';
+import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
 type RequestSession = Session | AuthenticatedSession;
@@ -21,20 +24,42 @@ const MAX_BODY = 768 * 1024;
 const token = () => randomBytes(32).toString('hex');
 const equal = (a: string, b: string) => a.length > 0 && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-export async function createApp(options: { dataDir: string; seed?: boolean; ledger?: ApplicationLedger; personas?: typeof PERSONAS; authentication?: ApplicationAuthentication; organization?: DevelopmentOrganization }) {
+export interface AppOptions {
+  dataDir: string; definition: ApplicationDefinition; ledger?: ApplicationLedger; personas?: Persona[];
+  authentication?: ApplicationAuthentication; organization?: RuntimeScopeOrganization;
+  binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
+}
+
+export async function createApp(options: AppOptions) {
   let ledger: ApplicationLedger | undefined = options.ledger;
   let vault: PrivateStore | undefined;
   let service: KclService | undefined;
   const authentication = options.authentication;
-  const personas = options.personas ?? PERSONAS;
+  const definition = options.definition;
+  const personas = options.personas ?? definition?.personas ?? [];
+  const workspaceRoot = definition ? `/v1/workspaces/${encodeURIComponent(definition.workspace.id)}` : '';
+  let publicOrigin: string | undefined;
   try {
     if (options.organization && (options.ledger?.mode !== 'fabric-test-network' || !authentication)) throw new Error('Organization scope requires an authenticated Fabric runtime');
-    ensureRuntimeScope(options.dataDir, options.organization);
-    ledger = options.ledger ?? new LocalLedger(join(options.dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
-    if (ledger.mode === 'fabric-test-network' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
+    if (options.binding) ensureConfigurationScope(options.dataDir, options.binding);
+    else {
+      if (readConfigurationScope(options.dataDir)) throw new Error('Configured data requires its project configuration');
+      ensureRuntimeScope(options.dataDir, options.organization);
+    }
+    if (!definition) throw new Error('An explicit application definition is required');
+    if (options.publicOrigin) {
+      const url = new URL(options.publicOrigin);
+      if (!['http:','https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Invalid public origin');
+      if (url.protocol === 'http:' && !['127.0.0.1','localhost','[::1]'].includes(url.hostname)) throw new Error('Public origins require HTTPS');
+      if (!authentication && !['127.0.0.1','localhost','[::1]'].includes(url.hostname)) throw new Error('Development sessions require loopback');
+      publicOrigin = url.origin;
+    }
+    ledger = options.ledger ?? new LocalLedger(join(options.dataDir, 'shared-ledger.sqlite'), definition.genesis.channel_id);
+    if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
+    if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KclService(ledger, vault, personas);
-    await service.initialize(options.seed ?? true);
+    service = new KclService(ledger, vault, definition, personas);
+    await service.initialize();
   } catch (error) {
     try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } }
     throw error;
@@ -46,8 +71,13 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(value));
   }
+  function localCookieName(): string {
+    const address = server.address();
+    const port = address && typeof address === 'object' ? address.port : 0;
+    return `kcl_local_${createHash('sha256').update(`${publicOrigin ?? port}|${definition.workspace.id}`).digest('hex').slice(0,16)}`;
+  }
   function currentSession(req: IncomingMessage): Session | undefined {
-    const id = /(?:^|;\s*)kcl_session=([0-9a-f]{64})(?:;|$)/.exec(req.headers.cookie ?? '')?.[1];
+    const id = new RegExp(`(?:^|;\\s*)${localCookieName()}=([0-9a-f]{64})(?:;|$)`).exec(req.headers.cookie ?? '')?.[1];
     const session = id ? sessions.get(id) : undefined;
     if (session && session.expires > Date.now()) return session;
     if (id) sessions.delete(id);
@@ -88,11 +118,15 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
     } catch { throw new ApiError('INVALID_JSON', '중복 필드가 없는 올바른 UTF-8 JSON 객체가 필요합니다.'); }
   }
   function sessionResponse(session: RequestSession | undefined): Record<string, unknown> {
+    const identity = session && definition.genesis.identities.find(item => item.org_id === session.actor.org_id && item.actor_id === session.actor.actor_id);
+    const metadata = { workspace:session ? definition.workspace : {id:definition.workspace.id,label:definition.workspace.label},
+      organizations:session ? definition.organizations : [], demo:definition.demo,
+      capabilities:identity ? {publish_contexts:identity.publish_contexts,can_propose:identity.can_propose} : {publish_contexts:[],can_propose:false} };
     if (authentication) return session
-      ? { actor: session.actor, personas: [], csrf_token: session.csrf, logout_url: '/auth/logout', auth_mode: authentication.mode, mode: ledger!.mode }
-      : { actor: null, personas: [], login_url: '/auth/login', auth_mode: authentication.mode, mode: ledger!.mode };
-    if (!session) throw new ApiError('UNAUTHENTICATED', '로컬 데모 세션을 시작해 주세요.', 401);
-    return { actor: session.actor, personas, csrf_token: session.csrf, mode: ledger!.mode };
+      ? { ...metadata, actor:session.actor, personas:[], csrf_token:session.csrf, logout_url:'/auth/logout', auth_mode:authentication.mode, mode:ledger!.mode }
+      : { ...metadata, actor:null, personas:[], login_url:'/auth/login', auth_mode:authentication.mode, mode:ledger!.mode };
+    if (!session) throw new ApiError('UNAUTHENTICATED', '개발 세션을 시작해 주세요.', 401);
+    return { ...metadata, actor:session.actor, personas, csrf_token:session.csrf, mode:ledger!.mode };
   }
   async function runAuthorized<T>(session: RequestSession, operation: () => Promise<T>, started: number): Promise<T> {
     const result = authentication ? await authentication.run(session, operation) : await operation();
@@ -112,14 +146,17 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
     try {
       const address = server.address();
       const port = address && typeof address === 'object' ? address.port : 0;
-      if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(req.headers.host ?? '')) throw new ApiError('HOST_REJECTED', '이 서버는 로컬 접근만 허용합니다.', 403);
-      const origin = `http://${req.headers.host}`;
+      const allowedHosts = publicOrigin ? [new URL(publicOrigin).host] : [`127.0.0.1:${port}`, `localhost:${port}`];
+      if (!allowedHosts.includes((req.headers.host ?? '').toLowerCase())) throw new ApiError('HOST_REJECTED', '이 서버는 로컬 접근만 허용합니다.', 403);
+      const origin = publicOrigin ?? `http://${req.headers.host}`;
       const url = new URL(req.url ?? '/', origin);
       const path = url.pathname;
+      const resourcePath = path.startsWith(`${workspaceRoot}/`) ? path.slice(workspaceRoot.length) : '';
+      const staticPage = req.method === 'GET' && ['/', '/app.js', '/style.css'].includes(path);
       const authPath = Boolean(authentication && ['/auth/login', '/auth/callback', '/auth/logout'].includes(path));
       const callbackException = Boolean(authentication && req.method === 'GET' && path === '/auth/callback' && url.origin === authentication.origin);
       if (url.origin !== origin || (authentication && authPath && url.origin !== authentication.origin)) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
-      if (!callbackException && (req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== origin))) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
+      if (!callbackException && !staticPage && (req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== origin))) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
       if (authentication && authPath && await authentication.handle(req, res, url)) return;
       if (req.method === 'GET' && ['/', '/app.js', '/style.css'].includes(path)) {
         const file = path === '/' ? 'index.html' : path.slice(1);
@@ -146,11 +183,11 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         if (!session) {
           for (const [id, value] of sessions) if (value.expires <= Date.now()) sessions.delete(id);
           if (sessions.size >= 256) throw new ApiError('SESSION_LIMIT', '로컬 세션 수가 너무 많습니다.', 429, true);
-          const defaultPersona = personas.find(item => item.actor_id === PERSONAS[1].actor_id) ?? personas[0];
+          const defaultPersona = personas.find(item => definition.default_actor && item.org_id === definition.default_actor.org_id && item.actor_id === definition.default_actor.actor_id) ?? personas.find(item => item.kind === 'human') ?? personas[0];
           if (!defaultPersona) throw new ApiError('LEDGER_NOT_READY', '사용 가능한 서명자 구성이 없습니다.', 503, true);
           session = { id: token(), csrf: token(), actor: actorIdentity(defaultPersona), expires: Date.now() + 30 * 60_000 };
           sessions.set(session.id, session);
-          res.setHeader('Set-Cookie', `kcl_session=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800`);
+          res.setHeader('Set-Cookie', `${localCookieName()}=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800`);
         }
         json(res, 200, sessionResponse(session)); return;
       }
@@ -163,16 +200,18 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         if (typeof csrf !== 'string' || !equal(csrf, session.csrf)) throw new ApiError('CSRF_REJECTED', '세션을 새로고침한 뒤 다시 시도해 주세요.', 403);
         const input = await body(req);
         if (path === '/api/session') {
-          onlyFields(input, ['actor_id']);
-          const persona = personas.find(item => item.actor_id === input.actor_id);
-          if (!persona) throw new ApiError('NOT_FOUND', '데모 역할을 찾을 수 없습니다.', 404);
+          onlyFields(input, ['org_id', 'actor_id']);
+          const matches = personas.filter(item => item.actor_id === input.actor_id && (input.org_id === undefined || item.org_id === input.org_id));
+          if (matches.length > 1) throw new ApiError('ORGANIZATION_REQUIRED', '계정과 조직을 함께 선택해 주세요.', 400);
+          const persona = matches[0];
+          if (!persona) throw new ApiError('NOT_FOUND', '계정을 찾을 수 없습니다.', 404);
           const selectedActor = actorIdentity(persona);
           await service.refresh();
           service.actor(selectedActor);
           session.actor = selectedActor; session.csrf = token();
           json(res, 200, sessionResponse(session)); return;
         }
-        const root = '/v1/workspaces/demo';
+        const root = workspaceRoot;
         const routes: Record<string, () => Promise<any>> = {
           [`${root}/drafts`]: () => service.draft(actor, input),
           [`${root}/draft-imports/markdown`]: () => service.importMarkdown(actor, input),
@@ -184,17 +223,17 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
-        let draftMatch = /^\/v1\/workspaces\/demo\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(path);
+        let draftMatch = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(resourcePath);
         if (draftMatch) { respond(await run(() => service.resumeDraft(actor, draftMatch![1], input))); return; }
-        let match = /^\/v1\/workspaces\/demo\/agreement-proposals\/([A-Za-z0-9._:-]+)\/(decisions|activate)$/.exec(path);
+        let match = /^\/agreement-proposals\/([A-Za-z0-9._:-]+)\/(decisions|activate)$/.exec(resourcePath);
         if (match) { respond(await run(() => match![2] === 'decisions' ? service.decide(actor, match![1], input) : service.activate(actor, match![1], input))); return; }
-        match = /^\/v1\/workspaces\/demo\/agreements\/([A-Za-z0-9._:-]+)\/(withdraw|suspend)$/.exec(path);
+        match = /^\/agreements\/([A-Za-z0-9._:-]+)\/(withdraw|suspend)$/.exec(resourcePath);
         if (match) { respond(await run(() => service.changeAgreement(actor, match![1], match![2] as 'withdraw' | 'suspend', input))); return; }
-        match = /^\/v1\/workspaces\/demo\/runs\/([A-Za-z0-9._:-]+)\/revalidate$/.exec(path);
+        match = /^\/runs\/([A-Za-z0-9._:-]+)\/revalidate$/.exec(resourcePath);
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
-        if (path === '/v1/workspaces/demo/drafts') {
+        if (path === `${workspaceRoot}/drafts`) {
           const allowed = new Set(['limit', 'cursor']);
           const seen = new Set<string>();
           for (const [key] of url.searchParams) {
@@ -208,15 +247,15 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
           if (cursor !== undefined && !/^[A-Za-z][A-Za-z0-9._:-]{2,63}$/.test(cursor)) throw new ApiError('INVALID_QUERY', '올바른 초안 cursor가 필요합니다.');
           json(res, 200, await run(() => service.listDrafts(actor, limit, cursor))); return;
         }
-        const draftDetail = /^\/v1\/workspaces\/demo\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})$/.exec(path);
+        const draftDetail = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})$/.exec(resourcePath);
         if (draftDetail) { json(res, 200, await run(() => service.getDraft(actor, draftDetail[1]))); return; }
-        if (path === '/v1/workspaces/demo/overview') { json(res, 200, await run(() => service.overview(actor))); return; }
-        if (path === '/v1/workspaces/demo/events') {
+        if (path === `${workspaceRoot}/overview`) { json(res, 200, await run(() => service.overview(actor))); return; }
+        if (path === `${workspaceRoot}/events`) {
           const cursor = Number(url.searchParams.get('cursor') ?? 0);
           if (!Number.isSafeInteger(cursor) || cursor < 0) throw new ApiError('INVALID_CURSOR', '올바른 커서가 필요합니다.');
           json(res, 200, await run(async () => { await service.refresh(); service.actor(actor); return { events: ledger.events(cursor), checkpoint: ledger.checkpoint() }; })); return;
         }
-        const match = /^\/v1\/workspaces\/demo\/(documents|agreements)\/([A-Za-z0-9._:-]+)$/.exec(path);
+        const match = /^\/(documents|agreements)\/([A-Za-z0-9._:-]+)$/.exec(resourcePath);
         if (match) {
           const found = await run(async () => {
             const overview = await service.overview(actor);
@@ -244,7 +283,7 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         server.listen(port, '127.0.0.1', () => {
           server.off('error', onError);
           const address = server.address() as { port: number };
-          resolve(`http://127.0.0.1:${address.port}`);
+          resolve(publicOrigin ?? `http://127.0.0.1:${address.port}`);
         });
       });
     },

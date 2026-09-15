@@ -8,13 +8,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_SOCKET_PATH_BYTES = 104;
 
-export const DEVELOPMENT_SIGNING_KEY_IDS = [
-  "person-sales-owner",
-  "person-fulfillment-owner",
-  "person-settlement-owner",
-] as const;
-
-export type DevelopmentSigningKeyId = typeof DEVELOPMENT_SIGNING_KEY_IDS[number];
+export type SigningKeyId = string;
 
 export type RemoteSignerErrorCode =
   | "invalid_request"
@@ -36,14 +30,14 @@ export class RemoteSignerError extends Error {
 
 export interface RemoteSignerOptions {
   socketPath: string;
-  keyId: DevelopmentSigningKeyId;
+  keyId: SigningKeyId;
   certificate: Uint8Array;
   timeoutMs?: number;
 }
 
 interface SignRequest {
   operation: "sign";
-  key_id: DevelopmentSigningKeyId;
+  key_id: SigningKeyId;
   digest: string;
   certificate: string;
 }
@@ -58,7 +52,11 @@ interface ErrorResponse {
   error: RemoteSignerErrorCode;
 }
 
-const keyIds = new Set<string>(DEVELOPMENT_SIGNING_KEY_IDS);
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u;
+
+function assertKeyId(keyId: string): void {
+  if (typeof keyId !== "string" || !KEY_ID_PATTERN.test(keyId)) throw new RangeError("Signing key ID is outside the supported format");
+}
 
 function assertSocketPath(socketPath: string): void {
   if (typeof socketPath !== "string" || socketPath.length === 0 || !isAbsolute(socketPath)) {
@@ -128,7 +126,7 @@ function decodeResponse(body: Buffer): Buffer {
  */
 export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8Array) => Promise<Uint8Array> {
   assertSocketPath(options.socketPath);
-  if (!keyIds.has(options.keyId)) throw new RangeError("Unknown signing key");
+  assertKeyId(options.keyId);
   if (!(options.certificate instanceof Uint8Array) || options.certificate.byteLength === 0 || options.certificate.byteLength > MAX_CERTIFICATE_BYTES) {
     throw new TypeError("A bounded signing certificate is required");
   }

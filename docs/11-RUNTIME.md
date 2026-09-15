@@ -5,20 +5,24 @@
 Node.js 24 이상에서 실행한다. 로컬 앱과 테스트에는 외부 npm 패키지가 필요 없다.
 
 ```sh
+npm run config:init
 npm start
 ```
 
-브라우저에서 `http://127.0.0.1:4317`을 연다. 가상 영업·물류·정산 책임자와 AI 초안 작성자가 준비되어 있다. 기본 저장 위치는 `.data/demo`이며 Git에서 제외한다. 공유 원장과 로컬 비공개 저장소는 서로 다른 SQLite 파일이다.
+브라우저에서 `http://127.0.0.1:4317`을 연다. `kcl.config.json`의 조직·담당자·정책으로 빈 작업 공간을 시작한다. 기본 저장 위치는 `.data/workspaces/{workspace-id}/local`이며 Git에서 제외한다. 공유 원장과 비공개 저장소는 서로 다른 SQLite 파일이다. 설정은 [범용 실행 가이드](19-PROJECT-CONFIGURATION.md)를 참조한다.
+
+기존 영업·이행·정산과 AI 작성자가 있는 가상 예제는 별도로 켠다.
 
 ```sh
-npm start -- --port 4318 --data .data/second-demo
+npm run demo:web
+npm run demo:web -- --port 4318 --data .data/second-demo
 npm run demo
 npm run check
 ```
 
-`--data`에 새 폴더를 지정하면 기존 데이터에 손대지 않고 새 데모를 시작한다. 종료는 실행 터미널에서 Ctrl+C다. 기본 genesis는 [demo-config.ts](../apps/api/demo-config.ts)에 있다. 이미 초기화된 원장의 genesis를 코드 변경으로 덮어쓰지 않는다.
+예제의 기본 데이터 위치는 `.data/demo`이고 genesis는 [order-workflow 설정](../examples/order-workflow/config.ts)에 있다. 기존 원장의 genesis를 코드 변경으로 덮어쓰지 않는다.
 
-## 화면에서 해볼 흐름
+## order-workflow 예제에서 해볼 흐름
 
 1. 각 도메인의 `주문 완료` 정의를 읽는다. 초기 예제에서 세 정의는 각자의 책임자 합의가 있으며, 리뷰 요청 규칙은 미합의 상태다.
 2. 물류 책임자로 리뷰 요청 규칙을 승인한다. 정산 책임자로 전환해 승인한 후 합의를 활성화한다.
@@ -50,12 +54,12 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 
 ## HTTP 인터페이스
 
-기본 경로는 `/v1/workspaces/demo`다. [설계 API](06-API.md)는 최종 참조 계약이며, 이 표가 현재 실행 가능한 로컬 API다.
+경로는 `/v1/workspaces/{workspace.id}`다. order-workflow 예제의 ID는 `demo`다. [설계 API](06-API.md)는 최종 참조 계약이며, 이 표가 현재 실행 가능한 로컬 API다.
 
 | 경로 | 현재 동작 |
 |---|---|
-| `GET /api/session` | 데모 세션·역할 목록 또는 OIDC 로그인 상태; 익명 로그인 모드에는 actor·CSRF 없음 |
-| `POST /api/session` | 데모 역할 전환; OIDC 로그인 모드에서는 403 |
+| `GET /api/session` | workspace 메타데이터·개발 계정 목록 또는 OIDC 로그인 상태; 익명 로그인 모드에는 actor·CSRF 없음 |
+| `POST /api/session` | 개발 계정 전환(`org_id` + `actor_id`); OIDC 로그인 모드에서는 403 |
 | `GET /overview` | 공유 개정·합의·제안·역할 정책·체크포인트 |
 | `POST /drafts` | actor별 로컬 비공개 초안 |
 | `GET /drafts`, `GET /drafts/{id}` | 본인 초안의 페이지 목록·개수·원문 조회 |

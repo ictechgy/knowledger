@@ -7,7 +7,9 @@ import { validateRevision, validatePolicy, validateDecision } from '../../packag
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { KclService } from '../../apps/api/service.ts';
-import { PERSONAS, actorIdentity } from '../../apps/api/demo-config.ts';
+import { PERSONAS, actorIdentity } from '../../examples/order-workflow/config.ts';
+import { seedDemo } from '../../examples/order-workflow/application.ts';
+import { demoDefinition } from '../../examples/order-workflow/config.ts';
 
 const example = (name: string) => JSON.parse(readFileSync(new URL(`../../examples/${name}.json`, import.meta.url), 'utf8'));
 test('runtime validators accept published design fixtures and reject immutable-body tampering', () => {
@@ -23,8 +25,9 @@ test('generated run manifests conform to the baseline restricted design schema c
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
   try {
-    const service = new KclService(ledger, vault);
+    const service = new KclService(ledger, vault, demoDefinition());
     await service.initialize();
+    await seedDemo(service);
     const result = await service.resolve(actorIdentity(PERSONAS[0]), { document_ids: ['doc-sales-order-definition-001'], context_id: 'context-sales', scope_id: 'scope-order-2026-001', usage_scope: 'domain-definition/v1' });
     assert.equal(result.status, 'provided');
     const script = 'import json,sys\nfrom tools.validate_design import validate_instance\ns=json.load(open("schemas/run-context-manifest.schema.json"))\nvalidate_instance(json.load(sys.stdin),s,"$",s)\n';

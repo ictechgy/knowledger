@@ -25,10 +25,10 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 import { pathToFileURL } from 'node:url';
 import { parseStrictJson } from '../fabric/canonical.ts';
 import { readRuntimeScope, RUNTIME_SCOPE_FILE } from './runtime-scope.ts';
-import { getDevelopmentOrganization } from '../fabric/development-organizations.ts';
-import type { DevelopmentOrganizationId } from '../fabric/development-organizations.ts';
+import { CONFIGURATION_SCOPE_FILE, readConfigurationScope, validateConfigurationBinding } from './configuration-scope.ts';
+import type { ConfiguredRuntimeBinding } from './configuration-scope.ts';
 
-export type RuntimeSnapshotMode = 'local' | 'fabric' | 'fabric-scoped';
+export type RuntimeSnapshotMode = 'local' | 'fabric' | 'fabric-scoped' | 'configured-local' | 'configured-fabric';
 export type RuntimeSnapshotOperation = 'backup' | 'restore';
 
 export interface RuntimeSnapshotFile {
@@ -42,7 +42,8 @@ export interface RuntimeSnapshotSummary {
   mode: RuntimeSnapshotMode;
   created_at: string;
   files: RuntimeSnapshotFile[];
-  organization?: DevelopmentOrganizationId;
+  organization?: string;
+  binding?: ConfiguredRuntimeBinding;
 }
 
 export interface RuntimeSnapshotOptions {
@@ -64,17 +65,11 @@ const MANIFEST_VERSION = 1;
 export const RUNTIME_SNAPSHOT_MAX_DATABASE_BYTES = 512 * 1024 * 1024;
 const MAX_DATABASE_BYTES = RUNTIME_SNAPSHOT_MAX_DATABASE_BYTES;
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const LEGACY_OUTBOX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}-outbox\.sqlite$/u;
 const LOCAL_FILES = ['private-local.sqlite', 'shared-ledger.sqlite'] as const;
-const FABRIC_FILES = [
-  'FulfillmentMSP-person-fulfillment-owner-outbox.sqlite',
-  'SalesMSP-person-sales-owner-outbox.sqlite',
-  'SettlementMSP-person-settlement-owner-outbox.sqlite',
-  'fabric-projection.sqlite',
-  'private-local.sqlite',
-] as const;
-const PROFILE_FILES: Record<'local' | 'fabric', readonly string[]> = {
+const FABRIC_CORE_FILES = ['fabric-projection.sqlite', 'private-local.sqlite'] as const;
+const PROFILE_FILES: Record<'local', readonly string[]> = {
   local: LOCAL_FILES,
-  fabric: FABRIC_FILES,
 };
 
 interface FileInventory extends RuntimeSnapshotFile {
@@ -85,24 +80,28 @@ interface FileInventory extends RuntimeSnapshotFile {
 }
 
 interface Manifest {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   mode: RuntimeSnapshotMode;
   created_at: string;
   files: RuntimeSnapshotFile[];
-  organization?: DevelopmentOrganizationId;
+  organization?: string;
+  binding?: ConfiguredRuntimeBinding;
 }
 
-interface SnapshotProfile { mode: RuntimeSnapshotMode; names: readonly string[]; organization?: DevelopmentOrganizationId }
+interface SnapshotProfile { mode: RuntimeSnapshotMode; names: readonly string[]; organization?: string; binding?: ConfiguredRuntimeBinding }
 
-function snapshotProfile(mode: RuntimeSnapshotMode, organization?: unknown): SnapshotProfile {
-  if (mode !== 'fabric-scoped') return { mode, names: PROFILE_FILES[mode] };
-  try {
-    const selected = getDevelopmentOrganization(organization);
-    return { mode, organization: selected.org_id, names: [RUNTIME_SCOPE_FILE, 'fabric-projection.sqlite', 'private-local.sqlite', `${selected.org_id}-${selected.key_id}-outbox.sqlite`] };
-  } catch { return fail('invalid_scope', 'Snapshot organization scope is invalid'); }
+function snapshotProfile(mode: RuntimeSnapshotMode, organization?: string, outboxName?: string, binding?: ConfiguredRuntimeBinding): SnapshotProfile {
+  if (mode === 'configured-local' || mode === 'configured-fabric') {
+    if (!binding || (mode === 'configured-fabric' && !binding.organization)) fail('invalid_scope', 'Configured snapshot binding is invalid');
+    return { mode, names: [CONFIGURATION_SCOPE_FILE, ...binding.databases], organization: binding.organization, binding };
+  }
+  if (mode === 'local') return { mode, names: PROFILE_FILES.local };
+  if (mode === 'fabric') return { mode, names: [...FABRIC_CORE_FILES, ...(outboxName ? [outboxName] : [])] };
+  if (!organization || !outboxName) fail('invalid_scope', 'Snapshot organization scope is invalid');
+  return { mode, organization, names: [RUNTIME_SCOPE_FILE, ...FABRIC_CORE_FILES, outboxName] };
 }
 
-function scopeOrganization(directory: string): DevelopmentOrganizationId | undefined {
+function scopeOrganization(directory: string): string | undefined {
   try { return readRuntimeScope(directory)?.organization; }
   catch { return fail('invalid_scope', 'Runtime scope binding is invalid'); }
 }
@@ -176,7 +175,7 @@ function sidecarFor(name: string, allowed: readonly string[]): boolean {
   return allowed.some(base => name === `${base}-wal` || name === `${base}-shm` || name === `${base}-journal`);
 }
 
-function listSourceEntries(dataDir: string, allowed: readonly string[]): string[] {
+function listSourceEntries(dataDir: string, allowed: readonly string[], allowLegacyOutboxes = false): string[] {
   let entries: string[];
   try {
     entries = readdirSync(dataDir) as string[];
@@ -185,7 +184,7 @@ function listSourceEntries(dataDir: string, allowed: readonly string[]): string[
   }
   for (const name of entries) {
     if (sidecarFor(name, allowed)) fail('offline_required', 'Offline backup requires no SQLite WAL, SHM, or journal sidecar');
-    if (isSqliteName(name) && !allowed.includes(name)) fail('unknown_database', 'Runtime database profile contains an unknown SQLite file');
+    if (isSqliteName(name) && !allowed.includes(name) && !(allowLegacyOutboxes && LEGACY_OUTBOX_PATTERN.test(name))) fail('unknown_database', 'Runtime database profile contains an unknown SQLite file');
     if (!allowed.includes(name)) continue;
     let stat;
     try { stat = lstatSync(join(dataDir, name)); } catch { fail('source_unreadable', 'Runtime database cannot be inspected'); }
@@ -196,19 +195,32 @@ function listSourceEntries(dataDir: string, allowed: readonly string[]): string[
 }
 
 function detectMode(dataDir: string): SnapshotProfile {
-  const entries = listSourceEntries(dataDir, [...LOCAL_FILES, ...FABRIC_FILES]);
+  const configured = readConfigurationScope(dataDir);
+  if (configured) {
+    const mode = configured.mode === 'fabric' ? 'configured-fabric' : 'configured-local';
+    const profile = snapshotProfile(mode, configured.organization, undefined, configured);
+    const entries = listSourceEntries(dataDir, profile.names);
+    const sqlite = entries.filter(isSqliteName).sort();
+    const expected = [...configured.databases].sort();
+    if (sqlite.length !== expected.length || sqlite.some((name, index) => name !== expected[index])) fail('unknown_database', 'Configured runtime contains an incomplete or foreign database profile');
+    return profile;
+  }
+  const entries = listSourceEntries(dataDir, [...LOCAL_FILES, ...FABRIC_CORE_FILES], true);
   const sqlite = entries.filter(isSqliteName).sort();
   const organization = scopeOrganization(dataDir);
   if (organization) {
-    const profile = snapshotProfile('fabric-scoped', organization);
+    const candidates = sqlite.filter((name) => name.startsWith(`${organization}-`) && LEGACY_OUTBOX_PATTERN.test(name));
+    if (candidates.length !== 1) fail('unknown_database', 'Scoped runtime must contain exactly one organization outbox');
+    const profile = snapshotProfile('fabric-scoped', organization, candidates[0]);
     const expected = profile.names.filter(isSqliteName).sort();
     if (sqlite.length !== expected.length || sqlite.some((name, index) => name !== expected[index])) fail('unknown_database', 'Scoped runtime contains an incomplete or foreign database profile');
     return profile;
   }
   const local = [...LOCAL_FILES].sort();
-  const fabric = [...FABRIC_FILES].sort();
   if (sqlite.length === local.length && sqlite.every((name, index) => name === local[index])) return snapshotProfile('local');
-  if (sqlite.length === fabric.length && sqlite.every((name, index) => name === fabric[index])) return snapshotProfile('fabric');
+  const outboxes = sqlite.filter((name) => LEGACY_OUTBOX_PATTERN.test(name));
+  const fabric = [...FABRIC_CORE_FILES, ...outboxes].sort();
+  if (outboxes.length >= 1 && outboxes.length <= 128 && sqlite.length === fabric.length && sqlite.every((name, index) => name === fabric[index])) return { mode: 'fabric', names: fabric };
   fail('unknown_database', 'Runtime database profile is missing, mixed, or incomplete');
 }
 
@@ -273,8 +285,12 @@ function sqliteIntegrity(path: string): void {
 function validateSourceDatabases(dataDir: string, profile: SnapshotProfile): FileInventory[] {
   const files = [...profile.names].sort();
   const inventory = files.map(name => inventoryFile(dataDir, name));
-  for (const item of inventory) if (item.name !== RUNTIME_SCOPE_FILE) sqliteIntegrity(join(dataDir, item.name));
-  if (scopeOrganization(dataDir) !== profile.organization) fail('invalid_scope', 'Runtime scope does not match its snapshot profile');
+  for (const item of inventory) if (item.name !== RUNTIME_SCOPE_FILE && item.name !== CONFIGURATION_SCOPE_FILE) sqliteIntegrity(join(dataDir, item.name));
+  if (!profile.binding && scopeOrganization(dataDir) !== profile.organization) fail('invalid_scope', 'Runtime scope does not match its snapshot profile');
+  if (profile.binding) {
+    const binding = readConfigurationScope(dataDir);
+    if (!binding || JSON.stringify(binding) !== JSON.stringify(profile.binding)) fail('invalid_scope', 'Configured runtime binding does not match its snapshot profile');
+  }
   listSourceEntries(dataDir, files);
   const afterIntegrity = files.map(name => inventoryFile(dataDir, name));
   for (const item of inventory) {
@@ -358,14 +374,15 @@ function validateCopiedFile(path: string, expected: RuntimeSnapshotFile): void {
   if (actual.size !== expected.size || actual.sha256 !== expected.sha256) fail('copy_corrupt', 'Copied runtime database does not match its source hash');
   if (expected.name === RUNTIME_SCOPE_FILE) {
     if (!scopeOrganization(dirname(path))) fail('invalid_scope', 'Snapshot scope binding is missing');
-  } else sqliteIntegrity(path);
+  } else if (expected.name !== CONFIGURATION_SCOPE_FILE) sqliteIntegrity(path);
 }
 
 function buildManifest(profile: SnapshotProfile, files: FileInventory[]): Manifest {
   return {
-    version: profile.organization ? 2 : MANIFEST_VERSION,
+    version: profile.binding ? 3 : profile.organization ? 2 : MANIFEST_VERSION,
     mode: profile.mode,
-    ...(profile.organization ? { organization: profile.organization } : {}),
+    ...(profile.organization && !profile.binding ? { organization: profile.organization } : {}),
+    ...(profile.binding ? { binding: profile.binding } : {}),
     created_at: new Date().toISOString(),
     files: files.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
   };
@@ -398,11 +415,23 @@ function readManifest(snapshotDir: string): Manifest {
   let value: unknown;
   try { value = parseStrictJson(bytes); } catch { fail('manifest_json', 'Snapshot manifest JSON is invalid'); }
   if (!isPlainObject(value)) fail('manifest_schema', 'Snapshot manifest fields are invalid');
+  const configured = value.mode === 'configured-local' || value.mode === 'configured-fabric';
   const scoped = value.mode === 'fabric-scoped';
-  if (scoped && typeof value.organization !== 'string') fail('manifest_schema', 'Snapshot organization must be an identifier');
-  if (Object.keys(value).sort().join(',') !== (scoped ? 'created_at,files,mode,organization,version' : 'created_at,files,mode,version')) fail('manifest_schema', 'Snapshot manifest fields are invalid');
-  if (value.version !== (scoped ? 2 : 1) || typeof value.mode !== 'string' || !['local', 'fabric', 'fabric-scoped'].includes(value.mode) || typeof value.created_at !== 'string' || !Array.isArray(value.files)) fail('manifest_schema', 'Snapshot manifest fields are invalid');
-  const profile = snapshotProfile(value.mode as RuntimeSnapshotMode, value.organization);
+  const expectedManifestKeys = configured ? ['binding', 'created_at', 'files', 'mode', 'version'] : scoped ? ['created_at', 'files', 'mode', 'organization', 'version'] : ['created_at', 'files', 'mode', 'version'];
+  if (Object.keys(value).sort().join(',') !== expectedManifestKeys.sort().join(',')) fail('manifest_schema', 'Snapshot manifest fields are invalid');
+  if (typeof value.created_at !== 'string' || !Array.isArray(value.files)) fail('manifest_schema', 'Snapshot manifest fields are invalid');
+  let profile: SnapshotProfile;
+  if (configured) {
+    if (value.version !== 3 || !isPlainObject(value.binding)) fail('manifest_schema', 'Configured snapshot binding is missing');
+    let binding: ConfiguredRuntimeBinding;
+    try { binding = validateConfigurationBinding(value.binding); } catch { fail('manifest_schema', 'Configured snapshot binding is invalid'); }
+    if ((value.mode === 'configured-fabric') !== (binding.mode === 'fabric')) fail('manifest_schema', 'Configured snapshot mode does not match its binding');
+    profile = snapshotProfile(value.mode as RuntimeSnapshotMode, binding.organization, undefined, binding);
+  } else {
+    if (typeof value.mode !== 'string' || !['local', 'fabric', 'fabric-scoped'].includes(value.mode) || value.version !== (scoped ? 2 : 1)) fail('manifest_schema', 'Snapshot manifest fields are invalid');
+    if (scoped && typeof value.organization !== 'string') fail('manifest_schema', 'Snapshot organization must be an identifier');
+    profile = scoped ? { mode: 'fabric-scoped', names: [], organization: value.organization as string } : value.mode === 'fabric' ? { mode: 'fabric', names: [] } : snapshotProfile('local');
+  }
   const files: RuntimeSnapshotFile[] = [];
   for (const item of value.files) {
     if (!isPlainObject(item) || Object.keys(item).sort().join(',') !== 'name,sha256,size' || typeof item.name !== 'string' || typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > MAX_DATABASE_BYTES || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(item.sha256)) fail('manifest_schema', 'Snapshot manifest file entry is invalid');
@@ -410,10 +439,20 @@ function readManifest(snapshotDir: string): Manifest {
     if (files.some(file => file.name === item.name)) fail('manifest_schema', 'Snapshot manifest contains duplicate files');
     files.push({ name: item.name, size: item.size, sha256: item.sha256 });
   }
+  if (scoped) {
+    const outboxes = files.map((file) => file.name).filter((name) => LEGACY_OUTBOX_PATTERN.test(name));
+    if (outboxes.length !== 1) fail('manifest_schema', 'Scoped snapshot must contain one organization outbox');
+    profile = snapshotProfile('fabric-scoped', value.organization as string, outboxes[0]);
+  } else if (value.mode === 'fabric') {
+    const outboxes = files.map((file) => file.name).filter((name) => LEGACY_OUTBOX_PATTERN.test(name));
+    if (outboxes.length < 1 || outboxes.length > 128) fail('manifest_schema', 'Fabric snapshot outbox profile is invalid');
+    profile = snapshotProfile('fabric', undefined, undefined, undefined);
+    profile = { mode: 'fabric', names: [...FABRIC_CORE_FILES, ...outboxes] };
+  }
   const expected = [...profile.names].sort();
   const names = files.map(file => file.name).sort();
   if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) fail('manifest_schema', 'Snapshot manifest database profile is incomplete or mixed');
-  return { version: scoped ? 2 : 1, mode: profile.mode, ...(profile.organization ? { organization: profile.organization } : {}), created_at: value.created_at, files: files.sort((a, b) => a.name.localeCompare(b.name)) };
+  return { version: profile.binding ? 3 : scoped ? 2 : 1, mode: profile.mode, ...(profile.organization ? { organization: profile.organization } : {}), ...(profile.binding ? { binding: profile.binding } : {}), created_at: value.created_at, files: files.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
 function validateSnapshotFiles(snapshotDir: string, manifest: Manifest): void {
@@ -430,7 +469,10 @@ function validateSnapshotFiles(snapshotDir: string, manifest: Manifest): void {
     if (!stat.isFile()) fail('snapshot_files', 'Snapshot database is not a regular file');
     validateCopiedFile(path, file);
   }
-  if (scopeOrganization(snapshotDir) !== manifest.organization) fail('invalid_scope', 'Snapshot binding and manifest organizations differ');
+  if (manifest.binding) {
+    const binding = readConfigurationScope(snapshotDir);
+    if (!binding || JSON.stringify(binding) !== JSON.stringify(manifest.binding)) fail('invalid_scope', 'Snapshot binding and manifest configuration differ');
+  } else if (scopeOrganization(snapshotDir) !== manifest.organization) fail('invalid_scope', 'Snapshot binding and manifest organizations differ');
 }
 
 function ensureDestinationMissing(path: string, label: string): void {
@@ -491,7 +533,7 @@ export function createRuntimeSnapshot({ dataDir: rawDataDir, snapshotDir: rawSna
     for (const file of manifest.files) validateCopiedFile(join(staging.path, file.name), file);
     owned.set(MANIFEST_NAME, writeExclusive(join(staging.path, MANIFEST_NAME), JSON.stringify(manifest)));
     publishStaging(staging, snapshotDir, 'Snapshot');
-    return { operation: 'backup', mode: profile.mode, ...(profile.organization ? { organization: profile.organization } : {}), created_at: manifest.created_at, files: manifest.files.map(file => ({ ...file })) };
+    return { operation: 'backup', mode: profile.mode, ...(profile.organization ? { organization: profile.organization } : {}), ...(profile.binding ? { binding: profile.binding } : {}), created_at: manifest.created_at, files: manifest.files.map(file => ({ ...file })) };
   } finally {
     cleanOwnedStaging(staging, owned);
   }
@@ -514,7 +556,7 @@ export function restoreRuntimeSnapshot({ snapshotDir: rawSnapshotDir, dataDir: r
     validateSnapshotFiles(snapshotDir, manifest);
     owned.set(MANIFEST_NAME, writeExclusive(join(staging.path, MANIFEST_NAME), JSON.stringify(manifest)));
     publishStaging(staging, dataDir, 'Data');
-    return { operation: 'restore', mode: manifest.mode, ...(manifest.organization ? { organization: manifest.organization } : {}), created_at: manifest.created_at, files: currentManifest };
+    return { operation: 'restore', mode: manifest.mode, ...(manifest.organization ? { organization: manifest.organization } : {}), ...(manifest.binding ? { binding: manifest.binding } : {}), created_at: manifest.created_at, files: currentManifest };
   } finally {
     cleanOwnedStaging(staging, owned);
   }

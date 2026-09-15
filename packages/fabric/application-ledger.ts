@@ -34,7 +34,7 @@ function isActor(value: unknown): value is Actor {
 
 /** Commands cross the real Gateway; all returned state comes from full peer blocks. */
 export class FabricApplicationLedger implements ApplicationLedger {
-  readonly mode = 'fabric-test-network' as const;
+  readonly mode: 'fabric-test-network' | 'fabric';
   readonly channelId: string;
   private queue: Promise<unknown> = Promise.resolve();
   private available = false;
@@ -42,7 +42,8 @@ export class FabricApplicationLedger implements ApplicationLedger {
   private readonly routes: FabricSigningRoute[];
   private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number };
 
-  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number }) {
+  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; mode?: 'fabric-test-network' | 'fabric' }) {
+    this.mode = options.mode ?? 'fabric-test-network';
     this.options = options;
     this.channelId = options.projection.channelId;
     if (options.catchupTimeoutMs !== undefined && (!Number.isSafeInteger(options.catchupTimeoutMs) || options.catchupTimeoutMs <= 0)) throw new Error('Catch-up timeout must be positive integer milliseconds');

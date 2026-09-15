@@ -5,7 +5,9 @@ import type { Actor, DomainCommand, TxContext } from '../../packages/domain/inde
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { KclService } from '../../apps/api/service.ts';
-import { demoFixtures, actorIdentity, PERSONAS, slotFields } from '../../apps/api/demo-config.ts';
+import { demoFixtures, actorIdentity, PERSONAS, slotFields } from '../../examples/order-workflow/config.ts';
+import { seedDemo } from '../../examples/order-workflow/application.ts';
+import { demoDefinition } from '../../examples/order-workflow/config.ts';
 
 /** A deterministic MVCC model, not a Fabric network or consensus-fault test. */
 class VersionedState {
@@ -56,8 +58,9 @@ function decision(actor: Actor, kind: 'approve' | 'object', proposalId = proposa
 async function ready() {
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
-  const service = new KclService(ledger, vault);
+  const service = new KclService(ledger, vault, demoDefinition());
   await service.initialize();
+  await seedDemo(service);
   const state = new VersionedState(ledger.entries('kcl:'));
   ledger.close(); vault.close();
   for (const actor of actors) await state.apply(actor, decision(actor, 'approve'));

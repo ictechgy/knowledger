@@ -3,6 +3,9 @@
 앱을 종료한 상태에서 로컬 런타임의 SQLite DB를 한 묶음으로 백업하고 새 데이터 폴더로 복원한다.
 비공개 초안·preview·run·명령 기록, 로컬 원장 또는 Fabric projection·outbox를 함께 보존한다.
 
+새 [프로젝트 설정 실행](19-PROJECT-CONFIGURATION.md)은 version3 snapshot을 사용한다.
+`project-binding.json`과 해당 설정의 정확한 DB 목록을 보존한다. 기존 예제의 version1·2 복원도 유지한다.
+
 ## 실행
 
 Node 24 이상에서 앱을 실행한 터미널의 Ctrl+C로 종료한 뒤 사용한다. 같은 데이터 폴더를

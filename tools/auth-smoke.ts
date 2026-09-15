@@ -8,14 +8,15 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { startDevelopmentIssuer } from '../packages/auth/development-issuer.ts';
+import { startDevelopmentIssuer } from '../examples/order-workflow/issuer.ts';
 import { OidcAuthentication } from '../packages/auth/oidc.ts';
-import { createApp } from '../apps/api/server.ts';
-import { createFabricTestRuntime } from '../apps/api/fabric-test-runtime.ts';
-import { createDevelopmentAuthRuntime } from '../apps/api/development-auth-runtime.ts';
+import { createDemoApp as createApp } from '../examples/order-workflow/application.ts';
+import { createFabricTestRuntime } from '../examples/order-workflow/fabric-runtime.ts';
+import { createDevelopmentAuthRuntime } from '../examples/order-workflow/auth-runtime.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
-import { PERSONAS, actorIdentity } from '../apps/api/demo-config.ts';
-import { createRemoteSigner, DEVELOPMENT_SIGNING_KEY_IDS } from '../packages/fabric/remote-signer.ts';
+import { PERSONAS, actorIdentity } from '../examples/order-workflow/config.ts';
+import { createRemoteSigner } from '../packages/fabric/remote-signer.ts';
+import { DEVELOPMENT_SIGNING_KEY_IDS } from '../examples/order-workflow/signing-service.ts';
 import { OidcTestBrowser } from './oidc-test-browser.ts';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -31,7 +32,7 @@ let releaseSubmission: (() => void) | undefined;
 let phase = 'startup';
 
 async function startSigner() {
-  signer = spawn(process.execPath, ['infra/fabric/signing-service.ts', '--socket', socketPath], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
+  signer = spawn(process.execPath, ['infra/fabric/signing-service.ts', '--socket', socketPath, '--demo'], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
   signer.stderr?.on('data', () => {});
   for (let attempt = 0; !existsSync(socketPath); attempt++) {
     if (signer.exitCode !== null || attempt > 50) throw new Error('Signing process did not start');
@@ -99,7 +100,7 @@ try {
   const initialSession = await (await browser.request(`${origin}/api/session`)).json(); assert.equal(initialSession.actor, null);
   phase = 'login and publication';
   assert.equal((await login('dev-sales-owner')).actor.actor_id, 'person-sales-owner');
-  await post('/api/session', { actor_id: 'person-settlement-owner' }, 403);
+  await post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' }, 403);
   const overview = await (await browser.request(`${origin}/v1/workspaces/demo/overview`)).json();
   const candidates = overview.documents.filter((doc: any) => doc.payload.document_id === 'doc-sales-order-definition-001');
   const base = candidates.find((doc: any) => doc.eligible) ?? candidates.at(-1); assert.ok(base);

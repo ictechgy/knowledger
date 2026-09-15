@@ -2,16 +2,19 @@ import assert from 'node:assert/strict';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KclService } from '../apps/api/service.ts';
-import { actorIdentity, PERSONAS } from '../apps/api/demo-config.ts';
+import { actorIdentity, PERSONAS } from '../examples/order-workflow/config.ts';
+import { demoDefinition } from '../examples/order-workflow/config.ts';
+import { seedDemo } from '../examples/order-workflow/application.ts';
 
 const ledger = new LocalLedger(':memory:', 'kcl-demo');
 const vault = new PrivateStore(':memory:');
-const service = new KclService(ledger, vault);
+const service = new KclService(ledger, vault, demoDefinition());
 const fulfillment = actorIdentity(PERSONAS[1]);
 const settlement = actorIdentity(PERSONAS[2]);
 const scope = { document_ids: ['doc-review-invitation-001'], context_id: 'context-coordination', scope_id: 'scope-order-2026-001', usage_scope: 'review-invitation/v1' };
 try {
   await service.initialize();
+  await seedDemo(service);
   const before = await service.resolve(fulfillment, scope);
   assert.equal(before.status, 'withheld');
   for (const [index, actor] of [fulfillment, settlement].entries()) {

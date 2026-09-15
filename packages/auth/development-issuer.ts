@@ -22,20 +22,7 @@ interface DevelopmentAccount {
   version: number;
 }
 
-const ACCOUNT_DEFINITIONS: readonly Omit<DevelopmentAccount, 'enabled' | 'version'>[] = [
-  {
-    subject: 'dev-sales-owner',
-    label: '영업 담당자',
-  },
-  {
-    subject: 'dev-fulfillment-owner',
-    label: '이행 담당자',
-  },
-  {
-    subject: 'dev-settlement-owner',
-    label: '정산 담당자',
-  },
-];
+export type DevelopmentAccountDefinition = Omit<DevelopmentAccount, 'enabled' | 'version'>;
 
 export interface DevelopmentIssuer {
   readonly issuer: string;
@@ -46,6 +33,7 @@ export interface DevelopmentIssuer {
 }
 
 export interface StartDevelopmentIssuerOptions {
+  accounts: readonly DevelopmentAccountDefinition[];
   port: number;
   redirectUri: string;
   clientId?: string;
@@ -222,9 +210,13 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
   assertLoopbackRedirect(options.redirectUri);
   const clientId = options.clientId ?? DEFAULT_CLIENT_ID;
   assertClientId(clientId);
+  if (!Array.isArray(options.accounts) || options.accounts.length < 1 || options.accounts.length > 128
+    || options.accounts.some(account => !account || typeof account.subject !== 'string' || !/^[A-Za-z0-9._:-]{3,128}$/.test(account.subject)
+      || typeof account.label !== 'string' || !account.label.trim() || account.label.length > 200)
+    || new Set(options.accounts.map(account => account.subject)).size !== options.accounts.length) throw new TypeError('Explicit distinct development accounts are required');
   if (options.subjects !== undefined && (!Array.isArray(options.subjects) || options.subjects.length === 0 || new Set(options.subjects).size !== options.subjects.length
-    || options.subjects.some(subject => !ACCOUNT_DEFINITIONS.some(account => account.subject === subject)))) throw new TypeError('Unknown or duplicate development account selection');
-  const selectedAccounts = ACCOUNT_DEFINITIONS.filter(account => options.subjects === undefined || options.subjects.includes(account.subject));
+    || options.subjects.some(subject => !options.accounts.some(account => account.subject === subject)))) throw new TypeError('Unknown or duplicate development account selection');
+  const selectedAccounts = options.accounts.filter(account => options.subjects === undefined || options.subjects.includes(account.subject));
   const port = await reservePort(options.port);
   const issuer = `http://127.0.0.1:${port}`;
   const cookieNamespace = createHash('sha256').update(issuer).digest('hex').slice(0, 16);

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createApp } from '../../apps/api/server.ts';
-import { actorIdentity, PERSONAS } from '../../apps/api/demo-config.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
+import { actorIdentity, PERSONAS } from '../../examples/order-workflow/config.ts';
 
 const mappingId = 'doc-review-invitation-001';
 const proposalId = 'proposal-review-invitation-001';
@@ -34,7 +34,7 @@ async function fixture(t: any) {
   };
   const approve = async () => {
     await post(`/agreement-proposals/${proposalId}/decisions`, { decision: 'approve', rationale: '물류 조건 확인', command_id: commandId() });
-    await post('/api/session', { actor_id: 'person-settlement-owner' });
+    await post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
     await post(`/agreement-proposals/${proposalId}/decisions`, { decision: 'approve', rationale: '정산 조건 확인', command_id: commandId() });
     return await post(`/agreement-proposals/${proposalId}/activate`, { expected_active_agreement_id: null, command_id: commandId() });
   };
@@ -79,9 +79,9 @@ test('private drafts do not leak to shared search/events and another persona can
   const results = await api.post('/search', { query: 'PRIVATE_BODY_CANARY' });
   assert.equal(results.results.length, 0);
   assert.equal(JSON.stringify(api.app.service.ledger.events(0, 1000)).includes('PRIVATE_'), false);
-  await api.post('/api/session', { actor_id: 'person-settlement-owner' });
+  await api.post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
   await api.post('/publication-previews', { draft_id: draft.draft_id }, 404);
-  await api.post('/api/session', { actor_id: 'person-fulfillment-owner' });
+  await api.post('/api/session', { org_id: 'FulfillmentMSP', actor_id: 'person-fulfillment-owner' });
   const preview = await api.post('/publication-previews', { draft_id: draft.draft_id });
   assert.equal(preview.recipients.length, 3);
   await api.post('/revisions', { preview_id: preview.preview_id, confirm_shared: false, command_id: commandId() }, 400);
@@ -108,7 +108,7 @@ test('command IDs are scoped by organization rather than globally in the local o
   const api = await fixture(t);
   const id = commandId();
   await api.post(`/agreement-proposals/${proposalId}/decisions`, { decision: 'approve', rationale: '물류 확인', command_id: id });
-  await api.post('/api/session', { actor_id: 'person-settlement-owner' });
+  await api.post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
   await api.post(`/agreement-proposals/${proposalId}/decisions`, { decision: 'approve', rationale: '정산 확인', command_id: id });
 });
 
@@ -124,7 +124,7 @@ test('manifest cites the exact latest approvals used for activation', async t =>
 
 test('agent personas cannot approve and cross-origin / no-CSRF mutations are blocked', async t => {
   const api = await fixture(t);
-  await api.post('/api/session', { actor_id: 'agent-knowledge-drafter' });
+  await api.post('/api/session', { org_id: 'FulfillmentMSP', actor_id: 'agent-knowledge-drafter' });
   await api.post(`/agreement-proposals/${proposalId}/decisions`, { decision: 'approve', rationale: 'AI self approval', command_id: commandId() }, 403);
   const route = `${api.url}/v1/workspaces/demo/drafts`;
   const noCsrf = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json' }, body: '{}' });

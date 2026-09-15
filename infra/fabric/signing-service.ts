@@ -1,11 +1,10 @@
 import { createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson } from "../../packages/fabric/canonical.ts";
-import { DEVELOPMENT_SIGNING_KEY_IDS, type DevelopmentSigningKeyId } from "../../packages/fabric/remote-signer.ts";
 
 const MAX_FRAME_BYTES = 32 * 1024;
 const MAX_CERTIFICATE_BYTES = 16 * 1024;
@@ -14,7 +13,7 @@ const MAX_CONCURRENCY = 16;
 const MAX_CONNECTIONS = 64;
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_SOCKET_PATH_BYTES = 104;
-const KEY_ID_SET = new Set<string>(DEVELOPMENT_SIGNING_KEY_IDS);
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/u;
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
 
@@ -31,9 +30,15 @@ interface LoadedKey {
   sign: (digest: Uint8Array) => Promise<Uint8Array>;
 }
 
+export interface SigningKeyReference {
+  key_id: string;
+  certificate_path: string;
+  private_key_path: string;
+}
+
 interface SignRequest {
   operation: "sign";
-  key_id: DevelopmentSigningKeyId;
+  key_id: string;
   digest: string;
   certificate: string;
 }
@@ -52,6 +57,8 @@ export interface DevelopmentSigningService {
   readonly socketPath: string;
   close(): Promise<void>;
 }
+
+export type SigningService = DevelopmentSigningService;
 
 function ownKeys(value: object): string[] {
   return Object.keys(value);
@@ -86,50 +93,41 @@ function parseRequest(body: Buffer): SignRequest {
   if (keys.length !== 4 || !keys.includes("operation") || !keys.includes("key_id") || !keys.includes("digest") || !keys.includes("certificate") || request.operation !== "sign") {
     throw new Error("invalid request");
   }
-  if (typeof request.key_id !== "string" || !KEY_ID_SET.has(request.key_id)) throw new Error("unknown key");
+  if (typeof request.key_id !== "string" || !KEY_ID_PATTERN.test(request.key_id)) throw new Error("unknown key");
   base64(request.digest, 32);
   base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
   return request as SignRequest;
 }
 
-function signingKeyIds(value: unknown): readonly DevelopmentSigningKeyId[] {
-  if (value === undefined) return [...DEVELOPMENT_SIGNING_KEY_IDS];
-  if (!Array.isArray(value) || value.length === 0 || value.length > DEVELOPMENT_SIGNING_KEY_IDS.length
-    || value.some(id => typeof id !== 'string' || !KEY_ID_SET.has(id)) || new Set(value).size !== value.length) {
-    throw new TypeError('Signing key allowlist must contain unique approved identity IDs');
-  }
-  return Object.freeze([...value]) as readonly DevelopmentSigningKeyId[];
+function assertKeyReferences(value: readonly SigningKeyReference[]): readonly SigningKeyReference[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new TypeError("Signing key references must be a non-empty bounded array");
+  const ids = new Set<string>();
+  return Object.freeze(value.map((entry) => {
+    if (!entry || typeof entry !== "object" || !KEY_ID_PATTERN.test(entry.key_id) || ids.has(entry.key_id)
+      || typeof entry.certificate_path !== "string" || !isAbsolute(entry.certificate_path)
+      || typeof entry.private_key_path !== "string" || !isAbsolute(entry.private_key_path)) {
+      throw new TypeError("Signing key references must contain unique absolute paths and safe IDs");
+    }
+    ids.add(entry.key_id);
+    return { key_id: entry.key_id, certificate_path: entry.certificate_path, private_key_path: entry.private_key_path };
+  }));
 }
 
-function loadKeys(keyIds: readonly DevelopmentSigningKeyId[]): Map<DevelopmentSigningKeyId, LoadedKey> {
-  const root = resolve(fileURLToPath(new URL("../../.data/fabric-smoke/crypto", import.meta.url)));
+function loadKeys(references: readonly SigningKeyReference[]): Map<string, LoadedKey> {
   const sdk = requireFabric("@hyperledger/fabric-gateway") as FabricGatewayModule;
-  const config: Record<DevelopmentSigningKeyId, { domain: string }> = {
-    "person-sales-owner": { domain: "sales.kcl.test" },
-    "person-fulfillment-owner": { domain: "fulfillment.kcl.test" },
-    "person-settlement-owner": { domain: "settlement.kcl.test" },
-  };
-  const loaded = new Map<DevelopmentSigningKeyId, LoadedKey>();
-  for (const keyId of keyIds) {
-    const domain = config[keyId].domain;
-    const user = `User1@${domain}`;
-    const msp = resolve(root, "peerOrganizations", domain, "users", user, "msp");
-    const keyDir = resolve(msp, "keystore");
-    let keyFiles;
-    try { keyFiles = readdirSync(keyDir, { withFileTypes: true }).filter(entry => entry.isFile() && /^.+_sk$/.test(entry.name)); }
-    catch { throw new Error("Approved development signing key is unavailable"); }
-    if (keyFiles.length !== 1) throw new Error("Approved development signing key is unavailable");
+  const loaded = new Map<string, LoadedKey>();
+  for (const reference of references) {
     try {
-      const certificate = readFileSync(resolve(msp, "signcerts", `${user}-cert.pem`));
+      const certificate = readFileSync(reference.certificate_path);
       if (certificate.byteLength === 0 || certificate.byteLength > MAX_CERTIFICATE_BYTES) throw new Error("invalid certificate");
       const x509 = new X509Certificate(certificate);
       const validFrom = Date.parse(x509.validFrom);
       const validTo = Date.parse(x509.validTo);
       if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || Date.now() < validFrom || Date.now() > validTo) throw new Error("expired certificate");
-      const privateKey = createPrivateKey(readFileSync(resolve(keyDir, keyFiles[0].name)));
+      const privateKey = createPrivateKey(readFileSync(reference.private_key_path));
       if (!x509.checkPrivateKey(privateKey)) throw new Error("certificate and key do not match");
-      loaded.set(keyId, { certificate, sign: sdk.signers.newPrivateKeySigner(privateKey) });
-    } catch { throw new Error("Approved development identity is invalid"); }
+      loaded.set(reference.key_id, { certificate, sign: sdk.signers.newPrivateKeySigner(privateKey) });
+    } catch { throw new Error("Configured signing identity is invalid"); }
   }
   return loaded;
 }
@@ -147,7 +145,7 @@ function pathAlreadyExists(path: string): boolean {
   }
 }
 
-async function serveSocket(socket: Socket, keys: Map<DevelopmentSigningKeyId, LoadedKey>, acquire: () => boolean, release: () => void): Promise<void> {
+async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire: () => boolean, release: () => void): Promise<void> {
   let input = Buffer.alloc(0);
   let length: number | undefined;
   let handled = false;
@@ -201,8 +199,7 @@ async function signWithTimeout(sign: (digest: Uint8Array) => Promise<Uint8Array>
   }
 }
 
-export async function startDevelopmentSigningService(options: { socketPath: string; keyIds?: readonly DevelopmentSigningKeyId[] }): Promise<DevelopmentSigningService> {
-  const keyIds = signingKeyIds(options.keyIds);
+export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[] }): Promise<SigningService> {
   const socketPath = options.socketPath;
   if (typeof socketPath !== "string" || socketPath.length === 0 || !isAbsolute(socketPath) || socketPath.includes("\u0000") || Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) throw new TypeError("A valid Unix socket path is required");
   if (pathAlreadyExists(socketPath)) throw new Error("Signing socket already exists; refusing to replace it");
@@ -210,7 +207,7 @@ export async function startDevelopmentSigningService(options: { socketPath: stri
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
-  const keys = loadKeys(keyIds);
+  const keys = loadKeys(assertKeyReferences(options.keys));
   let active = 0;
   const connections = new Set<Socket>();
   const server: Server = createServer(socket => {
@@ -271,21 +268,41 @@ export async function startDevelopmentSigningService(options: { socketPath: stri
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let socketPath: string | undefined;
-  let keyId: string | undefined;
-  for (let i = 0; i < args.length; i += 2) {
-    const value = args[i + 1];
+  let configPath: string | undefined;
+  let demo = false;
+  let demoKeyId: string | undefined;
+  for (let i = 0; i < args.length; i += 1) {
+    const option = args[i];
+    if (option === "--demo") {
+      if (demo || configPath) throw new Error("Choose exactly one of --config or --demo");
+      demo = true;
+      continue;
+    }
+    const value = args[++i];
     if (!value || value.startsWith('--')) throw new Error('Signing service options require values');
-    if (args[i] === '--socket' && socketPath === undefined) socketPath = value;
-    else if (args[i] === '--key-id' && keyId === undefined) keyId = value;
+    if (option === '--socket' && socketPath === undefined) socketPath = value;
+    else if (option === '--config' && configPath === undefined) configPath = value;
+    else if (option === '--key-id' && demoKeyId === undefined) demoKeyId = value;
     else throw new Error('Unknown or duplicate signing service option');
   }
-  if (!socketPath) throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH [--key-id ID]');
-  const service = await startDevelopmentSigningService({ socketPath, keyIds: keyId === undefined ? undefined : signingKeyIds([keyId]) });
+  if (!socketPath || (!demo && !configPath) || (demo && configPath) || (!demo && demoKeyId !== undefined)) {
+    throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH (--config KEY_REFS_JSON | --demo) [--key-id ID]');
+  }
+  let service: SigningService;
+  if (demo) {
+    const wrapper = await import("../../examples/order-workflow/signing-service.ts");
+    service = await wrapper.startDevelopmentSigningService({ socketPath, keyIds: demoKeyId === undefined ? undefined : [demoKeyId] });
+  } else {
+    const config = JSON.parse(readFileSync(resolve(process.cwd(), configPath!), "utf8")) as unknown;
+    const references = Array.isArray(config) ? config : (config && typeof config === "object" && "keys" in config ? (config as { keys: unknown }).keys : undefined);
+    if (!Array.isArray(references)) throw new Error("Signing key configuration must be an array or an object with keys");
+    service = await startSigningService({ socketPath, keys: references as SigningKeyReference[] });
+  }
   const stop = (): void => { void service.close().finally(() => process.exit(0)); };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : "Signing service failed"}\n`); process.exitCode = 1; });
+  main().catch(() => { process.stderr.write("Signing service could not start. Check the explicit key references and socket path.\n"); process.exitCode = 1; });
 }

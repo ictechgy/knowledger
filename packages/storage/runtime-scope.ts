@@ -13,20 +13,23 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve, parse } from 'node:path';
-import { getDevelopmentOrganization } from '../fabric/development-organizations.ts';
-import type { DevelopmentOrganization, DevelopmentOrganizationId } from '../fabric/development-organizations.ts';
 import { parseStrictJson } from '../fabric/canonical.ts';
 
 export const RUNTIME_SCOPE_FILE = 'runtime-scope.json';
 export const RUNTIME_SCOPE_VERSION = 1 as const;
 export const RUNTIME_SCOPE_LEDGER = 'fabric-test-network' as const;
-export const RUNTIME_SCOPE_CHANNEL = 'kcl-demo' as const;
+
+export interface RuntimeScopeOrganization {
+  org_id: string;
+  key_id: string;
+  channel_id: string;
+}
 
 export interface RuntimeScope {
   version: 1;
   ledger: 'fabric-test-network';
-  channel_id: 'kcl-demo';
-  organization: DevelopmentOrganizationId;
+  channel_id: string;
+  organization: string;
 }
 
 export class RuntimeScopeError extends Error {
@@ -41,6 +44,9 @@ export class RuntimeScopeError extends Error {
 function fail(code: string, message: string): never {
   throw new RuntimeScopeError(code, message);
 }
+
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,63}$/u;
+function validId(value: unknown): value is string { return typeof value === 'string' && ID_PATTERN.test(value); }
 
 function absoluteDataDir(raw: string): string {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) fail('invalid_path', 'Runtime data directory is invalid');
@@ -67,10 +73,8 @@ function scopeFromValue(value: unknown): RuntimeScope {
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   if (keys.join('\0') !== ['channel_id', 'ledger', 'organization', 'version'].join('\0')) fail('invalid_scope', 'Runtime scope binding is invalid');
-  if (record.version !== RUNTIME_SCOPE_VERSION || record.ledger !== RUNTIME_SCOPE_LEDGER || record.channel_id !== RUNTIME_SCOPE_CHANNEL || typeof record.organization !== 'string') fail('invalid_scope', 'Runtime scope binding is invalid');
-  let organization: DevelopmentOrganization;
-  try { organization = getDevelopmentOrganization(record.organization); } catch { fail('invalid_scope', 'Runtime scope binding is invalid'); }
-  return { version: 1, ledger: 'fabric-test-network', channel_id: 'kcl-demo', organization: organization.org_id };
+  if (record.version !== RUNTIME_SCOPE_VERSION || record.ledger !== RUNTIME_SCOPE_LEDGER || !validId(record.channel_id) || !validId(record.organization)) fail('invalid_scope', 'Runtime scope binding is invalid');
+  return { version: 1, ledger: 'fabric-test-network', channel_id: record.channel_id, organization: record.organization };
 }
 
 function readScopeFile(dataDir: string): RuntimeScope | undefined {
@@ -99,16 +103,16 @@ function readScopeFile(dataDir: string): RuntimeScope | undefined {
   }
 }
 
-function allowedEntries(scope: RuntimeScope): Set<string> {
-  const outbox = `${scope.organization}-${getDevelopmentOrganization(scope.organization).key_id}-outbox.sqlite`;
+function allowedEntries(scope: RuntimeScope, keyId: string): Set<string> {
+  const outbox = `${scope.organization}-${keyId}-outbox.sqlite`;
   const databases = ['fabric-projection.sqlite', 'private-local.sqlite', outbox];
   const names = new Set([RUNTIME_SCOPE_FILE, 'manifest.json', ...databases]);
   for (const name of databases) for (const suffix of ['-wal', '-shm', '-journal']) names.add(`${name}${suffix}`);
   return names;
 }
 
-function validateEntries(dataDir: string, scope: RuntimeScope): void {
-  const allowed = allowedEntries(scope);
+function validateEntries(dataDir: string, scope: RuntimeScope, keyId: string): void {
+  const allowed = allowedEntries(scope, keyId);
   let entries: string[];
   try { entries = readdirSync(dataDir) as string[]; } catch { fail('scope_unreadable', 'Runtime data directory cannot be enumerated'); }
   for (const name of entries) {
@@ -120,8 +124,9 @@ function validateEntries(dataDir: string, scope: RuntimeScope): void {
   }
 }
 
-function writeInitialScope(dataDir: string, organization: DevelopmentOrganization): RuntimeScope {
-  const scope: RuntimeScope = { version: 1, ledger: 'fabric-test-network', channel_id: 'kcl-demo', organization: organization.org_id };
+function writeInitialScope(dataDir: string, organization: RuntimeScopeOrganization): RuntimeScope {
+  if (!validId(organization.org_id) || !validId(organization.key_id) || !validId(organization.channel_id)) fail('invalid_scope', 'Runtime scope descriptor is invalid');
+  const scope: RuntimeScope = { version: 1, ledger: 'fabric-test-network', channel_id: organization.channel_id, organization: organization.org_id };
   const path = join(dataDir, RUNTIME_SCOPE_FILE);
   const payload = `${JSON.stringify(scope)}\n`;
   let fd: number | undefined;
@@ -142,8 +147,9 @@ function writeInitialScope(dataDir: string, organization: DevelopmentOrganizatio
 }
 
 /** Validate or atomically create the organization binding before runtime files are opened. */
-export function ensureRuntimeScope(dataDir: string, organization?: DevelopmentOrganization): void {
-  const requested = organization === undefined ? undefined : getDevelopmentOrganization(organization);
+export function ensureRuntimeScope(dataDir: string, organization?: RuntimeScopeOrganization): void {
+  const requested = organization === undefined ? undefined : organization;
+  if (requested && (!validId(requested.org_id) || !validId(requested.key_id) || !validId(requested.channel_id))) fail('invalid_scope', 'Runtime scope descriptor is invalid');
   const directory = absoluteDataDir(dataDir);
   const entries = readdirSync(directory) as string[];
   const bound = readScopeFile(directory);
@@ -157,9 +163,9 @@ export function ensureRuntimeScope(dataDir: string, organization?: DevelopmentOr
     writeInitialScope(directory, requested);
     return;
   }
-  if (bound.organization !== requested.org_id) fail('organization_mismatch', 'Runtime scope belongs to another organization');
+  if (bound.organization !== requested.org_id || bound.channel_id !== requested.channel_id) fail('organization_mismatch', 'Runtime scope belongs to another organization or channel');
   if ((lstatSync(directory).mode & 0o777) !== 0o700) fail('scope_permissions', 'Scoped runtime directory must be owner-only');
-  validateEntries(directory, bound);
+  validateEntries(directory, bound, requested.key_id);
 }
 
 /** Read only the public binding. Missing data directories or bindings return undefined. */

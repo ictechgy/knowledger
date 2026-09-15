@@ -1,0 +1,8 @@
+{
+  "channel_id": "kcl-demo",
+  "bootstrap_actor": {
+    "org_id": "FulfillmentMSP",
+    "actor_id": "person-fulfillment-owner",
+    "kind": "human"
+  }
+}

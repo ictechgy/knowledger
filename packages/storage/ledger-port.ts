@@ -17,7 +17,7 @@ export interface PendingReceipt {
 /** Application reads use verified committed state; writes remain adapter-owned. */
 export interface ApplicationLedger {
   readonly channelId: string;
-  readonly mode: 'local-simulation' | 'fabric-test-network';
+  readonly mode: 'local-simulation' | 'fabric-test-network' | 'fabric';
   refresh(): Promise<void>;
   read(key: string, at?: Checkpoint | null): any | undefined;
   entries(prefix: string, at?: Checkpoint | null): [string, any][];

@@ -1,9 +1,10 @@
 import { OidcAuthentication } from '../../packages/auth/oidc.ts';
-import { createRemoteSigner, DEVELOPMENT_SIGNING_KEY_IDS } from '../../packages/fabric/remote-signer.ts';
-import { createFabricTestRuntime } from './fabric-test-runtime.ts';
-import { PERSONAS, actorIdentity } from './demo-config.ts';
-import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
-import type { DevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
+import { createRemoteSigner } from '../../packages/fabric/remote-signer.ts';
+import { DEVELOPMENT_SIGNING_KEY_IDS } from './signing-service.ts';
+import { createFabricTestRuntime } from './fabric-runtime.ts';
+import { PERSONAS, actorIdentity } from './config.ts';
+import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from './organizations.ts';
+import type { DevelopmentOrganization } from './organizations.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 
 /** The actor allowlist is application configuration, not a browser or JWT claim. */

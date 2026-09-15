@@ -28,12 +28,14 @@ Build the runnable JavaScript bundle and pinned public genesis with fixed
 source paths:
 
 ```sh
-node infra/fabric/build.mjs
+node infra/fabric/build.mjs --config kcl.config.json
+# Explicit example:
+node infra/fabric/build.mjs --demo
 ```
 
 The build uses Node's native TypeScript stripping and rewrites local `.ts`
 imports to `.js`. The generated entrypoint constructs the domain engine,
-pinned `infra/fabric/genesis.json`, pinned bootstrap identity, and real shim
+validated configuration genesis (or explicit `examples/order-workflow/genesis.json`), pinned bootstrap identity, and real shim
 `ClientIdentity` decoder before starting the dynamic `fabric-shim` loader.
 The output includes standalone `package.json` and `package-lock.json` files with
 `npm start` and a pinned shim dependency. Its local modules were built and loaded
@@ -115,7 +117,7 @@ durable SQLite block projection and authenticated test signer routes. See the
 [Fabric web profile](../../docs/12-FABRIC-WEB.md) for setup, restart semantics,
 HTTP pending/failure behavior, and the boundary with production authentication.
 
-`test-network.py` prepares a fixed `kcl-demo` channel with SalesMSP,
+`test-network.py` delegates to `examples/order-workflow/test-network.py`, which prepares a fixed `kcl-demo` channel with SalesMSP,
 FulfillmentMSP and SettlementMSP peers and three Raft orderers. All endpoints
 published to the host bind to loopback. The nodes share one local Docker host;
 this does not demonstrate independent organization administration or production

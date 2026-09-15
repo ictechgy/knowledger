@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { createApp } from '../../apps/api/server.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 
 const route = '/v1/workspaces/demo/draft-imports/markdown';
 let sequence = 0;
@@ -37,7 +37,7 @@ async function fixture(t: any) {
   };
   t.after(async () => { if (!closed) await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const close = async () => { if (!closed) { closed = true; await app.close(); } };
-  return { app, directory, url, post, close, cookie: () => cookie, session: () => session, switchActor: (actor_id: string) => post('/api/session', { actor_id }) };
+  return { app, directory, url, post, close, cookie: () => cookie, session: () => session, switchActor: (actor_id: string) => post('/api/session', { org_id: actor_id === 'person-settlement-owner' ? 'SettlementMSP' : 'FulfillmentMSP', actor_id }) };
 }
 
 function request(overrides: Record<string, unknown> = {}) {

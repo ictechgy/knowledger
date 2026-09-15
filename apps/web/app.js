@@ -1,10 +1,11 @@
-const workspaceId = 'demo';
-const apiBase = `/v1/workspaces/${workspaceId}`;
+let apiBase = '';
 
 const state = {
   session: null,
   overview: null,
   selectedDocumentKey: null,
+  selectedRevisionDigest: null,
+  selectedProposalId: null,
   draft: null,
   draftBaseDigest: null,
   composerVersion: 0,
@@ -13,6 +14,7 @@ const state = {
   draftEditRequest: null,
   privateDrafts: { drafts: [], total: 0, next_cursor: null },
   draftListVersion: 0,
+  activeSpace: 'documents',
 };
 
 const el = (id) => document.getElementById(id);
@@ -20,6 +22,12 @@ const text = (node, value) => { if (node) node.textContent = value == null ? '' 
 const setValue = (node, value) => { if (node) node.value = value == null ? '' : String(value); };
 const shortDigest = (value) => value ? `${value.slice(0, 19)}…${value.slice(-8)}` : '—';
 const nowCommand = () => `command-${crypto.randomUUID()}`;
+const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{2,63}$/.test(value);
+function setApiBase(workspace) {
+  const id = workspace?.id;
+  if (!validId(id)) throw new Error('워크스페이스 식별자를 확인할 수 없습니다.');
+  apiBase = `/v1/workspaces/${encodeURIComponent(id)}`;
+}
 const formatDate = (value) => {
   if (!value) return '날짜 없음';
   const date = new Date(value);
@@ -27,10 +35,11 @@ const formatDate = (value) => {
 };
 
 function renderMode(mode, authMode = null) {
-  const fabric = mode === 'fabric-test-network';
+  const fabric = mode === 'fabric' || mode === 'fabric-test-network';
   if (authMode) {
-    text(el('environment-label'), authMode === 'oidc-development' ? '계정 로그인 · 개발 환경' : '계정 로그인');
-    text(el('mode-note-title'), authMode === 'oidc-development' ? '계정 로그인 · 개발 환경' : '계정 로그인');
+    const loginLabel = authMode === 'oidc-development' ? '계정 로그인 · 개발 환경' : '계정 로그인';
+    text(el('environment-label'), fabric ? `Fabric · ${loginLabel}` : loginLabel);
+    text(el('mode-note-title'), fabric ? `Fabric · ${loginLabel}` : loginLabel);
     text(el('mode-note-copy'), authMode === 'oidc-development'
       ? ' — 개발용 로그인 서버의 테스트 계정을 사용합니다. 로그인한 계정으로 승인·철회를 요청합니다.'
       : ' — 확인된 조직 계정으로만 공유 지식과 합의 작업을 사용할 수 있습니다.');
@@ -95,15 +104,16 @@ async function request(path, options = {}) {
 async function loadSession() {
   const session = await request('/api/session');
   state.session = session;
+  if (session.workspace) { setApiBase(session.workspace); text(el('workspace-label'), session.workspace.label); }
   renderAuthState(session);
   renderMode(session.mode, session.auth_mode);
   const picker = el('persona-select');
   picker.replaceChildren();
   (session.personas || []).forEach((persona) => {
     const option = document.createElement('option');
-    option.value = persona.actor_id;
-    option.textContent = persona.label || `${persona.org_id} · ${persona.actor_id}`;
-    option.selected = persona.actor_id === session.actor?.actor_id;
+    option.value = JSON.stringify({ org_id: persona.org_id, actor_id: persona.actor_id });
+    option.textContent = persona.label || `${organizationLabel(persona.org_id)} · ${persona.actor_id}`;
+    option.selected = persona.org_id === session.actor?.org_id && persona.actor_id === session.actor?.actor_id;
     picker.append(option);
   });
   picker.disabled = !(session.personas || []).length;
@@ -136,6 +146,8 @@ function renderAuthState(session) {
   if (anonymous) {
     state.overview = null;
     state.selectedDocumentKey = null;
+    state.selectedRevisionDigest = null;
+    state.selectedProposalId = null;
     resetComposer();
     clearPrivateDrafts();
     renderOverview();
@@ -199,6 +211,52 @@ function setDraftSlotReadOnly(readOnly) {
   for (const id of ['draft-context', 'draft-scope', 'draft-usage']) el(id).readOnly = readOnly;
 }
 
+function draftPolicies() {
+  const currentPersona = (state.session?.personas || []).find((persona) => persona.org_id === state.session?.actor?.org_id && persona.actor_id === state.session?.actor?.actor_id);
+  const publishContexts = state.session?.capabilities?.publish_contexts || currentPersona?.publish_contexts || state.session?.actor?.publish_contexts || [];
+  return (state.overview?.policies || []).filter((policy) => publishContexts.includes('*') || publishContexts.includes(policy.context_id));
+}
+
+function canPropose() {
+  const currentPersona = (state.session?.personas || []).find((persona) => persona.org_id === state.session?.actor?.org_id && persona.actor_id === state.session?.actor?.actor_id);
+  return state.session?.capabilities?.can_propose ?? currentPersona?.can_propose ?? state.session?.actor?.can_propose ?? false;
+}
+
+function selectedDraftPolicy() {
+  const id = el('draft-policy')?.value;
+  return draftPolicies().find((policy) => `${policy.policy_id}|${policy.policy_version}` === id) || null;
+}
+
+function syncDraftPolicies(preferred = null) {
+  const select = el('draft-policy');
+  if (!select) return;
+  const policies = draftPolicies();
+  const current = preferred || select.value;
+  select.replaceChildren();
+  policies.forEach((policy) => {
+    const option = document.createElement('option'); option.value = `${policy.policy_id}|${policy.policy_version}`; option.textContent = `${policy.label || policy.policy_id} · ${metadataLabel('contexts', policy.context_id)} · v${policy.policy_version}`; option.dataset.documentId = policy.document_id; select.append(option);
+  });
+  if (current && policies.some((policy) => `${policy.policy_id}|${policy.policy_version}` === current)) select.value = current;
+  else if (policies.length) select.value = `${policies[0].policy_id}|${policies[0].policy_version}`;
+  const hint = el('draft-policy-status');
+  text(hint, policies.length ? '선택한 정책의 문서 범위가 자동으로 입력됩니다.' : '작성 가능한 정책이 없습니다. 관리자가 정책과 게시 범위를 먼저 설정해야 합니다.');
+  select.disabled = state.draftSourceId !== null || !policies.length;
+  const allowed = Boolean(policies.length);
+  el('save-draft')?.toggleAttribute('disabled', !allowed || Boolean(state.draft));
+  el('import-markdown')?.toggleAttribute('disabled', !allowed);
+}
+
+function applyDraftPolicy(policy, { preserveBase = true } = {}) {
+  if (!policy) return false;
+  setDraftSlotReadOnly(true);
+  setValue(el('draft-context'), policy.context_id);
+  setValue(el('draft-scope'), policy.scope_id);
+  setValue(el('draft-usage'), policy.usage_scope);
+  const existing = currentDocuments().find((doc) => slotKeyFor(doc.payload) === slotKeyFor({ channel_id: policy.channel_id, document_id: policy.document_id, context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope }));
+  if (preserveBase) state.draftBaseDigest = existing?.revision_digest || null;
+  return true;
+}
+
 function enterSavedDraftMode(draft) {
   state.draft = draft; state.draftSourceId = draft.draft_id;
   setDraftSlotReadOnly(true); document.querySelector('.markdown-import').hidden = true;
@@ -219,6 +277,8 @@ async function openSavedDraft(id) {
     const payload = draft.revision.payload;
     state.draftBaseDigest = payload.parents[0] ?? null;
     for (const [field, input] of [['title', 'draft-title'], ['body_markdown', 'draft-body'], ['context_id', 'draft-context'], ['scope_id', 'draft-scope'], ['usage_scope', 'draft-usage']]) setValue(el(input), payload[field]);
+    const policy = (state.overview?.policies || []).find((candidate) => candidate.document_id === payload.document_id && candidate.context_id === payload.context_id && candidate.scope_id === payload.scope_id && candidate.usage_scope === payload.usage_scope);
+    syncDraftPolicies(policy ? `${policy.policy_id}|${policy.policy_version}` : null);
     setValue(el('draft-source-kind'), payload.metadata.source_kind);
     enterSavedDraftMode(draft);
     text(el('draft-status'), '저장한 초안입니다. 그대로 공유 검토하거나 수정 후 새 초안으로 저장하세요.');
@@ -236,6 +296,8 @@ async function loadOverview({ preserveSelection = true } = {}) {
   renderMode(overview.mode, state.session?.auth_mode);
   const docs = currentDocuments();
   state.selectedDocumentKey = docs.some((doc) => slotKeyFor(doc.payload) === previous) ? previous : slotKeyFor(docs[0]?.payload) || null;
+  if (state.selectedRevisionDigest && !(overview.documents || []).some((doc) => doc.revision_digest === state.selectedRevisionDigest)) state.selectedRevisionDigest = null;
+  if (state.selectedProposalId && !(overview.proposals || []).some((proposal) => proposal.proposal_id === state.selectedProposalId)) state.selectedProposalId = null;
   renderOverview();
 }
 
@@ -256,6 +318,22 @@ function renderOverview() {
   renderDocumentDetail(findSelectedDocument());
   renderReview(findSelectedDocument());
   renderResolverDocuments(docs);
+  renderReviewInbox();
+  syncDraftPolicies();
+}
+
+function metadataCollection(name) {
+  return state.overview?.workspace?.[name] || state.session?.workspace?.[name] || [];
+}
+
+function metadataLabel(collection, id) {
+  return metadataCollection(collection).find((item) => item.id === id)?.label || id || '미지정';
+}
+
+function organizationLabel(orgId) {
+  return state.overview?.organizations?.find((organization) => organization.org_id === orgId)?.label
+    || state.session?.organizations?.find((organization) => organization.org_id === orgId)?.label
+    || orgId || '조직 미지정';
 }
 
 function currentDocuments() {
@@ -285,7 +363,10 @@ function compareDocumentOrder(left, right) {
   return String(left?.payload?.metadata?.created_at || '').localeCompare(String(right?.payload?.metadata?.created_at || ''));
 }
 
-function findSelectedDocument() { return currentDocuments().find((doc) => slotKeyFor(doc.payload) === state.selectedDocumentKey) || null; }
+function findSelectedDocument() {
+  if (state.selectedRevisionDigest) return (state.overview?.documents || []).find((doc) => doc.revision_digest === state.selectedRevisionDigest) || null;
+  return currentDocuments().find((doc) => slotKeyFor(doc.payload) === state.selectedDocumentKey) || null;
+}
 
 function renderDocumentList(documents) {
   const list = el('document-list');
@@ -301,17 +382,16 @@ function renderDocumentList(documents) {
     button.setAttribute('aria-current', key === state.selectedDocumentKey ? 'true' : 'false');
     const title = document.createElement('span'); title.className = 'document-card-title'; title.textContent = payload.title || '제목 없는 문서';
     const meta = document.createElement('span'); meta.className = 'document-card-meta';
-    const context = document.createElement('span'); context.className = 'document-card-context'; context.textContent = contextLabel(payload.context_id);
+    const context = document.createElement('span'); context.className = 'document-card-context'; context.textContent = metadataLabel('contexts', payload.context_id);
     const presentation = statusForDocument(doc);
     const status = document.createElement('span'); status.className = `status-chip ${presentation.className}`; status.textContent = presentation.label;
     meta.append(context, status); button.append(title, meta); list.append(button);
-    button.addEventListener('click', () => { state.selectedDocumentKey = key; renderOverview(); el('document-title')?.focus?.(); });
+    button.addEventListener('click', () => { state.selectedDocumentKey = key; state.selectedRevisionDigest = null; state.selectedProposalId = null; renderOverview(); el('document-title')?.focus?.(); });
   });
 }
 
 function contextLabel(contextId) {
-  const labels = { 'context-sales': '영업 · 계약', 'context-fulfillment': '이행 · 배송', 'context-settlement': '정산 · 수납', 'context-coordination': '교차 도메인 합의' };
-  return labels[contextId] || contextId || '맥락 미지정';
+  return metadataLabel('contexts', contextId);
 }
 
 function statusForDocument(doc) {
@@ -333,6 +413,12 @@ function reasonLabel(reason) {
   return '활성 합의와 사용 범위를 다시 확인해 주세요.';
 }
 
+function setWorkspace(space) {
+  if (!['review', 'documents', 'resolver'].includes(space)) return;
+  state.activeSpace = space;
+  document.querySelectorAll('[data-workspace]').forEach((button) => button.setAttribute('aria-current', button.dataset.workspace === space ? 'page' : 'false'));
+}
+
 function renderDocumentDetail(doc) {
   const container = el('document-detail-content');
   container.replaceChildren();
@@ -344,13 +430,13 @@ function renderDocumentDetail(doc) {
   const body = document.createElement('div'); body.className = 'detail-body';
   const title = document.createElement('h2'); title.id = 'document-title'; title.className = 'detail-title'; title.tabIndex = -1; title.textContent = payload.title || '제목 없는 문서';
   const description = document.createElement('p'); description.className = 'detail-description'; description.textContent = doc.reason ? reasonLabel(doc.reason) : '이 도메인이 책임지는 의미의 최신 개정본입니다.';
-  const metadata = document.createElement('div'); metadata.className = 'metadata-row';
-  [['revision', shortDigest(doc.revision_digest)], ['scope', payload.scope_id], ['작성', formatDate(payload.metadata?.created_at)]].forEach(([label, value]) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(value || '—')); metadata.append(item); });
+  const evidence = document.createElement('details'); evidence.className = 'technical-evidence'; const evidenceSummary = document.createElement('summary'); evidenceSummary.textContent = '기술 증거 보기'; const metadata = document.createElement('div'); metadata.className = 'metadata-row';
+  [['revision', shortDigest(doc.revision_digest)], ['document', payload.document_id], ['scope', payload.scope_id], ['channel', payload.channel_id], ['작성', formatDate(payload.metadata?.created_at)]].forEach(([label, value]) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(value || '—')); metadata.append(item); }); evidence.append(evidenceSummary, metadata);
   const source = document.createElement('div'); source.className = 'source-view';
   const sourceHead = document.createElement('div'); sourceHead.className = 'source-view-heading'; const sourceLabel = document.createElement('span'); sourceLabel.textContent = 'FULL MARKDOWN SOURCE'; const sourceBytes = document.createElement('span'); sourceBytes.textContent = `${new TextEncoder().encode(payload.body_markdown || '').length.toLocaleString()} bytes`; sourceHead.append(sourceLabel, sourceBytes);
   const pre = document.createElement('pre'); pre.className = 'markdown-source'; pre.textContent = payload.body_markdown || ''; source.append(sourceHead, pre);
   const detailActions = document.createElement('div'); detailActions.className = 'detail-actions'; const revise = document.createElement('button'); revise.type = 'button'; revise.className = 'outline-button'; revise.textContent = '이 문서의 새 개정본 작성'; revise.addEventListener('click', () => openComposer('revise', doc)); detailActions.append(revise);
-  body.append(title, description, metadata, source, detailActions);
+  body.append(title, description, evidence, source, detailActions);
   if (doc.history?.length) {
     const history = document.createElement('div'); history.className = 'history-section'; const heading = document.createElement('h3'); heading.className = 'subheading'; heading.textContent = '개정 이력'; const list = document.createElement('div'); list.className = 'history-list';
     doc.history.forEach((item) => { const row = document.createElement('div'); row.className = 'history-item'; const name = document.createElement('strong'); name.textContent = item.title || '제목 없음'; const date = document.createElement('span'); date.textContent = `${shortDigest(item.revision_digest)} · ${formatDate(item.created_at)}`; row.append(name, date); list.append(row); }); history.append(heading, list); body.append(history);
@@ -360,6 +446,7 @@ function renderDocumentDetail(doc) {
 }
 
 function getSelectedProposal(doc) {
+  if (state.selectedProposalId) return (state.overview?.proposals || []).find((proposal) => proposal.proposal_id === state.selectedProposalId && proposal.revision_digest === doc?.revision_digest) || null;
   return (state.overview?.proposals || []).filter((proposal) => proposal.revision_digest === doc?.revision_digest).sort((left, right) => {
     const leftDate = left.created_at || left.proposed_at || '';
     const rightDate = right.created_at || right.proposed_at || '';
@@ -383,9 +470,46 @@ function matchingPolicy(doc) {
   return (state.overview?.policies || []).find((policy) => policy.document_id === slot.document_id && policy.context_id === slot.context_id && policy.scope_id === slot.scope_id && policy.usage_scope === slot.usage_scope && policy.channel_id === slot.channel_id);
 }
 
+function outstandingReviews() {
+  const actor = state.session?.actor;
+  if (!actor) return [];
+  return (state.overview?.proposals || []).filter((proposal) => {
+    if (proposalStatus(proposal) !== 'open') return false;
+    return (proposal.required_representatives || []).some((representative) => {
+      if (representative.actor_org_id !== actor.org_id || representative.actor_id !== actor.actor_id) return false;
+      return !(proposal.decisions || []).some((decision) => decision.actor_org_id === actor.org_id && decision.actor_id === actor.actor_id && decision.actor_domain_role === representative.domain_role && decision.decision !== 'retract');
+    });
+  });
+}
+
+function renderReviewInbox() {
+  const list = el('review-inbox');
+  const count = el('review-inbox-count');
+  if (!list) return;
+  const reviews = outstandingReviews();
+  text(count, reviews.length);
+  list.replaceChildren();
+  if (!reviews.length) {
+    const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '지금 처리할 검토가 없습니다.'; list.append(empty); return;
+  }
+  reviews.forEach((proposal) => {
+    const doc = (state.overview?.documents || []).find((candidate) => candidate.revision_digest === proposal.revision_digest);
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'review-inbox-item';
+    const title = document.createElement('strong'); title.textContent = doc?.payload?.title || proposal.proposal_id || '검토 제안';
+    const meta = document.createElement('span'); meta.textContent = `${metadataLabel('contexts', doc?.payload?.context_id)} · 검토 정책`;
+    button.append(title, meta);
+    button.addEventListener('click', () => {
+      if (doc) { state.selectedDocumentKey = slotKeyFor(doc.payload); state.selectedRevisionDigest = doc.revision_digest; state.selectedProposalId = proposal.proposal_id; }
+      setWorkspace('review'); renderOverview(); el('review-title')?.focus?.();
+    });
+    list.append(button);
+  });
+}
+
 async function proposeCurrentRevision(doc) {
+  if (!canPropose()) { showStatus('이 계정에는 검토 제안을 제출할 권한이 없습니다.', 'error'); return; }
   const policy = matchingPolicy(doc);
-  if (!policy) { showStatus('이 개정본의 slot과 일치하는 policy가 없어 제안을 제출할 수 없습니다.', 'error'); return; }
+  if (!policy) { showStatus('이 개정본의 문서 범위와 일치하는 정책이 없어 제안을 제출할 수 없습니다.', 'error'); return; }
   await executeMutation('/agreement-proposals', { revision_digest: doc.revision_digest, policy_id: policy.policy_id, policy_version: policy.policy_version, command_id: nowCommand() }, '새 합의 검토 제안');
 }
 
@@ -396,7 +520,7 @@ function renderReview(doc) {
   const proposal = getSelectedProposal(doc); const status = proposal ? proposalStatus(proposal) : statusForDocument(doc).label; text(reviewChip, proposal ? proposalStatusLabel(status) : status); reviewChip.className = `state-chip ${status === 'active' ? 'state-chip-active' : status === 'suspended' || status === 'withdrawn' ? 'state-chip-blocked' : 'state-chip-review'}`;
   if (!proposal) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '이 개정본에 대한 검토 제안이 아직 없습니다. 새 개정본을 공유한 뒤 합의를 제안하세요.'; target.append(empty); return; }
   const card = document.createElement('article'); card.className = 'proposal-card';
-  const head = document.createElement('div'); head.className = 'proposal-head'; const title = document.createElement('div'); const id = document.createElement('p'); id.className = 'proposal-id'; id.textContent = proposal.proposal_id || 'proposal'; const meta = document.createElement('p'); meta.className = 'proposal-meta'; meta.textContent = `policy ${proposal.policy_id || '—'} · review #${proposal.review_counter ?? '—'}`; title.append(id, meta); const proposalChip = document.createElement('span'); proposalChip.className = `status-chip ${status === 'active' ? 'state-chip-active' : status === 'suspended' || status === 'withdrawn' ? 'state-chip-blocked' : 'state-chip-review'}`; proposalChip.textContent = proposalStatusLabel(status); head.append(title, proposalChip);
+  const head = document.createElement('div'); head.className = 'proposal-head'; const title = document.createElement('div'); const id = document.createElement('p'); id.className = 'proposal-id'; id.textContent = '검토 제안'; const meta = document.createElement('p'); meta.className = 'proposal-meta'; meta.textContent = `검토 정책 · 응답 순서 ${proposal.review_counter ?? '—'}`; title.append(id, meta); const proposalChip = document.createElement('span'); proposalChip.className = `status-chip ${status === 'active' ? 'state-chip-active' : status === 'suspended' || status === 'withdrawn' ? 'state-chip-blocked' : 'state-chip-review'}`; proposalChip.textContent = proposalStatusLabel(status); head.append(title, proposalChip);
   const reps = document.createElement('ul'); reps.className = 'representative-list'; (proposal.required_representatives || []).forEach((rep) => { const row = document.createElement('li'); row.className = 'representative-row'; const role = document.createElement('span'); role.textContent = roleLabel(rep.domain_role); const actor = document.createElement('span'); actor.textContent = `${rep.actor_org_id} · ${rep.actor_id}`; const decision = (proposal.decisions || []).find((item) => item.actor_id === rep.actor_id && item.actor_org_id === rep.actor_org_id && item.actor_domain_role === rep.domain_role); row.append(role); if (decision) { const chip = document.createElement('span'); chip.className = `status-chip ${decision.decision === 'approve' ? 'state-chip-active' : decision.decision === 'object' ? 'state-chip-blocked' : 'state-chip-neutral'}`; chip.textContent = decision.decision; row.append(chip); } else row.append(actor); reps.append(row); });
   const actions = document.createElement('div'); actions.className = 'decision-actions';
   if (status === 'open') {
@@ -410,7 +534,7 @@ function renderReview(doc) {
   if (actions.childElementCount) card.append(actions); card.append(controls); target.append(card);
 }
 
-function roleLabel(role) { const labels = { fulfillment_owner: '이행 도메인 대표', settlement_owner: '정산 도메인 대표', sales_owner: '영업 도메인 대표' }; return labels[role] || role || '대표 역할'; }
+function roleLabel(role) { return metadataLabel('roles', role); }
 function decisionLabel(decision) { return { approve: '승인', object: '이의 제기', abstain: '기권', retract: '내 결정 철회' }[decision] || decision; }
 
 function renderResolverDocuments(documents) {
@@ -478,10 +602,19 @@ async function changeAgreement(proposal, action) {
 }
 
 async function onDraftSubmit(event) {
-  event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); text(el('draft-status'), 'private vault에 저장 중…');
+  event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); text(el('draft-status'), '비공개 저장소에 저장 중…');
   const version = ++state.composerVersion; const session = state.session;
   setDraftBusy(true);
   const payload = Object.fromEntries(data.entries());
+  const policy = selectedDraftPolicy();
+  if (!policy && !state.draftSourceId) { text(el('draft-status'), '먼저 작성할 문서 범위를 선택하세요.'); setDraftBusy(false); return; }
+  if (policy && !state.draftSourceId) {
+    payload.document_id = policy.document_id;
+    payload.context_id = policy.context_id;
+    payload.scope_id = policy.scope_id;
+    payload.usage_scope = policy.usage_scope;
+  }
+  delete payload.policy_id;
   const base = state.draftBaseDigest ? (state.overview?.documents || []).find((doc) => doc.revision_digest === state.draftBaseDigest) : null;
   if (base?.payload) { payload.base_revision_digest = base.revision_digest; payload.document_id = base.payload.document_id; }
   try {
@@ -495,7 +628,7 @@ async function onDraftSubmit(event) {
     }
     const draft = await request(path, { method: 'POST', body: jsonBody(input) });
     if (version !== state.composerVersion || session !== state.session) return;
-    enterSavedDraftMode(draft); text(el('draft-status'), 'private draft가 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('private draft가 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft); void loadPrivateDrafts();
+    enterSavedDraftMode(draft); text(el('draft-status'), '비공개 초안이 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('비공개 초안이 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft); void loadPrivateDrafts();
   } catch (error) {
     if (version === state.composerVersion && session === state.session) { text(el('draft-status'), error.message); showStatus(`draft 저장 실패: ${error.message}`, 'error'); }
   } finally { if (version === state.composerVersion) setDraftBusy(false); }
@@ -518,12 +651,15 @@ function invalidateDraftPreview() {
 async function importMarkdown() {
   const file = el('markdown-file').files?.[0];
   if (!file) { text(el('draft-status'), '가져올 Markdown 파일을 선택하세요.'); el('markdown-file').focus(); return; }
+  const policy = selectedDraftPolicy();
+  if (!policy) { text(el('draft-status'), '먼저 가져올 문서 범위를 선택하세요.'); return; }
+  applyDraftPolicy(policy);
   for (const id of ['draft-title', 'draft-context', 'draft-scope', 'draft-usage']) if (!el(id).reportValidity()) return;
   if (!/\.(md|markdown)$/i.test(file.name) || file.size === 0 || file.size > 262144) {
     text(el('draft-status'), '비어 있지 않은 .md 또는 .markdown 파일을 선택하세요. 최대 크기는 256 KiB입니다.'); return;
   }
   const version = ++state.composerVersion; const session = state.session;
-  const payload = { filename: file.name, title: el('draft-title').value, context_id: el('draft-context').value, scope_id: el('draft-scope').value, usage_scope: el('draft-usage').value };
+  const payload = { filename: file.name, title: el('draft-title').value, document_id: policy.document_id, context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope };
   if (state.draftBaseDigest) payload.base_revision_digest = state.draftBaseDigest;
   setDraftBusy(true); text(el('draft-status'), '선택한 파일을 비공개 초안으로 가져오는 중…');
   try {
@@ -584,38 +720,41 @@ function renderProposalStep(revisionDigest) {
   const policies = (state.overview?.policies || []).filter((policy) => policy.document_id === revisionPayload.document_id && policy.context_id === revisionPayload.context_id && policy.scope_id === revisionPayload.scope_id && policy.usage_scope === revisionPayload.usage_scope && policy.channel_id === revisionPayload.channel_id);
   const callout = document.createElement('div'); callout.className = 'preview-callout';
   const heading = document.createElement('h3'); heading.textContent = '합의 검토 시작';
-  const copy = document.createElement('p'); copy.textContent = '공유된 개정본에 정확히 맞는 policy를 선택해 대표자 검토를 시작합니다. 게시만으로 활성 합의가 만들어지지 않습니다.';
+  const copy = document.createElement('p'); copy.textContent = '공유된 개정본에 맞는 정책을 확인해 대표자 검토를 시작합니다. 게시만으로 활성 합의가 만들어지지 않습니다.';
   const select = document.createElement('select'); select.setAttribute('aria-label', '합의 정책 선택');
-  policies.forEach((policy) => { const option = document.createElement('option'); option.value = `${policy.policy_id}|${policy.policy_version}`; option.textContent = `${policy.policy_id} · v${policy.policy_version}`; select.append(option); });
-  const button = document.createElement('button'); button.type = 'button'; button.className = 'primary-button'; button.textContent = '검토 제안 제출'; button.disabled = !policies.length;
+  policies.forEach((policy) => { const option = document.createElement('option'); option.value = `${policy.policy_id}|${policy.policy_version}`; option.textContent = `${metadataLabel('contexts', policy.context_id)} · ${policy.label || '검토 정책'} · v${policy.policy_version}`; select.append(option); });
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'primary-button'; button.textContent = '검토 제안 제출'; button.disabled = !policies.length || !canPropose();
   button.addEventListener('click', async () => {
     const [policyId, policyVersion] = select.value.split('|');
     await executeMutation('/agreement-proposals', { revision_digest: revisionDigest, policy_id: policyId, policy_version: Number(policyVersion), command_id: nowCommand() }, '합의 검토 제안');
   });
-  if (!policies.length) { const noPolicy = document.createElement('p'); noPolicy.textContent = '이 개정본의 slot과 일치하는 policy가 없어 제안을 제출할 수 없습니다.'; noPolicy.className = 'form-hint'; callout.append(heading, copy, noPolicy); } else callout.append(heading, copy, select, button);
+  if (!policies.length) { const noPolicy = document.createElement('p'); noPolicy.textContent = '이 개정본의 문서 범위와 일치하는 정책이 없어 제안을 제출할 수 없습니다.'; noPolicy.className = 'form-hint'; callout.append(heading, copy, noPolicy); } else { const hint = document.createElement('p'); hint.className = 'form-hint'; hint.textContent = canPropose() ? '정책을 확인한 뒤 검토 제안을 제출하세요.' : '이 계정에는 검토 제안 제출 권한이 없습니다.'; callout.append(heading, copy, select, hint, button); }
   section.replaceChildren(callout); section.hidden = false;
 }
 
 async function onResolverSubmit(event) {
   event.preventDefault(); const documents = [...el('resolve-documents').selectedOptions].map((option) => option.dataset.documentId).filter(Boolean); if (!documents.length) { showStatus('조회할 문서를 하나 선택하세요.', 'error'); return; }
-  const result = el('resolver-result'); result.hidden = true; text(el('resolver-status'), '현재 fence와 활성 합의를 확인 중…');
-  try { const response = await request(`${apiBase}/resolve`, { method: 'POST', body: jsonBody({ document_ids: documents, context_id: el('resolve-context').value.trim(), scope_id: el('resolve-scope').value.trim(), usage_scope: el('resolve-usage').value.trim() }) }); renderResolverResult(response); text(el('resolver-status'), response.status === 'provided' ? '현재 fence에서 제공 가능한 결과입니다.' : '사용이 보류된 결과입니다.'); } catch (error) { text(el('resolver-status'), error.message); showStatus(`컨텍스트 확인 실패: ${error.message}`, 'error'); }
+  const result = el('resolver-result'); result.hidden = true; text(el('resolver-status'), '현재 원장 상태와 활성 합의를 확인 중…');
+  try { const response = await request(`${apiBase}/resolve`, { method: 'POST', body: jsonBody({ document_ids: documents, context_id: el('resolve-context').value.trim(), scope_id: el('resolve-scope').value.trim(), usage_scope: el('resolve-usage').value.trim() }) }); renderResolverResult(response); text(el('resolver-status'), response.status === 'provided' ? '현재 확인 시점에 제공 가능한 결과입니다.' : '사용이 보류된 결과입니다.'); } catch (error) { text(el('resolver-status'), error.message); showStatus(`컨텍스트 확인 실패: ${error.message}`, 'error'); }
 }
 
 function renderResolverResult(response) {
-  const result = el('resolver-result'); result.replaceChildren(); result.hidden = false; const heading = document.createElement('h3'); heading.textContent = response.status === 'provided' ? '권위 있는 컨텍스트' : '컨텍스트 제공 보류'; const copy = document.createElement('p'); copy.textContent = response.status === 'provided' ? '활성 합의와 현재 읽기 fence를 통과한 문서만 아래에 포함됐습니다.' : response.reason || '현재 조건에서 규범적 사용을 확정할 수 없습니다.'; result.append(heading, copy);
+  const result = el('resolver-result'); result.replaceChildren(); result.hidden = false; const heading = document.createElement('h3'); heading.textContent = response.status === 'provided' ? '권위 있는 컨텍스트' : '컨텍스트 제공 보류'; const copy = document.createElement('p'); copy.textContent = response.status === 'provided' ? '활성 합의와 현재 원장 상태를 확인한 문서만 아래에 포함됐습니다.' : response.reason || '현재 조건에서 규범적 사용을 확정할 수 없습니다.'; result.append(heading, copy);
   (response.documents || []).forEach((doc) => { const digest = document.createElement('p'); digest.className = 'result-digest'; digest.textContent = `${doc.title || '제목 없음'} · ${shortDigest(doc.revision_digest)} · agreement ${doc.agreement_id || '—'}`; const source = document.createElement('pre'); source.className = 'result-source'; source.textContent = doc.body_markdown || ''; result.append(digest, source); });
   if (response.manifest) {
-    const checkpoint = response.manifest.checkpoint || {}; const manifest = document.createElement('p'); manifest.className = 'result-digest'; manifest.textContent = `manifest ${response.manifest.manifest_id || '—'} · epoch ${checkpoint.eligibility_epoch ?? response.manifest.eligibility_epoch ?? '—'} · fence block ${checkpoint.block_number ?? '—'} / tx ${checkpoint.transaction_index ?? '—'}`; result.append(manifest);
-    const manifestJson = document.createElement('pre'); manifestJson.className = 'manifest-json'; manifestJson.textContent = JSON.stringify(response.manifest, null, 2); result.append(manifestJson);
-    const manifestActions = document.createElement('div'); manifestActions.className = 'manifest-actions'; const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary-button'; copy.textContent = 'manifest JSON 복사'; copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(manifestJson.textContent); showStatus('manifest JSON을 클립보드에 복사했습니다.', 'success'); } catch { showStatus('브라우저가 클립보드 접근을 허용하지 않았습니다.', 'error'); } }); const download = document.createElement('button'); download.type = 'button'; download.className = 'secondary-button'; download.textContent = 'manifest JSON 다운로드'; download.addEventListener('click', () => { const blob = new Blob([manifestJson.textContent], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${response.manifest.manifest_id || 'kcl-manifest'}.json`; anchor.click(); URL.revokeObjectURL(url); }); manifestActions.append(copy, download); result.append(manifestActions);
+    const checkpoint = response.manifest.checkpoint || {}; const manifest = document.createElement('p'); manifest.className = 'result-digest'; manifest.textContent = `manifest ${response.manifest.manifest_id || '—'} · epoch ${checkpoint.eligibility_epoch ?? response.manifest.eligibility_epoch ?? '—'} · 원장 block ${checkpoint.block_number ?? '—'} / tx ${checkpoint.transaction_index ?? '—'}`; result.append(manifest);
+    const evidence = document.createElement('details'); evidence.className = 'technical-evidence'; const summary = document.createElement('summary'); summary.textContent = '전체 manifest와 checkpoint 보기'; const manifestJson = document.createElement('pre'); manifestJson.className = 'manifest-json'; manifestJson.textContent = JSON.stringify(response.manifest, null, 2); evidence.append(summary, manifestJson);
+    const manifestActions = document.createElement('div'); manifestActions.className = 'manifest-actions'; const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary-button'; copy.textContent = 'manifest JSON 복사'; copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(manifestJson.textContent); showStatus('manifest JSON을 클립보드에 복사했습니다.', 'success'); } catch { showStatus('브라우저가 클립보드 접근을 허용하지 않았습니다.', 'error'); } }); const download = document.createElement('button'); download.type = 'button'; download.className = 'secondary-button'; download.textContent = 'manifest JSON 다운로드'; download.addEventListener('click', () => { const blob = new Blob([manifestJson.textContent], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${response.manifest.manifest_id || 'kcl-manifest'}.json`; anchor.click(); URL.revokeObjectURL(url); }); manifestActions.append(copy, download); evidence.append(manifestActions); result.append(evidence);
   }
 }
 
 async function switchPersona(event) {
-  const actorId = event.target.value; if (!actorId || actorId === state.session?.actor?.actor_id) return; event.target.disabled = true;
-  resetComposer(); clearPrivateDrafts();
-  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ actor_id: actorId }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); }
+  let selected;
+  try { selected = JSON.parse(event.target.value); } catch { return; }
+  if (!selected?.org_id || !selected?.actor_id || (selected.org_id === state.session?.actor?.org_id && selected.actor_id === state.session?.actor?.actor_id)) return;
+  event.target.disabled = true;
+  resetComposer(); clearPrivateDrafts(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null;
+  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); }
 }
 
 function resetComposer() {
@@ -623,9 +762,10 @@ function resetComposer() {
   state.draft = null; state.draftBaseDigest = null;
   state.draftSourceId = null;
   setDraftSlotReadOnly(false); document.querySelector('.markdown-import').hidden = false;
-  text(el('composer-title'), '새 개정본 작성'); text(el('save-draft'), 'private draft 저장');
+  text(el('composer-title'), '새 개정본 작성'); text(el('save-draft'), '비공개 초안 저장');
   text(el('draft-origin'), ''); el('draft-origin').hidden = true;
   const form = el('draft-form'); form?.reset();
+  syncDraftPolicies();
   const preview = el('preview-section'); if (preview) { preview.replaceChildren(); preview.hidden = true; }
   text(el('draft-status'), '저장 전에는 공용 원장에 기록되지 않습니다.');
   el('composer-panel').hidden = true;
@@ -642,8 +782,13 @@ function openComposer(mode, doc = null) {
     setValue(el('draft-scope'), doc.payload.scope_id);
     setValue(el('draft-usage'), doc.payload.usage_scope);
   }
+  const policy = mode === 'revise' && doc?.payload
+    ? (state.overview?.policies || []).find((candidate) => candidate.document_id === doc.payload.document_id && candidate.context_id === doc.payload.context_id && candidate.scope_id === doc.payload.scope_id && candidate.usage_scope === doc.payload.usage_scope)
+    : draftPolicies()[0];
+  syncDraftPolicies(policy ? `${policy.policy_id}|${policy.policy_version}` : null);
+  if (mode === 'new') applyDraftPolicy(policy);
   const preview = el('preview-section'); if (preview) { preview.replaceChildren(); preview.hidden = true; }
-  text(el('draft-status'), mode === 'revise' ? '현재 revision을 기반으로 private draft를 작성합니다.' : '새 문서는 선택한 기존 문서와 독립된 slot으로 시작합니다.');
+  text(el('draft-status'), mode === 'revise' ? '현재 개정본을 바탕으로 비공개 초안을 작성합니다.' : policy ? '선택한 정책의 문서 범위에 맞춰 비공개 초안을 작성합니다.' : '작성 가능한 정책이 없어 초안을 만들 수 없습니다.');
   el('composer-panel').hidden = false; el('draft-title').focus();
 }
 
@@ -664,15 +809,17 @@ function bindEvents() {
     } catch (error) { showStatus(`로그아웃 실패: ${error.message}`, 'error'); }
   });
   el('dismiss-demo-note').addEventListener('click', () => { el('demo-note').hidden = true; });
+  document.querySelectorAll('[data-workspace]').forEach((button) => button.addEventListener('click', () => { setWorkspace(button.dataset.workspace); const target = document.getElementById(button.dataset.workspace === 'review' ? 'review-inbox-title' : `${button.dataset.workspace}-title`); if (target) { target.tabIndex = -1; target.focus({preventScroll:true}); target.scrollIntoView({behavior:'smooth',block:'start'}); } }));
   el('open-composer').addEventListener('click', () => openComposer('new'));
   el('close-composer').addEventListener('click', resetComposer);
   el('draft-form').addEventListener('submit', onDraftSubmit);
   el('import-markdown').addEventListener('click', importMarkdown);
   el('draft-form').addEventListener('input', () => { invalidateDraftPreview(); text(el('draft-status'), '변경한 내용을 비공개 초안으로 저장한 뒤 공유 미리보기를 다시 생성하세요.'); });
+  el('draft-policy')?.addEventListener('change', () => { const policy = selectedDraftPolicy(); applyDraftPolicy(policy); invalidateDraftPreview(); text(el('draft-status'), policy ? '선택한 정책의 문서 범위에 맞춰 작성합니다.' : '작성할 문서 범위를 선택하세요.'); });
   el('resolver-form').addEventListener('submit', onResolverSubmit);
   el('resolve-documents').addEventListener('change', (event) => {
     const selected = currentDocuments().find((doc) => slotKeyFor(doc.payload) === event.target.value);
-    if (selected) { state.selectedDocumentKey = slotKeyFor(selected.payload); syncResolverFields(selected); renderOverview(); }
+    if (selected) { state.selectedDocumentKey = slotKeyFor(selected.payload); state.selectedRevisionDigest = null; state.selectedProposalId = null; syncResolverFields(selected); renderOverview(); }
   });
 }
 
@@ -682,6 +829,7 @@ async function init() {
     await loadSession();
     if (state.session?.auth_mode && !state.session.actor) return;
     await loadOverview({ preserveSelection: false });
+    setWorkspace(outstandingReviews().length ? 'review' : 'documents');
     await loadPrivateDrafts();
   } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
 }

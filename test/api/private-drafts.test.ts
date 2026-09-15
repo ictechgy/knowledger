@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createApp } from '../../apps/api/server.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 
 let sequence = 0;
 
@@ -85,7 +85,7 @@ test('private draft list and detail are actor-isolated and omit bodies from the 
   assert.equal(Object.hasOwn(list.drafts[0], 'body_markdown'), false);
   assert.equal(JSON.stringify(list).includes('비공개 본문'), false);
   assert.deepEqual(await api.get(`/v1/workspaces/demo/drafts/${first.draft_id}`), { draft_id: first.draft_id, revision: first.revision });
-  await api.post('/api/session', { actor_id: 'person-settlement-owner' });
+  await api.post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
   await api.get(`/v1/workspaces/demo/drafts/${first.draft_id}`, 404);
   const other = await api.get('/v1/workspaces/demo/drafts');
   assert.equal(other.total, 0);
@@ -100,7 +100,7 @@ test('draft list uses bounded keyset pagination and rejects guessed or malformed
   const next = await api.get(`/v1/workspaces/demo/drafts?limit=2&cursor=${encodeURIComponent(page.next_cursor)}`);
   assert.equal(next.drafts.length, 1);
   assert.equal(next.next_cursor, null);
-  await api.post('/api/session', { actor_id: 'person-settlement-owner' });
+  await api.post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
   await api.get(`/v1/workspaces/demo/drafts?cursor=${encodeURIComponent(page.next_cursor)}`, 404);
   await api.get('/v1/workspaces/demo/drafts?limit=0', 400);
   await api.get('/v1/workspaces/demo/drafts?limit=51', 400);
@@ -141,7 +141,7 @@ test('resume rejects unknown or other-actor drafts and protects writes with CSRF
   await api.post(`/v1/workspaces/demo/drafts/${original.draft_id}/edits`, { edit_id: 'edit-initial', title: '수정', body_markdown: '수정' }, 200);
   await api.post(`/v1/workspaces/demo/drafts/${original.draft_id}/edits`, { edit_id: 'edit-invalid', title: '', body_markdown: '본문' }, 400);
   await api.post(`/v1/workspaces/demo/drafts/${original.draft_id}/edits`, { edit_id: 'edit-invalid-kind', title: '제목', body_markdown: '본문', source_kind: 'forged' }, 400);
-  await api.post('/api/session', { actor_id: 'person-settlement-owner' });
+  await api.post('/api/session', { org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' });
   await api.post(`/v1/workspaces/demo/drafts/${original.draft_id}/edits`, { edit_id: 'edit-other', title: '타인', body_markdown: '타인' }, 404);
   const noCsrf = await fetch(`${api.url}/v1/workspaces/demo/drafts/${original.draft_id}/edits`, { method: 'POST', headers: { Cookie: api.cookie(), Origin: api.url, 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(noCsrf.status, 403);

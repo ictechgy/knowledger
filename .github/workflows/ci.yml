@@ -20,6 +20,8 @@ jobs:
           package-manager-cache: false
       - run: npm run check
       - run: npm run demo
+      - run: npm run config:init -- --output /tmp/kcl-ci.json
+      - run: node infra/fabric/build.mjs --config /tmp/kcl-ci.json --output /tmp/kcl-chaincode
   fabric-boundaries:
     runs-on: ubuntu-latest
     steps:

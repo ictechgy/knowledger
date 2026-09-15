@@ -13,3 +13,5 @@ coverage/
 *.log
 __pycache__/
 .DS_Store
+
+/kcl.config.json

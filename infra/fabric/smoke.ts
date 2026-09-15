@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { demoFixtures, PERSONAS, slotFields } from '../../apps/api/demo-config.ts';
+import { demoFixtures, PERSONAS, slotFields } from '../../examples/order-workflow/config.ts';
 import { idempotencyDigest, keyFor, resolveAt } from '../../packages/domain/index.ts';
 import { connectOfficialFabricGateway, FabricGatewayTransport } from '../../packages/fabric/gateway.ts';
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
@@ -95,7 +95,7 @@ async function run() {
     return result.result as any;
   }
   try {
-    assert.deepEqual(JSON.parse(readFileSync(join(root, 'infra/fabric/genesis.json'), 'utf8')), fixtures.config);
+    assert.deepEqual(JSON.parse(readFileSync(join(root, 'examples/order-workflow/genesis.json'), 'utf8')), fixtures.config);
     for (const [index, revision] of fixtures.revisions.entries()) {
       const actor = index === 3 ? 1 : index;
       await execute(actor, `smoke-publish-${index}`, 'publish_revision', { revision, publication: { revision_digest: revision.revision_digest, config_version: 1, membership_epoch: 1 } });

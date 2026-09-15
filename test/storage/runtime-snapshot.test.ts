@@ -24,7 +24,8 @@ import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../../packages/storage/runtime-snapshot.ts';
 import { ensureRuntimeScope, readRuntimeScope, RUNTIME_SCOPE_FILE } from '../../packages/storage/runtime-scope.ts';
-import { getDevelopmentOrganization } from '../../packages/fabric/development-organizations.ts';
+import { ensureConfigurationScope, readConfigurationScope, CONFIGURATION_SCOPE_FILE, type ConfiguredRuntimeBinding } from '../../packages/storage/configuration-scope.ts';
+import { getDevelopmentOrganization } from '../../examples/order-workflow/organizations.ts';
 
 function tempDirectory(): string {
   return mkdtempSync(join(tmpdir(), 'kcl-runtime-snapshot-'));
@@ -72,6 +73,20 @@ function scopedFabricFixture(root: string): string {
   return dataDir;
 }
 
+function configuredFabricFixture(root: string, organizations = 2): { dataDir: string; binding: ConfiguredRuntimeBinding } {
+  const dataDir = join(root, `configured-fabric-${organizations}`);
+  const outboxes = Array.from({ length: organizations }, (_, index) => `outbox-${String(index + 1).padStart(64, '0')}.sqlite`);
+  const binding: ConfiguredRuntimeBinding = {
+    version: 1, workspace_id: 'workspace-generic', channel_id: 'channel-generic', mode: 'fabric', authority_digest: `sha256:${'b'.repeat(64)}`,
+    organization: organizations === 2 ? 'OrgTwo' : 'OrgFour', databases: ['private-local.sqlite', 'fabric-projection.sqlite', ...outboxes],
+  };
+  ensureConfigurationScope(dataDir, binding);
+  sqliteFixture(join(dataDir, 'private-local.sqlite'), 'private');
+  sqliteFixture(join(dataDir, 'fabric-projection.sqlite'), 'projection');
+  for (const name of outboxes) sqliteFixture(join(dataDir, name), 'outbox');
+  return { dataDir, binding };
+}
+
 test('organization-scoped backup preserves the binding and refuses another organization after restore', async t => {
   const root = tempDirectory(); t.after(() => cleanup(root));
   const source = scopedFabricFixture(root); const snapshot = join(root, 'scoped-snapshot'); const restored = join(root, 'scoped-restored');
@@ -99,6 +114,40 @@ test('a scoped directory cannot be silently backed up as an unscoped Fabric prof
   sqliteFixture(join(source, 'SettlementMSP-person-settlement-owner-outbox.sqlite'), 'foreign organization');
   assert.throws(() => createRuntimeSnapshot({ dataDir: source, snapshotDir: join(root, 'must-not-publish') }));
   assert.equal(existsSync(join(root, 'must-not-publish')), false);
+});
+
+test('configured Fabric snapshots preserve a generic two or four organization binding exactly', async t => {
+  const root = tempDirectory(); t.after(() => cleanup(root));
+  for (const organizations of [2, 4]) {
+    const fixture = configuredFabricFixture(root, organizations);
+    const snapshot = join(root, `configured-snapshot-${organizations}`);
+    const restored = join(root, `configured-restored-${organizations}`);
+    const backup = createRuntimeSnapshot({ dataDir: fixture.dataDir, snapshotDir: snapshot });
+    assert.equal(backup.mode, 'configured-fabric');
+    assert.deepEqual(backup.binding, fixture.binding);
+    const manifest = JSON.parse(readFileSync(join(snapshot, 'manifest.json'), 'utf8')) as { version: number; binding: ConfiguredRuntimeBinding; files: { name: string }[] };
+    assert.equal(manifest.version, 3);
+    assert.deepEqual(manifest.binding, fixture.binding);
+    assert.equal(manifest.files.some(file => file.name === CONFIGURATION_SCOPE_FILE), true);
+    const restoredSummary = restoreRuntimeSnapshot({ snapshotDir: snapshot, dataDir: restored });
+    assert.equal(restoredSummary.mode, 'configured-fabric');
+    assert.deepEqual(readConfigurationScope(restored), fixture.binding);
+    ensureConfigurationScope(restored, fixture.binding);
+  }
+});
+
+test('configured restore rejects a changed authority binding without publishing a destination', async t => {
+  const root = tempDirectory(); t.after(() => cleanup(root));
+  const fixture = configuredFabricFixture(root, 2);
+  const snapshot = join(root, 'configured-tampered-snapshot');
+  createRuntimeSnapshot({ dataDir: fixture.dataDir, snapshotDir: snapshot });
+  const manifestPath = join(snapshot, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { binding: ConfiguredRuntimeBinding };
+  manifest.binding = { ...manifest.binding, authority_digest: `sha256:${'c'.repeat(64)}` };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  const destination = join(root, 'configured-tampered-restore');
+  assert.throws(() => restoreRuntimeSnapshot({ snapshotDir: snapshot, dataDir: destination }), /binding|authority|invalid/i);
+  assert.equal(existsSync(destination), false);
 });
 
 function cleanup(root: string): void {

@@ -6,13 +6,13 @@ import { join } from 'node:path';
 import {
   DEVELOPMENT_ORGANIZATIONS,
   getDevelopmentOrganization,
-} from '../../packages/fabric/development-organizations.ts';
+} from '../../examples/order-workflow/organizations.ts';
 import {
   ensureRuntimeScope,
   readRuntimeScope,
   RUNTIME_SCOPE_FILE,
 } from '../../packages/storage/runtime-scope.ts';
-import { createApp } from '../../apps/api/server.ts';
+import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 
 function fixture(): string {
   return mkdtempSync(join(tmpdir(), 'kcl-runtime-scope-'));
@@ -50,6 +50,13 @@ test('scope checks preserve existing unscoped directory permissions and reject f
   ensureRuntimeScope(directory);
   assert.equal(lstatSync(directory).mode & 0o777, 0o755);
   assert.throws(() => ensureRuntimeScope('/'), /root/i);
+});
+
+test('legacy scoped descriptors require an explicit channel', () => {
+  const dataDir = fixture();
+  try {
+    assert.throws(() => ensureRuntimeScope(dataDir, { org_id: 'OrgA', key_id: 'actor-a' } as any), /scope|channel|invalid/i);
+  } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
 
 test('scoped startup binds an empty directory before runtime databases are opened', () => {

@@ -5,7 +5,8 @@ import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
-import { demoFixtures, BOOTSTRAP_ACTOR, PERSONAS, slotFields, actorIdentity } from './demo-config.ts';
+import { slotFields } from '../../packages/config/types.ts';
+import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 
 const P = 'kcl:v1:';
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
@@ -31,11 +32,13 @@ function identifier(value: unknown): string {
 export class KclService {
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
-  private personas: typeof PERSONAS;
+  private personas: Persona[];
+  readonly definition: ApplicationDefinition;
   private bootId = randomUUID();
   private commandQueue: Promise<unknown> = Promise.resolve();
 
-  constructor(ledger: ApplicationLedger, vault: PrivateStore, personas: typeof PERSONAS = PERSONAS) {
+  constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas) {
+    this.definition = definition;
     this.ledger = ledger;
     this.vault = vault;
     this.personas = personas;
@@ -72,34 +75,14 @@ export class KclService {
     return value;
   }
 
-  async initialize(seed = true): Promise<void> {
-    const fixtures = demoFixtures();
+  async initialize(): Promise<void> {
     await this.refresh();
-    if (this.ledger.mode === 'fabric-test-network') {
-      if (!this.config()) throw new ApiError('LEDGER_NOT_READY', 'Fabric 테스트 네트워크의 구성을 확인할 수 없습니다.', 503, true);
-      return;
-    }
-    if (!this.config()) {
-      if (!this.ledger.bootstrap) throw new ApiError('LEDGER_NOT_READY', '원장 초기화 기능을 사용할 수 없습니다.', 503, true);
-      await this.ledger.bootstrap(BOOTSTRAP_ACTOR, fixtures.config);
-    }
-    if (!seed) return;
-    for (let index = 0; index < fixtures.revisions.length; index++) {
-      const revision = fixtures.revisions[index];
-      const actor = actorIdentity(PERSONAS[index === 3 ? 1 : index]);
-      const policy = fixtures.policies[index];
-      const suffix = index === 3 ? 'review-invitation' : ['sales', 'fulfillment', 'settlement'][index];
-      const submit = async (type: string, input: any) => {
-        const receipt = await this.ledger.execute(actor, { command_id: `seed-${type}-${suffix}`, type, input });
-        if (receipt.status === 'pending') throw new ApiError('LEDGER_NOT_READY', '로컬 원장 시드가 완료되지 않았습니다.', 503, true);
-        return receipt;
-      };
-      await submit('publish_revision', { revision, publication: { revision_digest: revision.revision_digest, config_version: 1, membership_epoch: 1 } });
-      const proposalId = `proposal-${suffix}-001`;
-      await submit('propose', { proposal_id: proposalId, revision_digest: revision.revision_digest, policy_id: policy.policy_id, policy_version: 1 });
-      if (index === 3) continue;
-      await submit('decide', { decision: this.makeDecision(actor, proposalId, policy, revision, { decision: 'approve', rationale: '가상 예제: 해당 도메인의 정의를 확인합니다.' }, `decision-${suffix}-001`, '2026-09-15T00:00:00Z') });
-      await submit('activate', { proposal_id: proposalId, agreement_id: `agreement-${suffix}-001`, expected_active_agreement_id: null });
+    const existing = this.config();
+    if (!existing) {
+      if (this.ledger.mode !== 'local-simulation' || !this.ledger.bootstrap) throw new ApiError('LEDGER_NOT_READY', '원장의 초기 정책 구성을 확인할 수 없습니다.', 503, true);
+      await this.ledger.bootstrap(this.definition.bootstrap_actor, this.definition.genesis);
+    } else if (domain.canonicalize(existing) !== domain.canonicalize(this.definition.genesis)) {
+      throw new ApiError('CONFIGURATION_MISMATCH', '저장된 초기 정책이 선택한 구성과 다릅니다. 기존 원장을 덮어쓸 수 없습니다.', 409);
     }
   }
 
@@ -205,7 +188,7 @@ export class KclService {
       };
     });
     this.actor(actor);
-    return { mode: this.ledger.mode, channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
+    return { workspace: this.definition.workspace, organizations: this.definition.organizations, demo: this.definition.demo, mode: this.ledger.mode, channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
   }
 
   async draft(actor: Actor, input: any) {
@@ -310,7 +293,7 @@ export class KclService {
     if (!draft) throw new ApiError('NOT_FOUND', '초안을 찾을 수 없거나 접근할 수 없습니다.', 404);
     const config = this.config();
     const registered = config.identities.find((item: any) => item.org_id === actor.org_id && item.actor_id === actor.actor_id);
-    if (!registered.publish_contexts.includes(draft.revision.payload.context_id)) throw new ApiError('PUBLISH_FORBIDDEN', '이 맥락의 공유 권한이 없습니다.', 403);
+    if (!registered.publish_contexts.includes('*') && !registered.publish_contexts.includes(draft.revision.payload.context_id)) throw new ApiError('PUBLISH_FORBIDDEN', '이 맥락의 공유 권한이 없습니다.', 403);
     const preview = { preview_id: newId('preview'), revision_digest: draft.revision.revision_digest,
       recipients: [...new Set(config.identities.map((item: any) => item.org_id))],
       config_version: config.config_version, membership_epoch: config.membership_epoch,
