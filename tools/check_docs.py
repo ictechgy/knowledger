@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 errors = []
 links = 0
 mermaid = 0
-markdown = sorted(ROOT.rglob("*.md"))
+ignored = {".git", "node_modules", "dist", ".tools", ".data", ".artifacts", "coverage"}
+markdown = sorted(path for path in ROOT.rglob("*.md")
+                  if not any(part in ignored for part in path.relative_to(ROOT).parts))
 for path in markdown:
     text = path.read_text(encoding="utf-8")
     fences = [line for line in text.splitlines() if line.startswith("```")]

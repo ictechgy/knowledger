@@ -14,4 +14,6 @@ v0.1은 고정된 채널·역할·합의 정책으로 시작한다. 임의 정�
 
 초기 검색은 맥락을 제한한 문자열 검색이다. 외부 LLM, embedding 서비스, 원격 KB에 연결하지 않는다. 원본 Markdown import/export와 사용한 정확한 개정본을 반환하는 resolver를 통해 기존 도구가 연결할 수 있게 한다.
 
+CI는 Node 24/26 로컬 검사를 실행하도록 작성했다. Actions는 [checkout v7.0.1](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1)과 [setup-node v6.5.0](https://github.com/actions/setup-node/commit/249970729cb0ef3589644e2896645e5dc5ba9c38)의 확인한 commit SHA에 고정했다. 원격 CI 실행은 아직 하지 않았다.
+
 기밀 초안과 run manifest는 로컬 저장소에만 둔다. 공용 원장에는 명시적으로 공개를 확인한 본문만 제출한다. 이 분리는 실제 배포에서 각 조직 gateway/vault를 분리하는 요구를 대체하지 않는다.

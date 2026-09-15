@@ -1,5 +1,6 @@
 import type { FabricChaincode } from "./chaincode.ts";
 import type { FabricResponseFactory, FabricStub, IdentityDecoder } from "./types.ts";
+import { createRequire } from 'node:module';
 
 interface ShimModule {
   start(chaincode: FabricChaincode): Promise<void> | void;
@@ -12,9 +13,8 @@ interface ShimModule {
 }
 
 async function loadShim(): Promise<ShimModule> {
-  // Avoid a static dependency so node-level adapter tests do not need fabric-shim installed.
-  const load = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<ShimModule>;
-  return load("fabric-shim");
+  // The official shim is CommonJS. Load it only when starting a real peer connection.
+  return createRequire(import.meta.url)('fabric-shim') as ShimModule;
 }
 
 export async function startFabricChaincode(factory: (responses: FabricResponseFactory, identityDecoder: IdentityDecoder) => FabricChaincode): Promise<void> {

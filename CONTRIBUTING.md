@@ -6,11 +6,13 @@ Discuss changes to the consensus protocol, publication boundary, or authorizatio
 
 Use small commits with focused tests for behavior changes. Never commit credentials, private department documents, local databases, generated identities, or model prompts containing confidential information. Use fictional fixtures.
 
-The existing design checks run without installing dependencies:
+The local runtime and checks run without installing dependencies. Use Node.js 24+ and Python 3:
 
 ```sh
-python3 -B tools/validate_design.py
-python3 -B tools/check_docs.py
+npm run check
+npm run demo
 ```
 
-Runtime setup and verification commands will be documented in the README alongside the implementation. Describe the exact environment and commands used in a pull request; distinguish local simulation from a real Fabric network.
+See [runtime setup](docs/11-RUNTIME.md). Describe the exact environment and commands used in a pull request; distinguish local simulation, an injected SDK/shim test, a modeled MVCC race, and a real Fabric network.
+
+The built-in Node TypeScript loader executes erasable TypeScript; it does not perform static type checking. Changes to the Fabric adapter also need validation against the pinned official SDK packages before an operational release. Keep generated packages, dependency directories, credentials, and runtime data out of commits.

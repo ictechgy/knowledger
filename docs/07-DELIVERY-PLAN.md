@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-완료된 것은 설계 문서와 제한된 계약 예제다. 아래 단계의 런타임·분산 장애·성능 검증은 아직 실행하지 않았다. 문서 검사 결과는 [검증 기록](VALIDATION.md)에 별도로 남긴다.
+공통 합의 엔진, 로컬 API/UI·원장, resolver/manifest, Fabric shim/Gateway 코드까지 개발 알파로 구현했다. [실행 가이드](11-RUNTIME.md)가 실제 지원 범위다. 아래 P0–P3의 운영 통합 전체가 완료된 것은 아니다. 실제 Fabric 네트워크·SSO·full-block projector·분산 장애·성능 시험은 남아 있다. 실행한 56개 테스트와 제한은 [검증 기록](VALIDATION.md)에 분리했다.
 
 ## 단계별 실행
 
@@ -19,7 +19,7 @@ P0–P3이 초기 MVP다. 분산망을 구축하기 전 full-content 공개 정�
 
 ## 구성별 구현 책임
 
-- Ledger team: Go chaincode, policy/role registry, deterministic transitions, expected-version/read counters, command idempotency.
+- Ledger team: 공통 TypeScript 엔진과 Node.js chaincode adapter, policy/role registry, deterministic transitions, expected-version/read counters, command idempotency. Go 참조안에서 변경한 이유는 [구현 결정](10-IMPLEMENTATION-DECISIONS.md)을 참조한다.
 - Application team: publication preview, SSO/signing gateway adapter, HTTP API, commit-state UI.
 - Knowledge team: private-vault import boundaries, context registry, document rendering, agreement diffs.
 - Retrieval team: event replay, temporal eligibility, scoped index, exact checkpoint manifest, runtime revalidation.

@@ -1,10 +1,55 @@
-# 설계 검증 기록
+# 검증 기록
+
+## v0.1 런타임 — 2026-09-15
+
+환경: macOS arm64, Node.js 26.5.0, npm 11.17.0, Python 3.14.7. 로컬 런타임은 새 외부 패키지 없이 실행했다.
+
+```sh
+npm run check
+npm run demo
+node --check apps/web/app.js
+node infra/fabric/build.mjs
+node --check infra/fabric/dist/entrypoint.mjs
+sh -n infra/fabric/package-chaincode.sh
+git diff --check
+```
+
+**자동 테스트 56개 통과, 실패 0개.**
+
+| 검사 | 수 | 확인 범위 |
+|---|---:|---|
+| 도메인 엔진 | 18 | 전체 본문 해시, 입력 한계, 대표자/제안/역할 바인딩, old approval 거부, 이의·기권·철회, 재승인, dependency·CAS |
+| HTTP/JSON | 11 | 3개 도메인 공존, 비공개 초안 격리, 공개 확인, CSRF/출처, 멱등 원본 receipt, 실제 승인 manifest, 재시작 |
+| 로컬 저장소 | 7 | 원자적 실패, 동시 명령 직렬화, 시점 조회, 재생, 알려지지 않은/잘못된 write set 거부, 파생 view 불일치 검출 |
+| 계약 호환 | 2 | 기존 계약 예제를 런타임 검사기로 검증, 실제 생성 manifest를 제한된 설계 schema checker로 확인 |
+| MVCC 모델 | 3 | activation/object 선후 경합, object 재시도 후 정지, 동일 slot의 경쟁 채택 |
+| Fabric 경계/패키지 | 15 | 실제 공통 엔진+주입한 shim, SDK 생명주기, VALID/ACK 구분, 재시작 outbox, 결과 디코딩, 독립 실행 패키지 구조 |
+
+CLI 데모 결과는 `withheld → 두 부서 승인 후 provided → 의존성 철회 후 withheld`다. 전체 본문이 공유 journal에 실제 들어갔는지도 검사한다.
+
+`agent-browser`로 문서 열람, 물류·정산 승인, 채택, resolver 제공, 비공개 초안 저장, 공개 미리보기, 새 개정 게시와 fresh proposal을 조작했다. 마지막 UI 변경 뒤 범위 자동 선택, 새 문서/개정 구분, 역할 변경 시 비공개 편집 화면 초기화, 미승인 문서 withheld를 추가 확인했다. 화면 JavaScript 구문 검사는 통과했다.
+
+캡처 기능은 `agent-browser` daemon 오류 후 별도의 격리된 Chrome/CDP로 확인했다. 데스크톱 1440×1200, 모바일 device viewport 390×844에서 문서 4개가 로딩됐고 모바일 `innerWidth = scrollWidth = 390`이었다. 스크린샷은 로컬 `.artifacts/kcl-verified-desktop.png`, `.artifacts/kcl-verified-mobile.png`에 보관하며 Git에는 넣지 않았다. 열람 상태와 fresh fence 기반 실행 권한을 화면 문구에서도 구분했다.
+
+독립 코드 검토에서 발견한 최신 승인 포인터의 representative mismatch, manifest 승인 바인딩, 중복 명령의 원래 checkpoint, projection 불일치, revision ID 참조 문제를 보강했다. 원장 입력 구조뿐 아니라 상태 간 참조를 검사하고, 로컬 browse도 하나의 checkpoint에서 읽는다.
+
+### 실행하지 않은 항목
+
+- 실제 Fabric peer/orderer/CA 네트워크, peer lifecycle 패키징, 실제 MSP 서명·endorsement·네트워크 장애 주입. Go/peer CLI가 없고 Docker 엔진은 정지 상태였다. 의존성 다운로드 승인 요청에 답변이 없어 설치/이미지 다운로드를 진행하지 않았다.
+- 공식 SDK/shim npm 패키지 실행, 전이 의존성 lockfile·감사, TypeScript 정적 타입 검사. SDK 인터페이스를 주입한 테스트와 빌드 검증은 실제 SDK 실행의 대체 증거가 아니다.
+- Fabric full-block 해독·VALID write-set projector, 동일 블록 안 여러 거래 fence, 독립 3-orderer CFT/4-orderer BFT 시험. 로컬 원장은 블록당 거래 한 개다.
+- 실제 SSO, 사용자 개별 서명, 조직별 vault/KMS, 외부 모델/embedding/KB adapter, PostgreSQL/pgvector, 성능 벤치마크.
+- GitHub Actions 원격 실행. workflow는 저장소에 준비했지만 원격 저장소에 게시하지 않았다.
+
+따라서 P0–P3의 전체 운영 완료로 표시하지 않는다. [현재 실행 범위](11-RUNTIME.md)와 [Fabric 통합 경로](../infra/fabric/README.md)를 참조한다.
+
+## 초기 설계 검증 기록
 
 검증일: 2026-09-15. 환경: Python 3.14.7, 표준 라이브러리만 사용. 새 패키지를 설치하지 않았다.
 
 ## 확인한 범위
 
-이 프로젝트는 **설계 산출물**이다. 문서, JSON payload 계약, 예제 및 검사 도구의 정합성을 확인했다. 애플리케이션 서버·Fabric 네트워크·실제 signing·RAG·UI는 구현/배포하지 않았다.
+첫 설계 커밋 시점에는 문서, JSON payload 계약, 예제 및 검사 도구만 존재했다. 아래는 그 당시 설계 검증의 범위다. 이후 런타임 검증은 위에 별도로 기록했다.
 
 ## 실행 결과
 
@@ -43,4 +88,4 @@ python3 -B tools/check_docs.py
 
 Mermaid는 fence 구조만 확인했다. `mmdc`가 설치되어 있지 않아 실제 렌더링은 수행하지 않았다. Mermaid CLI를 사용하는 환경에서는 예를 들어 `mmdc -i README.md -o /tmp/kcl-readme.md`로 Markdown 내 다이어그램을 렌더링해 확인할 수 있다.
 
-런타임 완료 기준은 [구현 계획](07-DELIVERY-PLAN.md)의 P-01–P-17, S-01–S-07, R-01–R-13 및 CFT/BFT·복구 실험이다. 실행 서비스가 아직 없으므로 실행하지 않은 runtime test를 통과로 표시하지 않는다. 성능 수치는 설계 가설이며 benchmark 결과가 아니다.
+최종 운영 완료 기준은 [구현 계획](07-DELIVERY-PLAN.md)의 P-01–P-17, S-01–S-07, R-01–R-13 및 CFT/BFT·복구 실험이다. 위의 런타임 테스트와 실제 네트워크 시험을 구분한다. 성능 수치는 설계 가설이며 benchmark 결과가 아니다.
