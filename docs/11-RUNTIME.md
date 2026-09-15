@@ -68,8 +68,8 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 |---|---|---|
 | 불변 본문/합의 | 공유 TS 도메인 엔진, 엄격 입력 검증, 전체 본문 해시, 최신 대표 승인, CAS, 철회 | 실제 기관의 역할·공개 정책 확정 |
 | 로컬 보존 | SQLite 원자적 명령, 전체 write-set 이력, 시점별 projection 재구축 | 독립 조직 운영·외부 백업·복구 목표 |
-| Fabric | 같은 엔진의 shim/Gateway adapter, 공식 의존성·lockfile, 실제 SDK 경계 검사·공식 peer 패키징, 테스트 네트워크 스크립트 | 테스트 인증서 승인 후 실제 peer/orderer 배포·endorsement·VALID commit·네트워크 장애 시험 |
-| resolver | fresh local fence, 의존성 검증·승인 refs, Fabric full-block 메모리 reader와 합성 protobuf 검사 | 실제 peer 동일 블록 통합 시험, 영속 Fabric projector·복구·HTTP 연결 |
+| Fabric | 같은 엔진의 shim/Gateway, 실제 로컬 3 peer·3 Raft orderer 배포, VALID commit·MVCC INVALID·outbox 복구 검증 | 독립 조직/호스트·운영 인증·네트워크 partition 시험 |
+| resolver | fresh local fence, 의존성·승인 refs, 실제 peer full-block 재생과 같은 블록 fence·철회 후 withheld 확인 | 영속 Fabric projector·복구 supervisor·HTTP 연결 |
 | 인증/기밀 | loopback, 출처/CSRF 검사, actor별 초안·manifest, 공개 확인 | SSO/개별 사용자 서명, 조직별 프로세스·KMS·vault 분리 |
 | 운영 | 고정된 genesis·정책, 명시적 실패 처리 | 동적 governance, 실제 channel config 변경 감지·freeze·조직 migration |
 
@@ -77,4 +77,4 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 
 로컬 관리자는 SQLite 파일과 모든 가상 역할에 접근할 수 있다. 로컬 journal hash 연결은 우발적 변조·손상 검출용이며 그 관리자의 악의적 재작성에 저항하지 못한다. 공유 본문은 반환 후 회수할 수 없고, 외부 부작용과 원장 fence 사이의 원자적 트랜잭션을 보장하지 않는다.
 
-공개 검토는 기밀 여부를 자동 판정하지 않는다. 개인키/인증파일을 읽거나 외부 LLM에 보내는 통합은 없다. Fabric 서명 adapter는 호출자가 제공한 signer를 사용하도록 한다.
+공개 검토는 기밀 여부를 자동 판정하지 않는다. Fabric 서명 adapter는 호출자가 제공한 signer를 사용한다. 테스트 runner는 승인된 `.data/fabric-smoke/crypto`의 가상 조직 키를 사용하며, 운영 개인 인증·외부 LLM은 연결하지 않았다.

@@ -1,7 +1,7 @@
 /** Real-network acceptance test using only the disposable test-network.py MSPs. */
 import assert from 'node:assert/strict';
-import { createPrivateKey } from 'node:crypto';
-import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { createPrivateKey, randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,9 @@ const grpc = require('@grpc/grpc-js');
 const sdk = require('@hyperledger/fabric-gateway');
 const fixtures = demoFixtures();
 const names = ['sales', 'fulfillment', 'settlement'];
-const evidence: Record<string, unknown> = { mode: 'real-fabric', channel: 'kcl-demo', fictional_test_identities: true };
+const runId = process.argv[3] ?? randomUUID().slice(0, 8);
+assert.match(runId, /^[a-f0-9]{8}$/);
+const evidence: Record<string, unknown> = { mode: 'real-fabric', channel: 'kcl-demo', run_id: runId, fictional_test_identities: true };
 
 async function connect(index: number, outboxName = `outbox-${names[index]}`) {
   const domain = `${names[index]}.kcl.test`;
@@ -50,8 +52,8 @@ function command(index: number, command_id: string, type: string, input: unknown
 
 async function submitForRestart(loseResponse: boolean) {
   const suffix = loseResponse ? 'response-lost' : 'restart';
-  const connection = await connect(1, `outbox-${suffix}`);
-  const cmd = command(1, `smoke-${suffix}`, 'fence', { nonce: `smoke-fence-${suffix}-001` });
+  const connection = await connect(1, `outbox-${suffix}-${runId}`);
+  const cmd = command(1, `smoke-${suffix}-${runId}`, 'fence', { nonce: `smoke-fence-${suffix}-${runId}` });
   try {
     if (loseResponse) {
       const base = connection.client;
@@ -82,11 +84,14 @@ async function submitForRestart(loseResponse: boolean) {
 async function run() {
   assert.equal(existsSync(join(state, 'evidence.json')), false, 'This completed smoke network is immutable; inspect evidence.json or create a separate reviewed network');
   const connections = await Promise.all([0, 1, 2].map(index => connect(index)));
-  const transactions: { command_id: string; tx_id: string }[] = [];
+  const transactions: { command_id: string; tx_id: string; attempt_tx_id: string }[] = [];
   async function execute(index: number, id: string, type: string, input: unknown) {
     const result = await connections[index].transport.execute(command(index, id, type, input));
     assert.equal(result.status, 'valid', `${id}: expected peer-confirmed VALID`);
-    transactions.push({ command_id: id, tx_id: result.tx_id });
+    const recordBytes = await connections[index].gateway.getNetwork('kcl-demo').getContract('kcl').evaluateTransaction('GetCommand', PERSONAS[index].org_id, id);
+    const record = JSON.parse(Buffer.from(recordBytes).toString('utf8'));
+    assert.equal(record.command_digest, idempotencyDigest(command(index, id, type, input)));
+    transactions.push({ command_id: id, tx_id: record.tx_id, attempt_tx_id: result.tx_id });
     return result.result as any;
   }
   try {
@@ -111,16 +116,16 @@ async function run() {
       assert.equal(result.status, 'active');
       console.log(`VALID: published, approved and activated document ${index + 1}/4`);
     }
-    // An authenticated Sales owner cannot submit a Fulfillment decision.
+    // An authenticated Sales owner cannot withdraw a Settlement agreement.
     const unauthorized = await connections[0].client.newProposal(command(0, 'smoke-unauthorized', 'withdraw', { agreement_id: 'smoke-agreement-2', reason: 'Unauthorized test' }));
     await assert.rejects(() => unauthorized.endorse());
     evidence.unauthorized_endorsement_rejected = true;
 
     for (const loseResponse of [false, true]) {
       const suffix = loseResponse ? 'response-lost' : 'restart';
-      const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), loseResponse ? '--lose-response' : '--submit-only'], { cwd: root, encoding: 'utf8', timeout: 60000 });
+      const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), loseResponse ? '--lose-response' : '--submit-only', runId], { cwd: root, encoding: 'utf8', timeout: 60000 });
       assert.equal(child.status, 0, `Submit child ${suffix} failed: ${child.stderr}`);
-      const recovered = await connect(1, `outbox-${suffix}`);
+      const recovered = await connect(1, `outbox-${suffix}-${runId}`);
       try {
         let results = await recovered.transport.recoverPending();
         for (let retry = 0; results.some(result => result.status === 'pending') && retry < 10; retry++) {
@@ -135,7 +140,7 @@ async function run() {
       } finally { recovered.close(); }
     }
 
-    const duplicate = command(1, 'smoke-duplicate', 'fence', { nonce: 'smoke-duplicate-fence-001' });
+    const duplicate = command(1, `smoke-duplicate-${runId}`, 'fence', { nonce: `smoke-duplicate-fence-${runId}` });
     const proposals = await Promise.all([connections[1].client.newProposal(duplicate), connections[1].client.newProposal(duplicate)]);
     const endorsed = await Promise.all(proposals.map(proposal => proposal.endorse()));
     for (let i = 0; i < 2; i++) {
@@ -166,6 +171,8 @@ async function run() {
         for await (const block of stream) {
           projector.applyBlock(block.serializeBinary());
           const number = BigInt(block.getHeader().getNumber());
+          mkdirSync(join(state, 'blocks'), { recursive: true, mode: 0o700 });
+          writeFileSync(join(state, 'blocks', `${number}.pb`), block.serializeBinary(), { mode: 0o600 });
           const filter = block.getMetadata().getMetadataList_asU8()[2];
           for (const [index, bytes] of block.getData().getDataList_asU8().entries()) {
             const envelope = common.Envelope.deserializeBinary(bytes);

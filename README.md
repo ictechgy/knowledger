@@ -78,6 +78,6 @@ flowchart LR
 
 ## 프로젝트 상태
 
-로컬 API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 genesis에서 고정한다. 외부 모델·벡터 DB·SSO·실제 Fabric 네트워크 운영은 연결하지 않았다. [검증 기록](docs/VALIDATION.md)은 실제 실행한 검사를 미실행 항목과 구분한다. 성능 목표는 아직 측정 결과가 아니다.
+로컬 API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 genesis에서 고정한다. 별도 CLI에서 실제 로컬 Fabric 네트워크의 승인·VALID 커밋·철회를 검증했다. 웹 API의 Fabric 운영 모드, 외부 모델·벡터 DB·SSO는 후속 단계다. [검증 기록](docs/VALIDATION.md)은 실제 실행한 검사를 미실행 항목과 구분한다. 성능 목표는 아직 측정 결과가 아니다.
 
 [MIT 라이선스](LICENSE)로 제공한다. [기여 가이드](CONTRIBUTING.md)와 [보안 안내](SECURITY.md)를 참고한다. 예제의 이름과 ID는 모두 가상이며 실제 인증정보가 없다.

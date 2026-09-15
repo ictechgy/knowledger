@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import time
 
@@ -141,7 +142,13 @@ def generate_identities():
     if crypto.exists():
         raise RuntimeError("Test identity directory already exists; use deploy to resume. Identities will not be replaced.")
     run([TOOLS / "bin/cryptogen", "generate", "--config", STATE / "crypto-config.yaml", "--output", crypto])
-    for index, (name, _, _) in enumerate(ORGS):
+    issue_client_certificates()
+    print("Generated disposable test MSPs with certified KCL human actor attributes.", flush=True)
+
+
+def issue_client_certificates():
+    crypto = STATE / "crypto"
+    for name, _, _ in ORGS:
         domain = f"{name}.kcl.test"
         base = crypto / "peerOrganizations" / domain
         msp = base / "users" / f"User1@{domain}" / "msp"
@@ -149,14 +156,16 @@ def generate_identities():
         # generated client key and add the same certified attributes as Fabric CA.
         attrs = json.dumps({"attrs": {"kcl.actor_id": f"person-{name}-owner", "kcl.actor_kind": "human"}}, separators=(",", ":"))
         extension = STATE / f"{name}-client.ext"
-        extension.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n1.2.3.4.5.6.7.8.1=DER:" + ":".join(f"{b:02X}" for b in attrs.encode()) + "\n")
+        # Match cryptogen's enrollment certificate: digitalSignature without a
+        # TLS-only EKU restriction. Fabric MSP's X.509 validation rejects a
+        # clientAuth-only signing certificate.
+        extension.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n1.2.3.4.5.6.7.8.1=DER:" + ":".join(f"{b:02X}" for b in attrs.encode()) + "\n")
         key = next((msp / "keystore").glob("*_sk"))
         csr = STATE / f"{name}-client.csr"
         run(["openssl", "req", "-new", "-key", key, "-subj", f"/C=US/O={domain}/OU=client/CN=User1@{domain}", "-out", csr])
         run(["openssl", "x509", "-req", "-in", csr, "-CA", next((base / "ca").glob("*.pem")), "-CAkey", next((base / "ca").glob("*_sk")),
-             "-set_serial", str(1001 + index),
+             "-set_serial", "0x" + secrets.token_hex(16),
              "-days", "7", "-extfile", extension, "-out", msp / "signcerts" / f"User1@{domain}-cert.pem"])
-    print("Generated disposable test MSPs with certified KCL human actor attributes.", flush=True)
 
 
 def peer_env(org, user="Admin"):
@@ -195,13 +204,15 @@ def deploy():
     compose("up", "-d")
     for i in range(3):
         tls = STATE / f"crypto/ordererOrganizations/kcl.test/orderers/orderer{i}.kcl.test/tls"
-        args = [TOOLS / "bin/osnadmin", "channel", "join", "--channelID", CHANNEL, "--config-block", block, "-o", f"localhost:{17053+i*1000}",
-                "--ca-file", tls / "ca.crt", "--client-cert", tls / "server.crt", "--client-key", tls / "server.key"]
+        admin = ["--channelID", CHANNEL, "-o", f"localhost:{17053+i*1000}", "--no-status",
+                 "--ca-file", tls / "ca.crt", "--client-cert", tls / "server.crt", "--client-key", tls / "server.key"]
         for attempt in range(20):
             try:
-                result = run(args)
-                if "201" not in result and "409" not in result:
-                    raise RuntimeError("Orderer channel join did not return created/already exists")
+                result = json.loads(run([TOOLS / "bin/osnadmin", "channel", "list", *admin]))
+                if result.get("name") != CHANNEL:
+                    result = json.loads(run([TOOLS / "bin/osnadmin", "channel", "join", *admin, "--config-block", block]))
+                if result.get("name") != CHANNEL or result.get("status") != "active":
+                    raise RuntimeError("Orderer channel is not active")
                 break
             except RuntimeError:
                 if attempt == 19:
@@ -225,19 +236,44 @@ def deploy():
     peer(ORGS[0], "lifecycle", "chaincode", "package", package, "--path", ROOT / "infra/fabric/dist", "--lang", "node", "--label", "kcl_0.1.0")
     package_id = peer(ORGS[0], "lifecycle", "chaincode", "calculatepackageid", package).strip()
     definition = ["--channelID", CHANNEL, "--name", "kcl", "--version", "0.1.0", "--sequence", "1", "--init-required"]
+    committed = json.loads(peer(ORGS[0], "lifecycle", "chaincode", "querycommitted", "--channelID", CHANNEL, "--output", "json"))
+    existing = next((item for item in committed.get("chaincode_definitions", []) if item["name"] == "kcl"), None)
+    if existing and (existing["sequence"] != 1 or existing["version"] != "0.1.0" or not existing.get("init_required")):
+        raise RuntimeError("An incompatible KCL definition is already committed; review it before changing lifecycle state")
     for org in ORGS:
         installed = json.loads(peer(org, "lifecycle", "chaincode", "queryinstalled", "--output", "json"))
         if not any(item["package_id"] == package_id for item in installed.get("installed_chaincodes", [])):
             peer(org, "lifecycle", "chaincode", "install", package)
-        peer(org, "lifecycle", "chaincode", "approveformyorg", *definition, "--package-id", package_id, *orderer_flags())
-    ready = json.loads(peer(ORGS[0], "lifecycle", "chaincode", "checkcommitreadiness", *definition, "--output", "json"))
-    if not all(ready["approvals"].get(msp) for _, msp, _ in ORGS):
-        raise RuntimeError("Not all organizations approved the chaincode definition")
-    peer(ORGS[0], "lifecycle", "chaincode", "commit", *definition, *orderer_flags(), *peer_flags())
-    peer(ORGS[1], "chaincode", "invoke", "-C", CHANNEL, "-n", "kcl", "--isInit", "-c", '{"Args":["Init"]}',
-         "--waitForEvent", "--waitForEventTimeout", "60s", *orderer_flags(), *peer_flags(), user="User1")
+        if existing:
+            approved = json.loads(peer(org, "lifecycle", "chaincode", "queryapproved", "--channelID", CHANNEL, "--name", "kcl", "--sequence", "1", "--output", "json"))
+            if approved.get("source", {}).get("Type", {}).get("LocalPackage", {}).get("package_id") != package_id:
+                raise RuntimeError("Committed definition uses a different package; deployment will not silently replace it")
+            for field in ("sequence", "version", "endorsement_plugin", "validation_plugin", "validation_parameter", "collections", "init_required"):
+                if approved.get(field) != existing.get(field):
+                    raise RuntimeError("Organization approval differs from the committed definition")
+        else:
+            peer(org, "lifecycle", "chaincode", "approveformyorg", *definition, "--package-id", package_id, *orderer_flags())
+    if not existing:
+        ready = json.loads(peer(ORGS[0], "lifecycle", "chaincode", "checkcommitreadiness", *definition, "--output", "json"))
+        if not all(ready["approvals"].get(msp) for _, msp, _ in ORGS):
+            raise RuntimeError("Not all organizations approved the chaincode definition")
+        peer(ORGS[0], "lifecycle", "chaincode", "commit", *definition, *orderer_flags(), *peer_flags())
+    # Query the committed peer state rather than treating a local marker file as
+    # proof of initialization. This also covers a crash after Init committed.
+    initialized = True
+    try:
+        peer(ORGS[1], "chaincode", "query", "-C", CHANNEL, "-n", "kcl", "-c", json.dumps({"Args": ["GetCommand", ORGS[1][1], "deployment-probe"]}), user="User1")
+    except RuntimeError as error:
+        if "has not been initialized for this version" not in str(error):
+            raise
+        initialized = False
+    if not initialized:
+        peer(ORGS[1], "chaincode", "invoke", "-C", CHANNEL, "-n", "kcl", "--isInit", "-c", '{"Args":["Init"]}',
+             "--waitForEvent", "--waitForEventTimeout", "60s", *orderer_flags(), *peer_flags(), user="User1")
+    for org in ORGS:
+        peer(org, "chaincode", "query", "-C", CHANNEL, "-n", "kcl", "-c", json.dumps({"Args": ["GetCommand", org[1], "deployment-probe"]}), user="User1")
     write_json(STATE / "deployment.json", {"channel": CHANNEL, "chaincode": "kcl", "package_id": package_id, "organizations": [msp for _, msp, _ in ORGS]})
-    print("Official lifecycle package/install/approve/commit and founder Init completed with VALID wait.", flush=True)
+    print("Verified deployed lifecycle and authenticated queries on all peers." if initialized else "Founder Init committed VALID; authenticated queries verified on all peers.", flush=True)
 
 
 def main():

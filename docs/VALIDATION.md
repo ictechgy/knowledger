@@ -1,5 +1,43 @@
 # 검증 기록
 
+## 실제 Fabric 네트워크 — 2026-09-15 17:02 KST
+
+사용자의 네트워크 및 테스트 인증서 생성·사용 승인 후 macOS arm64의 Colima에서
+Fabric 2.5.16 **3 peer + 3 Raft orderer**를 실행했다. 실제 chaincode 컨테이너는
+shim 2.5.8 / Node 22.12.0, 클라이언트는 Gateway 1.12.1 / Node 24.18.0이다.
+서로 독립된 기관이나 호스트를 사용한 운영 검증은 아니다.
+
+| 실제 실행 항목 | 확인 결과 |
+| --- | --- |
+| lifecycle | 공식 package/install, 세 조직 approve, definition commit, founder Init VALID |
+| 인증 | 인증서의 MSP/actor/kind를 공식 shim으로 확인, 세 조직의 실제 MSP 조회 통과 |
+| 지식 합의 | 문서 4개의 게시·제안·대표 승인·채택, 원래 명령 receipt 17개를 peer VALID 블록에서 확인 |
+| 인가 실패 | Sales identity의 Settlement agreement 철회 endorsement 거부 |
+| outbox 복구 | 제출 후 child process 종료 및 새 SDK client로 복구, 제출 응답 유실 주입 후 committed idempotency 복구 |
+| 실제 MVCC | 같은 명령을 미리 endorsement한 두 거래 중 하나 VALID, 하나 INVALID code 11; 원래 명령 결과로 조정 |
+| 같은 블록의 철회 | **block 46 index 0 fence / index 1 dependency withdrawal**, 모두 VALID; epoch 4→5 |
+| resolver | 공유 Markdown 원문 확인, 철회 전 provided → 철회 후 withheld (`DEPENDENCY_INELIGIBLE:NO_ACTIVE_AGREEMENT`) |
+| 복제와 재생 | 세 peer height 47 및 tip hash 일치, peer에서 받은 block 0–46을 새 reader로 재생해 같은 hash·결과 확인 |
+| 배포 재개 | `npm run fabric:deploy` 재실행 성공, 추가 블록 0개 |
+
+마지막 검증 블록의 Fabric header hash:
+`1d5651055fd6b6e0544d954377094ff0e17e9f07edaef93a250ebd0d9603fa8e`.
+로컬 근거는 `.data/fabric-smoke/evidence.json`, `replication.json`, `blocks/0.pb`–`46.pb`다.
+생성 identities, 원본 블록 및 runtime DB는 Git에 넣지 않았다.
+
+실행 중 발견한 문제를 수정한 뒤 재개했다. 테스트 enrollment 인증서의
+`clientAuth` 전용 EKU를 제거해 [공식 cryptogen의 서명 인증서 용도](https://github.com/hyperledger/fabric/blob/v2.5.16/internal/cryptogen/msp/msp.go)에 맞췄다.
+배포 재개는 실제 osnadmin/peer 응답으로 기존 channel·definition·package·초기화 상태를 검사한다.
+블록 reader는 [Fabric의 InitializedKeyName](https://github.com/hyperledger/fabric/blob/v2.5.16/core/chaincode/chaincode_support.go)을 일반 JSON과 구분하고,
+고정 chaincode version과 같은 거래의 pinned bootstrap이 있는 경우만 수용한다.
+이 오류는 합성 회귀 테스트에서 먼저 실패를 확인한 뒤 실제 peer 블록으로 재검증했다.
+
+최종 `npm run check`: **70 passed, 0 failed**. `npm run demo`도 통과했다.
+TLS는 실제 사용했지만 Fabric CA enrollment, 운영 SSO/KMS, 영속 projector·HTTP
+Fabric mode, 독립 조직/호스트의 CFT/BFT 장애 내성·성능, 원격 CI와 정적 타입 검사는
+여전히 미검증 또는 미구현이다. 응답 유실은 클라이언트 경계의 주입이며 실제 네트워크
+partition 시험으로 해석하지 않는다.
+
 ## Fabric 통합 준비 — 2026-09-15
 
 환경: macOS arm64, Node 24.18.0, npm 11.16.0, 실행 중인 Colima Docker.
@@ -33,13 +71,12 @@
   원자적 상태 보존을 확인했다. 헤더 해시는 OpenSSL ASN.1 생성 결과와
   7/128/256/65536/최대 안전 정수 블록 번호에서 비교했다.
 
-### 아직 실행하지 않은 네트워크 단계
+### 통합 준비 당시의 승인 경계
 
 사용자가 의존성·도구·이미지 다운로드를 포함한 네트워크 접근을 승인했다.
-별도 전역 지침에 따라 새 테스트 CA/MSP/TLS 인증서 생성·사용 승인을 요청한
-상태다. 따라서 `npm run fabric:up`과 `npm run fabric:smoke`는 아직 실행하지
-않았으며, 실제 endorsement·VALID commit·동일 블록 철회가 검증됐다고 주장하지 않는다.
-준비된 시나리오와 도구 pin은 [Fabric 통합 가이드](../infra/fabric/README.md)를 참조한다.
+준비 단계에서는 별도 전역 지침에 따라 테스트 CA/MSP/TLS 인증서 승인을 요청했고,
+당시 실제 네트워크는 실행하지 않았다. 이후 승인·실행 결과는 이 문서 맨 위에 기록했다.
+시나리오와 도구 pin은 [Fabric 통합 가이드](../infra/fabric/README.md)를 참조한다.
 
 추가 CI job은 공식 의존성 설치 후 Fabric 경계 테스트를 실행하도록 작성했다.
 원격 CI·운영 인증·조직별 독립 장애 시험은 미실행이다.

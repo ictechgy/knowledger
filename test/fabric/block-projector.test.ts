@@ -23,7 +23,7 @@ const genesis = { channel_id: channel, config_version: "cfg-1", membership_epoch
 
 function hash(value: Uint8Array): Uint8Array { return createHash("sha256").update(value).digest(); }
 
-type Tx = { txId: string; validationCode?: number; writes?: Array<{ key: string; value: unknown; delete?: boolean }>; channelId?: string; chaincodeName?: string; namespace?: string };
+type Tx = { txId: string; validationCode?: number; writes?: Array<{ key: string; value?: unknown; rawValue?: Uint8Array; delete?: boolean }>; channelId?: string; chaincodeName?: string; namespace?: string };
 
 async function runEngine(store: Map<string, unknown>, actor: { org_id: string; actor_id: string; kind: "human" | "agent" }, txId: string, command: { command_id: string; type: string; input: unknown }): Promise<Array<{ key: string; value: unknown }>> {
   const writes = new Map<string, unknown>();
@@ -67,7 +67,7 @@ function transaction(input: Tx): Uint8Array {
       const write = new ledger.rwset.kvrwset.KVWrite();
       write.setKey(item.key);
       write.setIsDelete(item.delete ?? false);
-      write.setValue(new TextEncoder().encode(JSON.stringify(item.value)));
+      write.setValue(item.rawValue ?? new TextEncoder().encode(JSON.stringify(item.value)));
       kv.getWritesList().push(write);
     }
     if (input.writes.length === 0) {
@@ -83,6 +83,7 @@ function transaction(input: Tx): Uint8Array {
     const action = new peer.ChaincodeAction();
     const chaincodeId = new peer.ChaincodeID();
     chaincodeId.setName(input.chaincodeName ?? chaincode);
+    chaincodeId.setVersion("0.1.0");
     action.setChaincodeId(chaincodeId);
     action.setResults(rwset.serializeBinary());
     const response = new peer.ProposalResponsePayload();
@@ -174,6 +175,22 @@ test("accepts only the pinned bootstrap manifest shape and digest", { skip: !fab
   const tx = transaction({ txId: "tx-bootstrap", writes: [{ key: "kcl:v1:bootstrap_manifest", value: marker }] });
   projector.applyBlock(block(0, [tx]));
   assert.deepEqual(projector.read("kcl:v1:bootstrap_manifest"), marker);
+});
+
+test("admits Fabric's exact Init marker only with the pinned bootstrap and version", { skip: !fabricProtosAvailable }, async () => {
+  const fixtures = demoFixtures();
+  const options = { channel_id: channel, chaincode_name: chaincode, public_genesis: fixtures.config };
+  const marker = { key: "\u0000\u{10ffff}initialized", rawValue: Buffer.from("0.1.0") };
+  const bootstrapWrites = await runBootstrap(new Map(), fixtures.config);
+  const projector = new FabricBlockProjector(options);
+  projector.applyBlock(block(0, [transaction({ txId: "tx-real-init", writes: [marker, ...bootstrapWrites] })]));
+  assert.deepEqual(projector.read(keyFor.config()), fixtures.config);
+  assert.equal(projector.read(marker.key), undefined, 'Fabric metadata is not application state');
+  for (const writes of [[marker], [{ ...marker, rawValue: Buffer.from("other-version") }, ...bootstrapWrites], [{ ...marker, key: "\u0000other" }, ...bootstrapWrites]]) {
+    const rejected = new FabricBlockProjector(options);
+    assert.throws(() => rejected.applyBlock(block(0, [transaction({ txId: "tx-bad-init", writes })])));
+    assert.equal(rejected.checkpoint(), null);
+  }
 });
 
 test("rejects an invalid write atomically and preserves state and cursor", { skip: !fabricProtosAvailable }, () => {

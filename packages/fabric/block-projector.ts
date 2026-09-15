@@ -5,12 +5,15 @@ import { sha256Digest, parseStrictJson } from "./canonical.ts";
 import { IMMUTABLE_KINDS, validateStateLinks, validateStateWrite } from "../storage/state-validation.ts";
 
 const BOOTSTRAP_KEY = "kcl:v1:bootstrap_manifest";
+// Fabric 2.5 core/chaincode/chaincode_support.go: InitializedKeyName.
+const FABRIC_INITIALIZED_KEY = "\u0000\u{10ffff}initialized";
 const ENDORSER_TRANSACTION = common.HeaderType.ENDORSER_TRANSACTION;
 const SUPPORTED_VALIDATION_CODES = new Set(Object.entries(peer.TxValidationCode).filter(([name]) => name !== "NOT_VALIDATED").map(([, value]) => value).filter((value): value is number => typeof value === "number"));
 
 export interface FabricBlockProjectorOptions {
   channel_id: string;
   chaincode_name: string;
+  chaincode_version?: string;
   public_genesis: unknown;
 }
 
@@ -46,7 +49,7 @@ interface DecodedTransaction extends ProjectedTransaction {
   header_type: number;
 }
 
-type ProjectorTarget = Pick<FabricBlockProjectorOptions, "channel_id" | "chaincode_name">;
+type ProjectorTarget = Pick<FabricBlockProjectorOptions, "channel_id" | "chaincode_name"> & { chaincode_version: string };
 
 function fail(message = "Fabric block projection halted"): never {
   throw new Error(message);
@@ -159,6 +162,7 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
 
   const transaction = decode(peer.Transaction, bytes(payload.getData_asU8()));
   const seenKeys = new Set<string>();
+  let initialized = false;
   for (const transactionAction of transaction.getActionsList()) {
     const actionPayload = decode(peer.ChaincodeActionPayload, bytes(transactionAction.getPayload_asU8()));
     if (!actionPayload.hasAction()) fail("Endorser transaction has no chaincode action");
@@ -190,10 +194,16 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
         seenKeys.add(key);
         const value = bytes(write.getValue_asU8());
         if (value.byteLength === 0) fail("State write value is empty");
+        if (key === FABRIC_INITIALIZED_KEY) {
+          if (!equalBytes(value, Buffer.from(options.chaincode_version)) || action.getChaincodeId()?.getVersion() !== options.chaincode_version) fail("Fabric Init marker has an unexpected chaincode version");
+          initialized = true;
+          continue;
+        }
         result.writeset.push({ key, value: valueForWrite(key, value, options.channel_id, genesisDigest, options.genesis) });
       }
     }
   }
+  if (initialized && (!seenKeys.has(BOOTSTRAP_KEY) || !seenKeys.has("kcl:v1:config"))) fail("Fabric Init marker requires the pinned KCL bootstrap in the same transaction");
   result.writes = result.writeset.length;
   return result;
 }
@@ -209,6 +219,7 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
 export class FabricBlockProjector {
   readonly channel_id: string;
   readonly chaincode_name: string;
+  readonly chaincode_version: string;
   private readonly genesisDigest: string;
   private readonly genesis: { config_version: string | number; membership_epoch: number; role_binding_version: number };
   private state = new Map<string, unknown>();
@@ -224,6 +235,8 @@ export class FabricBlockProjector {
     this.genesis = { config_version: genesis.config_version, membership_epoch: genesis.membership_epoch as number, role_binding_version: genesis.role_binding_version as number };
     this.channel_id = options.channel_id;
     this.chaincode_name = options.chaincode_name;
+    this.chaincode_version = options.chaincode_version ?? "0.1.0";
+    if (typeof this.chaincode_version !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(this.chaincode_version)) throw new Error("A fixed chaincode version is required");
     this.genesisDigest = sha256Digest(options.public_genesis);
   }
 
@@ -263,7 +276,7 @@ export class FabricBlockProjector {
     for (let index = 0; index < dataEntries.length; index += 1) {
       const validationCode = filter[index] ?? 255;
       if (!SUPPORTED_VALIDATION_CODES.has(validationCode)) fail("Fabric transaction validation code is unknown or not final");
-      const transaction = decodeTransaction(dataEntries[index], index, validationCode, { channel_id: this.channel_id, chaincode_name: this.chaincode_name, genesis: this.genesis }, this.genesisDigest);
+      const transaction = decodeTransaction(dataEntries[index], index, validationCode, { channel_id: this.channel_id, chaincode_name: this.chaincode_name, chaincode_version: this.chaincode_version, genesis: this.genesis }, this.genesisDigest);
       if (transaction.header_type !== common.HeaderType.ENDORSER_TRANSACTION && transaction.header_type !== common.HeaderType.CONFIG) fail("Unsupported Fabric transaction header type");
       if (transaction.header_type === common.HeaderType.CONFIG && blockNumber !== 0) fail("Configuration transactions after genesis are unsupported");
       if (transaction.valid && transaction.tx_id.length > 0) {

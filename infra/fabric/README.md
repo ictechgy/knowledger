@@ -152,8 +152,10 @@ CAs; OpenSSL issues seven-day fixture client certificates with the required
 `kcl.actor_id` and `kcl.actor_kind` attributes. This emulates fixture identities
 and does not integrate Fabric CA enrollment, SSO or a production key manager.
 Existing test identities are never overwritten by `fabric:up`.
-`fabric:deploy` resumes deployment after identity generation. Inspect partial
-lifecycle state before retrying a deployment that already committed a definition.
+`fabric:deploy` resumes deployment after identity generation. It queries existing
+channels and committed definitions, verifies each organization's exact package
+and approval, and detects initialization from the peer. A local deployment file
+is not treated as commit proof. Incompatible definitions/packages stop deployment.
 There is no automatic volume or credential deletion command.
 
 The smoke script uses fictional document fixtures. It checks publication,
@@ -163,17 +165,24 @@ transactions producing a real MVCC INVALID result, and a fence followed by
 dependency withdrawal in the same block. Source content and resolution are
 checked against peer full blocks. It writes non-secret results to
 `.data/fabric-smoke/evidence.json` only after all assertions pass.
+Verified peer blocks are saved under `.data/fabric-smoke/blocks` for local replay.
+Before withdrawal, retries reuse the original application command receipts and
+use new run IDs for fault probes.
 A completed fixture cannot be rerun as a fresh scenario after its withdrawal.
 
-Network deployment and smoke assertions remain **unexecuted** until test
-credential authorization is received. Configuration parsing, image/CLI versions,
-source build, official packaging, and SDK boundary tests have been executed.
+**Executed on 2026-09-15:** lifecycle and all smoke assertions passed after fixes
+to test certificate issuance, deployment resume, and Fabric Init metadata handling.
+All three peers agreed at height 47. Block 46 contained the VALID fence at index
+0 and dependency withdrawal at index 1; the resolver withheld the dependent
+document after processing the complete block. Replaying peer blocks 0–46 reproduced
+the same state and header hash. Deployment resume added no new blocks.
+See [the execution record](../../docs/VALIDATION.md).
 
 ## Verified in-memory block reader
 
 After installing adapter dependencies, import `FabricBlockProjector` directly
 from [block-projector.ts](../../packages/fabric/block-projector.ts). Configure
-`channel_id`, `chaincode_name`, and the pinned `public_genesis`, then pass each
+`channel_id`, `chaincode_name`, `chaincode_version` (default `0.1.0`), and the pinned `public_genesis`, then pass each
 peer-delivered full block's serialized bytes to `applyBlock()`, starting at block
 zero. `read(key)` returns a cloned value at the end of the last complete block;
 `checkpoint()` records its number and Fabric ASN.1 header hash.
@@ -182,6 +191,8 @@ The reader verifies contiguous numbers, previous/data hashes, complete final
 validation codes, known transaction types and write schemas. It ignores INVALID
 transaction effects, admits the initial channel configuration and lifecycle
 transactions, and stops on later channel reconfiguration or unsupported writes.
+Fabric's reserved Init marker is accepted only for the pinned chaincode version
+with the KCL bootstrap in the same transaction, and is kept out of domain state.
 All state changes and the cursor advance together only after the entire block
 passes. Synthetic protobuf tests use the real domain engine to check resolution
 after a fence and withdrawal in one block; independent OpenSSL ASN.1 fixtures
