@@ -1,0 +1,18 @@
+{
+  "name": "@kcl/auth",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "jose": "6.2.12",
+    "oidc-provider": "9.12.2",
+    "openid-client": "6.8.8"
+  },
+  "devDependencies": {
+    "@types/oidc-provider": "9.12.1"
+  }
+}

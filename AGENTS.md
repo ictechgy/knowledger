@@ -22,5 +22,5 @@ There are no child `AGENTS.md` files. All existing rules are repository-wide. An
 
 - Add regression tests for authorization, idempotency, approval replay, objections, stale reads, and dependency withdrawal when changing those behaviors.
 - Run `npm run check` for runtime changes and `npm run demo` for end-to-end agreement changes. For documentation-only changes, check links and structure with `python3 -B tools/check_docs.py`; avoid repeating unchanged runtime checks.
-- For TypeScript changes, also run `npm run check:types` after installing the locked root development and `packages/fabric` dependencies. Keep the local runtime usable without those optional development/Fabric installations.
+- For TypeScript changes, also run `npm run check:types` after installing the locked root development, `packages/fabric`, and `packages/auth` dependencies. Keep the local runtime usable without those optional development/Fabric/auth installations. Use only erasable TypeScript syntax for the native Node runtime.
 - Commit only files owned by the current change after relevant checks. Do not publish remotely without an explicit request.

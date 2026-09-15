@@ -1,5 +1,8 @@
 # Fabric 웹 테스트 모드
 
+계정 로그인과 별도 서명 프로세스를 함께 실행하려면 [개발용 로그인 가이드](13-DEVELOPMENT-LOGIN.md)의
+`npm run start:login`을 사용한다. 아래 모드는 기존 가상 역할 선택 테스트다.
+
 실제 Fabric peer에 연결해 기존 웹 화면에서 문서를 게시·승인·채택·철회한다.
 이 프로필은 **loopback 전용, 가상 테스트 사용자**다. 세 조직의 테스트 서명 키가
 한 프로세스에 있으므로 운영의 조직별 독립 인증·vault·KMS 경계를 대신하지 않는다.
@@ -65,6 +68,7 @@ manifest는 [기존 프로토콜](05-RAG.md)의 정확한 VALID fence 거래 위
 
 ```sh
 npm ci --ignore-scripts
+npm ci --prefix packages/auth --ignore-scripts
 npm run check:types
 npm run check
 npm run demo
@@ -82,5 +86,5 @@ receipt·데이터 복원과 이전 manifest 거부를 검사한 후 해당 가�
 0.1.0, endorsement 정책과 기존 Init 상태는 유지한다. 일반 `fabric:deploy`는
 다른 package를 자동으로 대체하지 않는다.
 
-현재 남은 운영 연결은 SSO/OIDC 제공자·KMS·Fabric CA enrollment 및 조직별 배포다.
+OIDC 클라이언트와 개발용 로그인 서버·서명 프로세스는 추가됐다. 실제 운영 제공자·KMS·Fabric CA enrollment 및 조직별 배포는 후속 단계다.
 외부 모델/KB와 독립 호스트의 CFT/BFT·성능 검증도 별도 단계다.

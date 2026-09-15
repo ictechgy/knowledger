@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node apps/api/main.ts",
     "start:fabric": "node apps/api/main.ts --ledger fabric-test-network --port 4318",
+    "start:login": "node tools/development-auth.ts",
+    "auth:smoke": "node tools/auth-smoke.ts",
     "dev": "node --watch apps/api/main.ts",
     "test": "node --test --test-reporter=spec 'test/**/*.test.ts'",
     "test:design": "python3 -B tools/validate_design.py && python3 -B tools/check_docs.py",

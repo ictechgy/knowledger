@@ -1,5 +1,51 @@
 # 검증 기록
 
+## 개발 OIDC 로그인과 별도 서명 프로세스 — 2026-09-16 01:29 KST
+
+`npm run check` **112 passed / 0 failed / 0 skipped**, `npm run check:types`
+**TypeScript 7.0.2 strict 통과**, `npm run demo` 통과. 기본 로컬 실행을 보존하기 위해
+외부 패키지와 runtime 데이터가 없는 별도 source copy에서도 **79 passed / 0 failed /
+33 optional skipped**를 확인했다. 이 검사에서 발견한 issuer 테스트의 정적 import를
+지연 import로 수정했고, 설치된 환경의 해당 테스트 5개도 다시 통과했다.
+
+auth 패키지는 openid-client 6.8.8 / oidc-provider 9.12.2 / jose 6.2.12로 고정했다.
+해당 lockfile의 `npm audit` 결과는 알려진 취약점 0건이었다. 런타임은 Node 24의
+native TypeScript 실행을 유지하며 `erasableSyntaxOnly`를 적용했다. CI에는 선택적
+auth 의존성 설치와 경계 검사를 추가했으나 원격 실행은 하지 않았다.
+
+| 검사 범위 | 확인 결과 |
+| --- | --- |
+| 로그인 프로토콜 | 실제 code/PKCE 흐름, state·nonce·PKCE 변조·callback 재사용 거부 |
+| ID token | 잘못된 서명·issuer·audience·만료 거부 |
+| 권한 바인딩 | 서버 issuer/subject 매핑만 actor 선택, 미등록 계정·역할 전환 거부 |
+| 세션 | 로그아웃·만료·계정 비활성화·권한 버전/바인딩 변경 후 접근 거부 |
+| 일시 장애 | UserInfo 429는 503으로 보류하며 같은 세션의 복구 허용 |
+| 신선도 | 최종 인증 검사까지 포함해 30초를 넘긴 컨텍스트 제공 거부 |
+| 서명 경계 | SDK prehashed digest를 다시 해시하지 않음, 인증서 불일치·잘못된 framing/UTF-8/중복 필드 거부 |
+| 서비스 한계 | socket 0600·부모 0700, 연결 수 제한·부분 요청 timeout 확인 |
+| 실행 설정 | 누락·빈 인증 옵션은 가상 역할 모드로 전환하지 않고 시작 실패 |
+
+`npm run auth:smoke`를 실제 OIDC 서버, 별도 서명 child process와 기존 Fabric
+네트워크에 실행했다. 근거는 `.data/auth-smoke-TLo2ny/auth-evidence.json`이며 Git 제외다.
+게시/승인은 각각 peer VALID block **94/96**에서 확인했다.
+
+- 익명 actor 없음, 비공개 초안 격리, 계정/권한 버전 회수 거부.
+- endorsement 뒤 로그아웃하고 submit 직전 재검사에서 차단: 추가 원장 블록 없음.
+  해당 outbox 시도는 `cancelled`로 끝나며 복구 조회 대상에서 제외된다.
+- 서명 프로세스 정지 시 resolve 503, 새 서명 프로세스 기동 뒤 provided 복구.
+- 실제 승인·채택 후 provided, 원장 철회 후 withheld, 로그아웃 후 보호 경로 401.
+
+브라우저 익명 화면에서 로그인 링크만 사용할 수 있고 가상 역할·로그아웃·보호된 편집
+영역이 숨겨지는 것을 accessibility snapshot으로 확인했다. CSS가 HTML `hidden`을
+덮어쓰던 문제를 수정했다. 화면 JavaScript 구문 검사도 통과했다.
+
+실행 주소는 `http://127.0.0.1:4319`, 시작 명령은 `npm run start:login`이다.
+개발 계정은 비밀번호 없는 고정 fixture이며 IdP 상태와 로그인 키는 메모리에만 있다.
+같은 OS 사용자의 별도 서명 프로세스는 HSM이나 조직별 강제 격리의 증거가 아니다.
+실제 회사 SSO/KMS·독립 조직 배포·운영 백업 및 성능은 후속 단계다.
+사용자에게 업체 선택을 개발 선행 조건으로 요구하지 않기로 했으며 자세한 구성은
+[개발 로그인 가이드](13-DEVELOPMENT-LOGIN.md)를 참조한다.
+
 ## 영속 Fabric projection과 웹 API — 2026-09-15 18:04 KST
 
 현재 소스에서 `npm run check` **87 passed / 0 failed**, `npm run check:types`
@@ -39,7 +85,8 @@ Fabric/개발 의존성이 없는 별도 복사본도 **67 passed / 0 failed / 2
 
 서버는 `http://127.0.0.1:4318`에서 실제 peer와 연결된 테스트 모드로 실행한다.
 프로덕션 SSO/OIDC·KMS·Fabric CA enrollment, 조직별 독립 배포 및 대규모 원장의
-성능 검증은 별도 단계다. SSO/KMS 제공자 정보는 사용자에게 질문한 상태다.
+성능 검증은 별도 단계다. 당시 요청했던 SSO/KMS 제공자 선택은 이후 개발 기본 구성으로
+진행하기로 정리했다. 최신 로그인 검증은 이 문서 위 항목을 참조한다.
 
 ## 실제 Fabric 네트워크 — 2026-09-15 17:02 KST
 

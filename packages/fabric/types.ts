@@ -127,6 +127,7 @@ export type OutboxAttemptStatus =
   | "valid"
   | "invalid"
   | "reconciled"
+  | "cancelled"
   | "unknown";
 
 export interface OutboxAttempt {

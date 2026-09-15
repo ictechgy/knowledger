@@ -20,8 +20,16 @@ const formatDate = (value) => {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium' }).format(date);
 };
 
-function renderMode(mode) {
+function renderMode(mode, authMode = null) {
   const fabric = mode === 'fabric-test-network';
+  if (authMode) {
+    text(el('environment-label'), authMode === 'oidc-development' ? '계정 로그인 · 개발 환경' : '계정 로그인');
+    text(el('mode-note-title'), authMode === 'oidc-development' ? '계정 로그인 · 개발 환경' : '계정 로그인');
+    text(el('mode-note-copy'), authMode === 'oidc-development'
+      ? ' — 개발용 로그인 서버의 테스트 계정을 사용합니다. 로그인한 계정으로 승인·철회를 요청합니다.'
+      : ' — 확인된 조직 계정으로만 공유 지식과 합의 작업을 사용할 수 있습니다.');
+    return;
+  }
   text(el('environment-label'), fabric ? 'Fabric 테스트 원장' : '로컬 시뮬레이션');
   text(el('mode-note-title'), fabric ? 'Fabric 테스트 네트워크 · 가상 사용자' : '로컬 시뮬레이션');
   text(el('mode-note-copy'), fabric
@@ -55,6 +63,13 @@ async function request(path, options = {}) {
   let body = null;
   if (raw) { try { body = JSON.parse(raw); } catch { body = null; } }
   if (!response.ok) {
+    if (response.status === 401 || (state.session?.auth_mode && ['AUTHORIZATION_REVOKED', 'AUTHORIZATION_REQUIRED', 'SESSION_EXPIRED'].includes(body?.code))) {
+      const authMode = state.session?.auth_mode;
+      state.session = null;
+      state.overview = null;
+      if (authMode) renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
+      else { state.selectedDocumentKey = null; resetComposer(); renderOverview(); }
+    }
     const apiError = body && body.code ? `${body.code}: ${body.message || '요청이 거절되었습니다.'}` : `요청 실패 (${response.status})`;
     const error = new Error(apiError);
     error.api = body;
@@ -74,7 +89,8 @@ async function request(path, options = {}) {
 async function loadSession() {
   const session = await request('/api/session');
   state.session = session;
-  renderMode(session.mode);
+  renderAuthState(session);
+  renderMode(session.mode, session.auth_mode);
   const picker = el('persona-select');
   picker.replaceChildren();
   (session.personas || []).forEach((persona) => {
@@ -88,11 +104,47 @@ async function loadSession() {
   text(el('footer-actor'), session.actor ? `${session.actor.org_id} · ${session.actor.actor_id}` : '검토자 없음');
 }
 
+function renderAuthState(session) {
+  const authenticatedMode = Boolean(session?.auth_mode);
+  const anonymous = authenticatedMode && !session.actor;
+  const controls = el('auth-controls');
+  const picker = el('persona-select')?.closest('.persona-picker');
+  const login = el('login-link');
+  const logout = el('logout-button');
+  const authRequired = el('auth-required');
+  const requiredLink = el('auth-required-link');
+  if (controls) controls.hidden = !authenticatedMode;
+  if (picker) picker.hidden = authenticatedMode;
+  if (login) {
+    login.hidden = !anonymous;
+    login.href = typeof session?.login_url === 'string' && session.login_url.startsWith('/auth/login') ? session.login_url : '/auth/login';
+  }
+  if (requiredLink) requiredLink.href = login?.href || '/auth/login';
+  if (logout) logout.hidden = !authenticatedMode || anonymous;
+  text(el('auth-actor'), session?.actor ? `${session.actor.org_id} · ${session.actor.actor_id}` : '로그인 필요');
+  if (authRequired) authRequired.hidden = !anonymous;
+  document.querySelector('.page-intro')?.toggleAttribute('hidden', anonymous);
+  document.querySelector('.metric-grid')?.toggleAttribute('hidden', anonymous);
+  document.querySelector('.workspace-layout')?.toggleAttribute('hidden', anonymous);
+  el('refresh-overview')?.toggleAttribute('hidden', anonymous);
+  if (anonymous) {
+    state.overview = null;
+    state.selectedDocumentKey = null;
+    resetComposer();
+    renderOverview();
+    const result = el('resolver-result');
+    if (result) { result.replaceChildren(); result.hidden = true; }
+    el('resolver-form')?.reset();
+    text(el('resolver-status'), '로그인 후 다시 조회해 주세요.');
+    text(el('footer-actor'), '로그인 필요');
+  }
+}
+
 async function loadOverview({ preserveSelection = true } = {}) {
   const previous = preserveSelection ? state.selectedDocumentKey : null;
   const overview = await request(`${apiBase}/overview`);
   state.overview = overview;
-  renderMode(overview.mode);
+  renderMode(overview.mode, state.session?.auth_mode);
   const docs = currentDocuments();
   state.selectedDocumentKey = docs.some((doc) => slotKeyFor(doc.payload) === previous) ? previous : slotKeyFor(docs[0]?.payload) || null;
   renderOverview();
@@ -430,6 +482,17 @@ function openComposer(mode, doc = null) {
 function bindEvents() {
   el('refresh-overview').addEventListener('click', async () => { clearStatus(); try { await loadOverview(); showStatus('원장 체크포인트에서 최신 상태를 읽었습니다.', 'success'); } catch (error) { showStatus(error.message, 'error'); } });
   el('persona-select').addEventListener('change', switchPersona);
+  el('logout-button')?.addEventListener('click', async () => {
+    try {
+      const logoutPath = typeof state.session?.logout_url === 'string' && state.session.logout_url.startsWith('/auth/logout') ? state.session.logout_url : '/auth/logout';
+      await request(logoutPath, { method: 'POST' });
+      const authMode = state.session?.auth_mode || 'oidc';
+      state.session = null;
+      state.overview = null;
+      renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
+      showStatus('로그아웃했습니다.', 'success');
+    } catch (error) { showStatus(`로그아웃 실패: ${error.message}`, 'error'); }
+  });
   el('dismiss-demo-note').addEventListener('click', () => { el('demo-note').hidden = true; });
   el('open-composer').addEventListener('click', () => openComposer('new'));
   el('close-composer').addEventListener('click', () => { el('composer-panel').hidden = true; });
@@ -443,7 +506,11 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
-  try { await loadSession(); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
+  try {
+    await loadSession();
+    if (state.session?.auth_mode && !state.session.actor) return;
+    await loadOverview({ preserveSelection: false });
+  } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
 }
 
 init();

@@ -80,6 +80,44 @@ test("gateway construction requires caller-provided credential buffers", async (
   await assert.rejects(() => connectOfficialFabricGateway({ client: {}, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: 'SalesMSP', certificate: new Uint8Array(), signer: async digest => digest } }), /identity/);
 });
 
+test('authorization revoked after endorsement prevents submission', async () => {
+  let allowed = true;
+  let submissions = 0;
+  const client = await connectOfficialFabricGateway({ client: {}, channel_id: 'kcl-demo', chaincode_name: 'kcl',
+    credentials: { msp_id: 'SalesMSP', certificate: new Uint8Array([1]), signer: async digest => digest },
+    authorize: async () => { if (!allowed) throw new Error('Authorization revoked'); },
+    module: { connect() { return { getNetwork: () => ({ getContract: () => ({
+      newProposal: () => ({ getTransactionId: () => 'tx-revoked', endorse: async () => ({ submit: async () => { submissions++; throw new Error('Submission must not occur'); }, getResult: () => new Uint8Array() }) }),
+      evaluateTransaction: async () => new Uint8Array(),
+    }) }) }; } },
+  });
+  const proposal = await client.newProposal(command('command-revoked'));
+  const endorsement = await proposal.endorse(); allowed = false;
+  await assert.rejects(() => endorsement.submit(), /Authorization cancelled/);
+  assert.equal(submissions, 0);
+});
+
+test('an authorization-cancelled attempt is terminal and is not queried during recovery', async () => {
+  const outbox = new SqliteOutbox(':memory:');
+  let allowed = true; let reads = 0; let submissions = 0;
+  const denied = Object.assign(new Error('Authorization revoked'), { code: 'AUTHORIZATION_REVOKED', status: 403 });
+  const client = await connectOfficialFabricGateway({ client: {}, channel_id: 'kcl-demo', chaincode_name: 'kcl',
+    credentials: { msp_id: 'SalesMSP', certificate: new Uint8Array([1]), signer: async digest => digest },
+    authorize: async () => { if (!allowed) throw denied; },
+    module: { connect() { return { getNetwork: () => ({ getContract: () => ({
+      newProposal: () => ({ getTransactionId: () => 'tx-cancelled', endorse: async () => { allowed = false; return { submit: async () => { submissions++; throw new Error('Not submitted'); }, getResult: () => new Uint8Array() }; } }),
+      evaluateTransaction: async () => { reads++; return new Uint8Array(); },
+    }) }) }; } },
+  });
+  const transport = new FabricGatewayTransport({ client, outbox });
+  try {
+    await assert.rejects(() => transport.execute(command('command-cancelled')), error => error === denied);
+    assert.equal((await outbox.listRecoverable()).length, 0);
+    assert.deepEqual(await transport.recoverPending(), []);
+    assert.equal(reads, 0); assert.equal(submissions, 0);
+  } finally { outbox.close(); }
+});
+
 test("official SDK adapter sends Execute JSON without transport-only actor metadata", async () => {
   let seen: { name: string; argument: string } | undefined;
   const fakeContract = {

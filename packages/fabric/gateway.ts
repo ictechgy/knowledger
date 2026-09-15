@@ -18,6 +18,13 @@ export interface OfficialGatewayCredentials {
   signer: (digest: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 }
 
+export type FabricWritePhase = 'proposal' | 'endorse' | 'submit';
+
+/** Authorization failed before the SDK could send this write phase. */
+export class FabricAuthorizationCancelled extends Error {
+  constructor(cause: unknown) { super('Authorization cancelled before Fabric submission', { cause }); this.name = 'FabricAuthorizationCancelled'; }
+}
+
 interface OfficialCommit {
   getBytes(): Uint8Array;
   getTransactionId(): string;
@@ -63,6 +70,8 @@ export interface OfficialGatewayConnectionOptions {
   /** Per-call deadlines; unknown commit status remains recoverable in the outbox. */
   timeouts_ms?: Partial<Record<'evaluate' | 'endorse' | 'submit' | 'commit_status', number>>;
   module?: OfficialGatewayModule;
+  /** Recheck the active authenticated request before each write phase. */
+  authorize?: (phase: FabricWritePhase) => Promise<void>;
 }
 
 class OfficialGatewayClient implements FabricGatewayClient {
@@ -70,19 +79,28 @@ class OfficialGatewayClient implements FabricGatewayClient {
   private readonly gateway: OfficialGateway;
   private readonly contract: OfficialContract;
   private readonly mspId: string;
-  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string) { this.contract = contract; this.gateway = gateway; this.mspId = mspId; }
+  private readonly authorize?: (phase: FabricWritePhase) => Promise<void>;
+  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string, authorize?: (phase: FabricWritePhase) => Promise<void>) { this.contract = contract; this.gateway = gateway; this.mspId = mspId; this.authorize = authorize; }
+
+  private async assertAuthorized(phase: FabricWritePhase): Promise<void> {
+    try { await this.authorize?.(phase); }
+    catch (error) { throw new FabricAuthorizationCancelled(error); }
+  }
 
   async newProposal(command: GatewayCommand): Promise<GatewayProposal> {
     if (command.actor_org_id !== this.mspId) throw new Error('Command organization does not match the signing identity');
+    await this.assertAuthorized('proposal');
     const { actor_org_id: _actorOrg, ...wireCommand } = command;
     const proposal = this.contract.newProposal("Execute", { arguments: [JSON.stringify(wireCommand)] });
     return {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
+        await this.assertAuthorized('endorse');
         const endorsed = await proposal.endorse();
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
+            await this.assertAuthorized('submit');
             const commit = await endorsed.submit();
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
@@ -173,7 +191,8 @@ export class FabricGatewayTransport {
     let proposal: GatewayProposal;
     try {
       proposal = await this.newProposal(command);
-    } catch {
+    } catch (error) {
+      if (error instanceof FabricAuthorizationCancelled) throw error.cause;
       return { status: "pending", tx_id: "", payload_digest: payloadDigest };
     }
     const attempt = {
@@ -189,7 +208,11 @@ export class FabricGatewayTransport {
     try {
       endorsement = await this.endorse(proposal);
       await this.config.outbox.updateAttempt(proposal.tx_id, { status: "endorsed" });
-    } catch {
+    } catch (error) {
+      if (error instanceof FabricAuthorizationCancelled) {
+        await this.config.outbox.updateAttempt(proposal.tx_id, { status: 'cancelled', detail: 'authorization_cancelled' });
+        throw error.cause;
+      }
       await this.config.outbox.updateAttempt(proposal.tx_id, { status: "unknown", detail: "endorsement_failed" });
       return pending(proposal.tx_id, payloadDigest);
     }
@@ -197,7 +220,11 @@ export class FabricGatewayTransport {
       await this.submit(endorsement);
       const commitBytes = await endorsement.getCommitBytes?.();
       await this.config.outbox.updateAttempt(proposal.tx_id, { status: "acknowledged", ...(commitBytes ? { commit_bytes: commitBytes } : {}) });
-    } catch {
+    } catch (error) {
+      if (error instanceof FabricAuthorizationCancelled) {
+        await this.config.outbox.updateAttempt(proposal.tx_id, { status: 'cancelled', detail: 'authorization_cancelled' });
+        throw error.cause;
+      }
       // A submit timeout is deliberately resolved through the peer status query below.
       await this.config.outbox.updateAttempt(proposal.tx_id, { status: "unknown", detail: "submit_status_unknown" });
     }
@@ -287,5 +314,5 @@ export async function connectOfficialFabricGateway(options: OfficialGatewayConne
     ...(module.hash?.sha256 ? { hash: module.hash.sha256 } : {}),
   });
   const network = gateway.getNetwork(options.channel_id);
-  return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id);
+  return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id, options.authorize);
 }

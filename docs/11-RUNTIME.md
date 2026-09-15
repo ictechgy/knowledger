@@ -28,6 +28,10 @@ npm run check
 
 역할 전환은 데모 조작이다. 실제 사람의 로그인·인증·전자서명으로 해석하면 안 된다.
 
+로그인 흐름은 [개발용 OIDC·서명 서비스 가이드](13-DEVELOPMENT-LOGIN.md)의
+`npm run start:login`으로 실행한다. 이 모드는 계정 로그인 뒤 서버의 subject 바인딩으로
+actor를 정하며 역할 전환 API를 거부한다. 비밀번호 없는 개발 계정이고 실제 회사 SSO는 아니다.
+
 ## KB / LLM 위키 연결
 
 Markdown 본문은 문서 유형에 종속되지 않는다. 기존 KB나 LLM 위키의 공유 가능한 내용을 초안에 넣고 검토·공개·합의한 뒤, `/resolve`의 `documents[].body_markdown`을 지식 패킷으로 사용한다. `manifest`를 실행 기록과 함께 조직 로컬 저장소에 보관하고, 후속 사용 전 `/runs/{run_id}/revalidate`를 호출한다.
@@ -42,8 +46,8 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 
 | 경로 | 현재 동작 |
 |---|---|
-| `GET /api/session` | 로컬 데모 세션·CSRF 토큰·가상 역할 목록 |
-| `POST /api/session` | 데모 역할 전환; 새 CSRF 토큰 반환 |
+| `GET /api/session` | 데모 세션·역할 목록 또는 OIDC 로그인 상태; 익명 로그인 모드에는 actor·CSRF 없음 |
+| `POST /api/session` | 데모 역할 전환; OIDC 로그인 모드에서는 403 |
 | `GET /overview` | 공유 개정·합의·제안·역할 정책·체크포인트 |
 | `POST /drafts` | actor별 로컬 비공개 초안 |
 | `POST /publication-previews` | 본문 digest·현재 config·조직·5분 만료에 묶인 공개 검토 |
@@ -70,11 +74,11 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | 로컬 보존 | SQLite 원자적 명령, 전체 write-set 이력, 시점별 projection 재구축 | 독립 조직 운영·외부 백업·복구 목표 |
 | Fabric | 같은 엔진의 shim/Gateway, 실제 로컬 3 peer·3 Raft orderer 배포, VALID commit·MVCC INVALID·outbox 복구 검증 | 독립 조직/호스트·운영 인증·네트워크 partition 시험 |
 | resolver | 정확한 fence 거래 시점, 영속 Fabric projection·재시작, 실제 HTTP 승인·철회·peer 단절 후 fail-closed 검증 | 큰 원장 catch-up 성능, 운영 보관/백업 정책 |
-| 인증/기밀 | loopback, 출처/CSRF 검사, actor별 초안·manifest, 공개 확인 | SSO/개별 사용자 서명, 조직별 프로세스·KMS·vault 분리 |
+| 인증/기밀 | loopback·출처/CSRF, actor별 초안·manifest, 개발 OIDC·subject 바인딩·권한 회수, 별도 서명 프로세스 | 실제 회사 SSO·계정 저장, 조직별 권한·KMS·vault 격리 |
 | 운영 | 고정된 genesis·정책, 명시적 실패 처리 | 동적 governance, 실제 channel config 변경 감지·freeze·조직 migration |
 
 로컬 원장은 **블록당 거래 한 개**다. 체크포인트의 `transaction_index`는 0이다. 이것을 Fabric에서 fence와 철회가 한 블록에 들어가는 경우의 실증으로 주장하지 않는다. 테스트의 MVCC 모델은 동시 read/write 집합의 기대 동작을 검증한다.
 
 로컬 관리자는 SQLite 파일과 모든 가상 역할에 접근할 수 있다. 로컬 journal hash 연결은 우발적 변조·손상 검출용이며 그 관리자의 악의적 재작성에 저항하지 못한다. 공유 본문은 반환 후 회수할 수 없고, 외부 부작용과 원장 fence 사이의 원자적 트랜잭션을 보장하지 않는다.
 
-공개 검토는 기밀 여부를 자동 판정하지 않는다. Fabric 서명 adapter는 호출자가 제공한 signer를 사용한다. CLI와 웹 테스트 프로필은 승인된 `.data/fabric-smoke/crypto`의 가상 조직 키를 사용하며, 운영 개인 인증·외부 LLM은 연결하지 않았다.
+공개 검토는 기밀 여부를 자동 판정하지 않는다. Fabric 서명 adapter는 호출자가 제공한 signer를 사용한다. CLI와 웹 테스트 프로필은 승인된 `.data/fabric-smoke/crypto`의 가상 조직 키를 사용한다. 개발 로그인 모드에서는 별도 서명 프로세스만 개인키를 읽는다. 같은 OS 사용자 아래의 프로세스 분리는 HSM이나 독립 조직의 보안 경계를 뜻하지 않는다. 운영 개인 인증·외부 LLM은 연결하지 않았다.

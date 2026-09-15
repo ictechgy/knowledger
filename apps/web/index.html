@@ -21,6 +21,11 @@
         </div>
         <div class="topbar-tools">
           <span class="environment-badge"><span class="status-dot" aria-hidden="true"></span><span id="environment-label">로컬 시뮬레이션</span></span>
+          <div id="auth-controls" class="auth-controls" hidden>
+            <span id="auth-actor" class="auth-actor" aria-live="polite"></span>
+            <a id="login-link" class="secondary-button auth-login" href="/auth/login" hidden>계정으로 로그인</a>
+            <button id="logout-button" class="secondary-button" type="button" hidden>로그아웃</button>
+          </div>
           <label class="persona-picker" for="persona-select">
             <span class="sr-only">현재 검토자</span>
             <select id="persona-select" aria-label="현재 검토자" disabled>
@@ -38,6 +43,12 @@
 
       <main id="main-content" class="page-content">
         <div id="global-status" class="global-status" role="status" aria-live="polite" hidden></div>
+        <section id="auth-required" class="auth-required panel" hidden aria-live="polite">
+          <p class="section-kicker">ACCOUNT ACCESS</p>
+          <h2>계정 로그인이 필요합니다</h2>
+          <p>공유 지식과 합의 작업은 확인된 조직 계정으로만 사용할 수 있습니다.</p>
+          <a id="auth-required-link" class="primary-button" href="/auth/login">계정으로 로그인</a>
+        </section>
         <section class="page-intro" aria-labelledby="page-title">
           <div>
             <p class="eyebrow">SHARED KNOWLEDGE WORKSPACE</p>

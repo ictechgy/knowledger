@@ -1,3 +1,5 @@
+[hidden] { display: none !important; }
+
 :root {
   color-scheme: dark;
   --ink: #f4f1eb;
@@ -38,6 +40,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .brand-name { font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
 .brand-caption { margin-top: .1rem; color: var(--muted); font-size: .68rem; }
 .topbar-tools { gap: 1rem; }
+.auth-controls { display: flex; align-items: center; gap: .55rem; }
+.auth-actor { color: var(--muted); font-size: .72rem; white-space: nowrap; }
+.auth-login { text-decoration: none; }
+.auth-required { max-width: 38rem; margin: 2rem auto; padding: 2rem; text-align: center; }
+.auth-required h2 { margin: 0 0 .5rem; font-family: Georgia, "Times New Roman", serif; font-size: 1.7rem; font-weight: 400; }
+.auth-required p:not(.section-kicker) { color: var(--muted); font-size: .82rem; }
 .environment-badge { gap: .45rem; padding: .35rem .7rem; border: 1px solid rgba(245, 191, 105, .32); border-radius: 999px; color: var(--yellow); font-size: .72rem; white-space: nowrap; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 0 4px rgba(245, 191, 105, .12); }
 .persona-picker select { color: var(--ink); border: 1px solid var(--line); background: var(--surface); padding: .5rem 2rem .5rem .7rem; border-radius: 8px; font-size: .78rem; max-width: 15rem; }

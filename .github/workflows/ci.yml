@@ -32,5 +32,6 @@ jobs:
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-fund
       - run: npm ci --prefix packages/fabric --ignore-scripts --no-fund
+      - run: npm ci --prefix packages/auth --ignore-scripts --no-fund
       - run: npm run check:types
-      - run: node --test 'test/fabric/*.test.ts'
+      - run: node --test 'test/fabric/*.test.ts' 'test/auth/*.test.ts' 'test/api/*.test.ts'
