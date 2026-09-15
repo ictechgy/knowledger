@@ -36,6 +36,10 @@ actor를 정하며 역할 전환 API를 거부한다. 비밀번호 없는 개발
 
 Markdown 본문은 문서 유형에 종속되지 않는다. 기존 KB나 LLM 위키의 공유 가능한 내용을 초안에 넣고 검토·공개·합의한 뒤, `/resolve`의 `documents[].body_markdown`을 지식 패킷으로 사용한다. `manifest`를 실행 기록과 함께 조직 로컬 저장소에 보관하고, 후속 사용 전 `/runs/{run_id}/revalidate`를 호출한다.
 
+[Markdown 가져오기](14-MARKDOWN-IMPORT.md)는 로컬 파일 한 개를 actor별 비공개 초안으로
+저장한다. 최대 256 KiB의 UTF-8 원문을 보존하며, 파일명·가져오기 기록은 공용 원장에 넣지 않는다.
+공개 검토와 사람의 합의 승인은 기존 절차로 진행한다.
+
 v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받는다. 합의와 전이 의존성을 검사하고 실제 반환한 문서만 manifest에 적는다. `query`는 공용 fence 거래에 기록하지 않는다. 의존 문서의 본문은 자동으로 반환하지 않는다. 필요한 추가 지식은 별도로 범위를 지정해 해석해야 한다.
 
 초기 검색은 권한이 있는 공유 문서의 문자열 검색이다. embedding/vector DB, 원격 KB 동기화, 외부 모델 호출, 임의 도구 실행은 아직 연결하지 않았다. 화면에는 Markdown 원문을 안전한 텍스트로 표시한다.
@@ -50,6 +54,7 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | `POST /api/session` | 데모 역할 전환; OIDC 로그인 모드에서는 403 |
 | `GET /overview` | 공유 개정·합의·제안·역할 정책·체크포인트 |
 | `POST /drafts` | actor별 로컬 비공개 초안 |
+| `POST /draft-imports/markdown` | UTF-8 파일 → actor별 비공개 초안; import_id 재시도 보존 |
 | `POST /publication-previews` | 본문 digest·현재 config·조직·5분 만료에 묶인 공개 검토 |
 | `POST /revisions` | `confirm_shared: true`로 검토한 개정 게시 |
 | `POST /agreement-proposals` | 정확한 revision/policy에 대한 새 제안 |

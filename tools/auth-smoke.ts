@@ -96,11 +96,23 @@ try {
   const candidates = overview.documents.filter((doc: any) => doc.payload.document_id === 'doc-sales-order-definition-001');
   const base = candidates.find((doc: any) => doc.eligible) ?? candidates.at(-1); assert.ok(base);
   const scope = { document_ids: [base.payload.document_id], context_id: base.payload.context_id, scope_id: base.payload.scope_id, usage_scope: base.payload.usage_scope };
-  const draft = await post('/drafts', { base_revision_digest: base.revision_digest, title: `OIDC 승인 검증 ${runId}`, body_markdown: `# OIDC acceptance ${runId}\n\n개발용 계정의 명시적 승인 검증입니다.` });
+  const importedBody = `\uFEFF# OIDC Markdown acceptance ${runId}\r\n\r\n개발용 계정의 명시적 가져오기·승인 검증입니다.\r\n`;
+  const importFilename = `private-source-${runId}.md`;
+  const importInput = { import_id: `markdown-${runId}`, filename: importFilename, content_base64: Buffer.from(importedBody).toString('base64'), base_revision_digest: base.revision_digest, title: `OIDC 승인 검증 ${runId}` };
+  phase = 'Markdown import';
+  await runtime.ledger.refresh(); const beforeImport = runtime.ledger.checkpoint();
+  const draft = await post('/draft-imports/markdown', importInput);
+  assert.equal(draft.revision.payload.body_markdown, importedBody);
+  assert.deepEqual(await post('/draft-imports/markdown', importInput), draft);
+  await runtime.ledger.refresh(); assert.deepEqual(runtime.ledger.checkpoint(), beforeImport);
   await login('dev-fulfillment-owner'); await post('/publication-previews', { draft_id: draft.draft_id }, 404);
   await login('dev-sales-owner');
   const preview = await post('/publication-previews', { draft_id: draft.draft_id });
+  phase = 'Markdown publication';
   const publication = await post('/revisions', { preview_id: preview.preview_id, confirm_shared: true, command_id: `oidc-publish-${runId}` });
+  const publicationEvents = runtime.ledger.events(publication.checkpoint.block_number - 1, 1);
+  assert.ok(publicationEvents.some(event => event.checkpoint.transaction_id === publication.checkpoint.transaction_id));
+  assert.equal(JSON.stringify(publicationEvents).includes(importFilename), false);
   const proposalInput = { revision_digest: draft.revision.revision_digest, policy_id: 'policy-sales-v1', policy_version: 1, command_id: `oidc-propose-${runId}` };
   const proposed = await post('/agreement-proposals', proposalInput);
   const proposalId = proposed.result.proposal_id;
@@ -140,7 +152,7 @@ try {
   await post('/auth/logout', {}, 204);
   assert.equal((await browser.request(`${origin}/v1/workspaces/demo/overview`)).status, 401);
   const evidence = { verified_at: new Date().toISOString(), mode: 'oidc-development-fabric', passed: true, publication_checkpoint: publication.checkpoint, approval_checkpoint: approval.checkpoint,
-    no_anonymous_actor: true, role_switch_rejected: true, disabled_account_rejected: true, changed_version_rejected: true, logout_prevented_submit: true, cancelled_outbox_terminal: true, separate_signer_failure_status: 503, signer_recovery: true, withdrawal_withheld: true };
+    no_anonymous_actor: true, markdown_import_exact_bytes: true, markdown_import_idempotent: true, markdown_import_no_ledger_write: true, import_filename_private_after_publish: true, role_switch_rejected: true, disabled_account_rejected: true, changed_version_rejected: true, logout_prevented_submit: true, cancelled_outbox_terminal: true, separate_signer_failure_status: 503, signer_recovery: true, withdrawal_withheld: true };
   writeFileSync(join(dataDir, 'auth-evidence.json'), JSON.stringify(evidence, null, 2) + '\n', { mode: 0o600 });
   console.log(`OIDC acceptance passed. Evidence: ${join(dataDir, 'auth-evidence.json')}`);
 } catch {

@@ -157,6 +157,10 @@ input, textarea, select { width: 100%; border: 1px solid var(--line-strong); bor
 textarea { resize: vertical; min-height: 10rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.6; }
 input::placeholder, textarea::placeholder { color: #596475; }
 .draft-form, .resolver-form { display: grid; gap: .85rem; }
+.markdown-import { display: grid; gap: .65rem; min-width: 0; padding: 1rem; border: 1px dashed var(--line-strong); border-radius: 8px; }
+.markdown-import input { min-width: 0; }
+.markdown-import p { margin: 0; line-height: 1.6; }
+.markdown-import button { justify-self: start; white-space: normal; }
 .form-row { display: grid; gap: .75rem; }
 .two-col { grid-template-columns: 1.5fr 1fr; }
 .resolver-fields { grid-template-columns: repeat(3, 1fr); }

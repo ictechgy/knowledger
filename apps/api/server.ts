@@ -171,6 +171,7 @@ export async function createApp(options: { dataDir: string; seed?: boolean; ledg
         const root = '/v1/workspaces/demo';
         const routes: Record<string, () => Promise<any>> = {
           [`${root}/drafts`]: () => service.draft(actor, input),
+          [`${root}/draft-imports/markdown`]: () => service.importMarkdown(actor, input),
           [`${root}/publication-previews`]: () => service.preview(actor, input),
           [`${root}/revisions`]: () => service.publish(actor, input),
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),

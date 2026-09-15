@@ -4,6 +4,7 @@ import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
+import { decodeMarkdownImport } from '../../packages/import/markdown.ts';
 import { demoFixtures, BOOTSTRAP_ACTOR, PERSONAS, slotFields, actorIdentity } from './demo-config.ts';
 
 const P = 'kcl:v1:';
@@ -117,6 +118,22 @@ export class KclService {
     };
   }
 
+  /** Build and validate the same private revision shape for manual and imported drafts. */
+  private buildDraftRevision(actor: Actor, input: any, bodyMarkdown: string, sourceKind: 'human_authored' | 'approved_import' | 'llm_drafted') {
+    const base = input.base_revision_digest ? this.revision(input.base_revision_digest) : undefined;
+    const payload = base ? structuredClone(base.payload) : {
+      contract_type: 'DocumentRevision', contract_version: 1, channel_id: this.ledger.channelId,
+      document_id: input.document_id ?? newId('doc'), context_id: input.context_id,
+      scope_id: input.scope_id, usage_scope: input.usage_scope, visibility: 'shared_channel', dependencies: [],
+    };
+    Object.assign(payload, { revision_id: newId('rev'), title: input.title, body_markdown: bodyMarkdown,
+      parents: base ? [base.revision_digest] : [], metadata: { author_id: actor.actor_id, author_org_id: actor.org_id,
+        created_at: new Date().toISOString(), source_kind: sourceKind, shared_assertions: [] } });
+    const revision = { revision_digest: domain.digestPayload(payload), payload };
+    domain.validateRevision(revision);
+    return revision;
+  }
+
   async overview(actor: Actor) {
     await this.refresh();
     this.actor(actor);
@@ -150,20 +167,40 @@ export class KclService {
     await this.refresh();
     this.actor(actor);
     onlyFields(input, ['base_revision_digest', 'title', 'body_markdown', 'source_kind', 'context_id', 'scope_id', 'usage_scope', 'document_id']);
-    const base = input.base_revision_digest ? this.revision(input.base_revision_digest) : undefined;
-    const payload = base ? structuredClone(base.payload) : {
-      contract_type: 'DocumentRevision', contract_version: 1, channel_id: this.ledger.channelId,
-      document_id: input.document_id ?? newId('doc'), context_id: input.context_id,
-      scope_id: input.scope_id, usage_scope: input.usage_scope, visibility: 'shared_channel', dependencies: [],
-    };
-    Object.assign(payload, { revision_id: newId('rev'), title: input.title, body_markdown: input.body_markdown,
-      parents: base ? [base.revision_digest] : [], metadata: { author_id: actor.actor_id, author_org_id: actor.org_id,
-        created_at: new Date().toISOString(), source_kind: input.source_kind ?? (actor.kind === 'agent' ? 'llm_drafted' : 'human_authored'), shared_assertions: [] } });
-    const revision = { revision_digest: domain.digestPayload(payload), payload };
-    domain.validateRevision(revision);
+    const revision = this.buildDraftRevision(actor, input, input.body_markdown, input.source_kind ?? (actor.kind === 'agent' ? 'llm_drafted' : 'human_authored'));
     const draftId = newId('draft');
     this.vault.put('draft', draftId, actor, { revision });
     return { draft_id: draftId, revision };
+  }
+
+  async importMarkdown(actor: Actor, input: any) {
+    onlyFields(input, ['import_id', 'filename', 'content_base64', 'title', 'context_id', 'scope_id', 'usage_scope', 'document_id', 'base_revision_digest']);
+    identifier(input.import_id);
+    if (input.base_revision_digest !== undefined && (typeof input.base_revision_digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(input.base_revision_digest))) throw new ApiError('INVALID_INPUT', '올바른 기존 개정 digest가 필요합니다.');
+    const run = this.commandQueue.then(async () => {
+      await this.refresh();
+      this.actor(actor);
+      const requestDigest = createHash('sha256').update(domain.canonicalize({ route: 'markdown-import', input })).digest('hex');
+      const draftId = `draft-import-${createHash('sha256').update(`${actor.org_id}:${actor.actor_id}:${actor.kind}:${input.import_id}`).digest('hex').slice(0, 48)}`;
+      const existing = this.vault.get('draft', draftId, actor);
+      if (existing) {
+        if (existing.request_digest !== requestDigest || !existing.import) throw new ApiError('IDEMPOTENCY_CONFLICT', '같은 import_id로 다른 요청을 보낼 수 없습니다.', 409);
+        return { draft_id: draftId, revision: existing.revision, import: existing.import };
+      }
+      let imported;
+      try {
+        imported = decodeMarkdownImport(input.filename, input.content_base64);
+      } catch (error: any) {
+        if (error?.code === 'INVALID_INPUT' && typeof error.message === 'string') throw new ApiError('INVALID_INPUT', error.message);
+        throw error;
+      }
+      const revision = this.buildDraftRevision(actor, input, imported.content, 'approved_import');
+      const metadata = { kind: 'local_markdown' as const, filename: imported.filename, byte_length: imported.byteLength, sha256: imported.sha256 };
+      this.vault.put('draft', draftId, actor, { revision, import: metadata, request_digest: requestDigest });
+      return { draft_id: draftId, revision, import: metadata };
+    });
+    this.commandQueue = run.catch(() => undefined);
+    return run;
   }
 
   async preview(actor: Actor, input: any) {

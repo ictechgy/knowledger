@@ -1,5 +1,43 @@
 # 검증 기록
 
+## Markdown 비공개 초안 가져오기 — 2026-09-16 01:49 KST
+
+`npm run check`: **117 passed / 0 failed / 0 skipped**, `npm run check:types`와
+`npm run demo` 통과. 외부 의존성을 추가하지 않고 기존 actor별 private store와
+공개 preview·게시·승인 경로를 재사용했다.
+
+추가 HTTP 회귀 검사 5개에서 다음을 확인했다.
+
+- BOM·CRLF·한글 원문 보존, 256 KiB 본문과 255-byte 파일명 경계.
+- 동일·동시 요청과 재시작 뒤 같은 초안 반환, 변경된 입력의 import_id 재사용은409.
+- 익명401·CSRF 누락403·다른 actor의 preview404, AI actor의 초안 가져오기 허용.
+- 잘못된 UTF-8·제어문자·Base64·파일 경로·초과 크기·빈 base digest·추가 필드 거부.
+- 가져오기와 preview의 원장 쓰기 없음, 확인 없는 게시 거부, 게시 후 파일명·요청 ID·원본 hash 비노출.
+- frontmatter와 링크를 해석하지 않고 원문에 보존, 기존 개정의 slot·의존성·parent 유지.
+
+빈 base digest가 새 문서로 처리되던 경우를 실패 테스트로 확인한 뒤 가져오기 경계에서
+거부하도록 수정했다. 공유 확인 검사는 command_id를 함께 보내 실제로
+`PUBLICATION_CONFIRMATION_REQUIRED`를 받는지 확인한다.
+
+`agent-browser`의 격리 브라우저에서 키보드로 파일 가져오기, 편집창 표시·공용 목록 미노출,
+HTML script 비실행, 공유 확인 전 게시 비활성, 편집 후 preview 초기화, 잘못된 UTF-8 거부를
+확인했다. 실제 import 응답을 지연시킨 뒤 작성창을 닫아 늦은 응답이 본문을 복원하지 않는지도
+확인했다. 390/1440px에서 가로 넘침이 없었고 파일 입력→가져오기 버튼의 Tab 이동을 확인했다.
+근거는 `.artifacts/markdown-import/ui-evidence.json`; 브라우저와 별도 UI 테스트 서버는 종료했다.
+스크린샷 검증은 하지 않았다.
+
+실제 OIDC·별도 서명 프로세스·Fabric의 `npm run auth:smoke`도 통과했다. 근거는
+`.data/auth-smoke-JkDZbf/auth-evidence.json`이다. 파일 가져오기·동일 요청 재시도 동안 원장
+checkpoint가 그대로였고, 명시적인 게시/승인은 peer VALID block **103/105**에서 확인했다.
+게시 거래에 원본 파일명은 없었고, 후속 권한 회수·서명 장애 복구·철회 후 withheld도 통과했다.
+
+첫 실행은 게시 뒤 검사 코드의 이벤트 조회 한도 초과로 중단됐다. 게시 거래가 들어 있는
+블록 한 개를 정확히 조회하도록 검사 코드를 수정한 뒤 위 전체 흐름을 통과했다.
+그 실행의 미승인 게시본(block102)은 불변 테스트 이력으로 보존했다.
+
+최신 기능은 `http://127.0.0.1:4319`에 반영했다. 자세한 흐름과 요청 계약은
+[Markdown 가져오기 가이드](14-MARKDOWN-IMPORT.md)를 참조한다.
+
 ## 개발 OIDC 로그인과 별도 서명 프로세스 — 2026-09-16 01:29 KST
 
 `npm run check` **112 passed / 0 failed / 0 skipped**, `npm run check:types`

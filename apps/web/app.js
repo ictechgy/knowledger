@@ -7,6 +7,8 @@ const state = {
   selectedDocumentKey: null,
   draft: null,
   draftBaseDigest: null,
+  composerVersion: 0,
+  markdownImportRequest: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -385,11 +387,64 @@ async function changeAgreement(proposal, action) {
 }
 
 async function onDraftSubmit(event) {
-  event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const button = el('save-draft'); button.disabled = true; text(el('draft-status'), 'private vault에 저장 중…');
+  event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); text(el('draft-status'), 'private vault에 저장 중…');
+  const version = ++state.composerVersion; const session = state.session;
+  setDraftBusy(true);
   const payload = Object.fromEntries(data.entries());
   const base = state.draftBaseDigest ? (state.overview?.documents || []).find((doc) => doc.revision_digest === state.draftBaseDigest) : null;
   if (base?.payload) { payload.base_revision_digest = base.revision_digest; payload.document_id = base.payload.document_id; }
-  try { const draft = await request(`${apiBase}/drafts`, { method: 'POST', body: jsonBody(payload) }); state.draft = draft; text(el('draft-status'), 'private draft가 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('private draft가 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft); } catch (error) { text(el('draft-status'), error.message); showStatus(`draft 저장 실패: ${error.message}`, 'error'); } finally { button.disabled = false; }
+  try {
+    const draft = await request(`${apiBase}/drafts`, { method: 'POST', body: jsonBody(payload) });
+    if (version !== state.composerVersion || session !== state.session) return;
+    state.draft = draft; text(el('draft-status'), 'private draft가 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('private draft가 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft);
+  } catch (error) {
+    if (version === state.composerVersion && session === state.session) { text(el('draft-status'), error.message); showStatus(`draft 저장 실패: ${error.message}`, 'error'); }
+  } finally { if (version === state.composerVersion) setDraftBusy(false); }
+}
+
+function setDraftBusy(busy) {
+  el('save-draft').disabled = busy;
+  el('import-markdown').disabled = busy;
+}
+
+function invalidateDraftPreview() {
+  state.composerVersion++;
+  state.draft = null;
+  state.markdownImportRequest = null;
+  const preview = el('preview-section'); preview.replaceChildren(); preview.hidden = true;
+  setDraftBusy(false);
+}
+
+async function importMarkdown() {
+  const file = el('markdown-file').files?.[0];
+  if (!file) { text(el('draft-status'), '가져올 Markdown 파일을 선택하세요.'); el('markdown-file').focus(); return; }
+  for (const id of ['draft-title', 'draft-context', 'draft-scope', 'draft-usage']) if (!el(id).reportValidity()) return;
+  if (!/\.(md|markdown)$/i.test(file.name) || file.size === 0 || file.size > 262144) {
+    text(el('draft-status'), '비어 있지 않은 .md 또는 .markdown 파일을 선택하세요. 최대 크기는 256 KiB입니다.'); return;
+  }
+  const version = ++state.composerVersion; const session = state.session;
+  const payload = { filename: file.name, title: el('draft-title').value, context_id: el('draft-context').value, scope_id: el('draft-scope').value, usage_scope: el('draft-usage').value };
+  if (state.draftBaseDigest) payload.base_revision_digest = state.draftBaseDigest;
+  setDraftBusy(true); text(el('draft-status'), '선택한 파일을 비공개 초안으로 가져오는 중…');
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (version !== state.composerVersion || session !== state.session) return;
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+    payload.content_base64 = btoa(binary);
+    const fingerprint = JSON.stringify(payload);
+    if (state.markdownImportRequest?.fingerprint !== fingerprint) state.markdownImportRequest = { fingerprint, importId: nowCommand() };
+    const draft = await request(`${apiBase}/draft-imports/markdown`, { method: 'POST', body: jsonBody({ ...payload, import_id: state.markdownImportRequest.importId }) });
+    if (version !== state.composerVersion || session !== state.session) return;
+    state.draft = draft;
+    setValue(el('draft-body'), draft.revision.payload.body_markdown);
+    setValue(el('draft-source-kind'), 'approved_import');
+    text(el('draft-status'), `${draft.import.byte_length.toLocaleString()} bytes를 비공개 초안으로 저장했습니다. 원문을 확인한 뒤 공유 미리보기를 생성하세요.`);
+    showStatus('파일을 비공개 초안으로 가져왔습니다. 공유 게시와 합의 승인은 별도 단계입니다.', 'success');
+    renderPreviewStep(draft); el('draft-body').focus();
+  } catch (error) {
+    if (version === state.composerVersion && session === state.session) { text(el('draft-status'), error.message); showStatus(`Markdown 가져오기 실패: ${error.message}`, 'error'); }
+  } finally { if (version === state.composerVersion) setDraftBusy(false); }
 }
 
 function renderPreviewStep(draft) {
@@ -399,7 +454,12 @@ function renderPreviewStep(draft) {
 }
 
 async function createPublicationPreview(draft) {
-  try { const preview = await request(`${apiBase}/publication-previews`, { method: 'POST', body: jsonBody({ draft_id: draft.draft_id }) }); renderPublicationPreview(preview); showStatus('공유 게시 미리보기가 생성됐습니다. 수신 조직과 만료 시각을 확인하세요.', 'success'); } catch (error) { showStatus(`미리보기 생성 실패: ${error.message}`, 'error'); }
+  const version = state.composerVersion; const session = state.session;
+  try {
+    const preview = await request(`${apiBase}/publication-previews`, { method: 'POST', body: jsonBody({ draft_id: draft.draft_id }) });
+    if (version !== state.composerVersion || session !== state.session) return;
+    renderPublicationPreview(preview); showStatus('공유 게시 미리보기가 생성됐습니다. 수신 조직과 만료 시각을 확인하세요.', 'success');
+  } catch (error) { if (version === state.composerVersion && session === state.session) showStatus(`미리보기 생성 실패: ${error.message}`, 'error'); }
 }
 
 function renderPublicationPreview(preview) {
@@ -457,6 +517,7 @@ async function switchPersona(event) {
 }
 
 function resetComposer() {
+  invalidateDraftPreview();
   state.draft = null; state.draftBaseDigest = null;
   const form = el('draft-form'); form?.reset();
   const preview = el('preview-section'); if (preview) { preview.replaceChildren(); preview.hidden = true; }
@@ -465,6 +526,7 @@ function resetComposer() {
 }
 
 function openComposer(mode, doc = null) {
+  invalidateDraftPreview();
   state.draft = null; state.draftBaseDigest = mode === 'revise' ? doc?.revision_digest || null : null;
   const form = el('draft-form'); form?.reset();
   if (mode === 'revise' && doc?.payload) {
@@ -495,8 +557,10 @@ function bindEvents() {
   });
   el('dismiss-demo-note').addEventListener('click', () => { el('demo-note').hidden = true; });
   el('open-composer').addEventListener('click', () => openComposer('new'));
-  el('close-composer').addEventListener('click', () => { el('composer-panel').hidden = true; });
+  el('close-composer').addEventListener('click', resetComposer);
   el('draft-form').addEventListener('submit', onDraftSubmit);
+  el('import-markdown').addEventListener('click', importMarkdown);
+  el('draft-form').addEventListener('input', () => { invalidateDraftPreview(); text(el('draft-status'), '변경한 내용을 비공개 초안으로 저장한 뒤 공유 미리보기를 다시 생성하세요.'); });
   el('resolver-form').addEventListener('submit', onResolverSubmit);
   el('resolve-documents').addEventListener('change', (event) => {
     const selected = currentDocuments().find((doc) => slotKeyFor(doc.payload) === event.target.value);

@@ -114,13 +114,19 @@
               <form id="draft-form" class="draft-form">
                 <div class="form-row two-col">
                   <label>문서 제목<input id="draft-title" name="title" type="text" maxlength="200" required placeholder="예: 주문 완료 정의의 교차 도메인 매핑"></label>
-                  <label>생성 출처<select id="draft-source-kind" name="source_kind"><option value="human_authored">사람이 작성</option><option value="llm_drafted">AI 초안</option><option value="approved_import">승인된 가져오기</option></select></label>
+                  <label>생성 출처<select id="draft-source-kind" name="source_kind"><option value="human_authored">사람이 작성</option><option value="llm_drafted">AI 초안</option><option value="approved_import">가져온 문서 · 합의 전</option></select></label>
                 </div>
                 <div class="form-row two-col">
                   <label>Context ID<input id="draft-context" name="context_id" type="text" required value="context-coordination" placeholder="context-…"></label>
                   <label>Scope ID<input id="draft-scope" name="scope_id" type="text" required value="scope-order-2026-001" placeholder="scope-…"></label>
                 </div>
                 <label>Usage scope<input id="draft-usage" name="usage_scope" type="text" required value="domain-definition/v1" placeholder="domain-definition/v1"></label>
+                <div class="markdown-import">
+                  <label for="markdown-file">Markdown 파일 가져오기</label>
+                  <input id="markdown-file" type="file" accept=".md,.markdown,text/markdown" aria-describedby="markdown-import-help">
+                  <p id="markdown-import-help" class="form-hint">UTF-8 파일 한 개, 최대 256 KiB. 위 제목과 범위를 확인하세요. 현재 원문 대신 선택한 파일로 새 비공개 초안을 저장합니다. 공유하려면 별도 공개 검토가 필요합니다.</p>
+                  <button id="import-markdown" class="secondary-button" type="button">파일로 비공개 초안 저장</button>
+                </div>
                 <label>Markdown 원문<textarea id="draft-body" name="body_markdown" rows="10" maxlength="262144" required placeholder="# 지식 제목\n\n공유할 원문을 Markdown으로 작성하세요."></textarea></label>
                 <div class="form-actions"><button class="secondary-button" id="save-draft" type="submit">private draft 저장</button><span id="draft-status" class="form-hint">저장 전에는 공용 원장에 기록되지 않습니다.</span></div>
               </form>
