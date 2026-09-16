@@ -313,15 +313,14 @@ export class LocalLedger {
 
   private apply(event: LedgerEvent, replayTrusted = false): void {
     if (event.reducer_version !== 1) throw new Error('Unknown write-set reducer');
-    // 재생(replayTrusted)은 직전 저널 전체 검증을 전제로 projection만 읽는다.
-    // 라이브 커밋은 쓰기 시점의 projection/history 교차 검증을 유지해 파생 테이블 변조를 탐지한다.
+    // 재생(replayTrusted)은 직전 저널 전체 검증을 전제로 불변 키만 projection에서 읽는다.
+    // 라이브 커밋은 모든 쓰기 키의 기존 값을 projection/history 교차 검증해 파생 테이블 변조를 커밋 전에 탐지한다.
     const priorOf = replayTrusted ? (key: string) => this.readCurrent(key) : (key: string) => this.read(key);
     for (const [key, value] of event.writes) {
       validateWrite(key, value);
-      if (IMMUTABLE_KINDS.has(key.split(':')[2])) {
-        const prior = priorOf(key);
-        if (prior !== undefined && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
-      }
+      const immutable = IMMUTABLE_KINDS.has(key.split(':')[2]);
+      const prior = replayTrusted && !immutable ? undefined : priorOf(key);
+      if (immutable && prior !== undefined && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
       const encoded = JSON.stringify(value);
       this.statements.upsertProjection.run(key, encoded);
       this.statements.insertHistory.run(key, event.checkpoint.block_number, encoded);
