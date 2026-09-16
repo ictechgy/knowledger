@@ -579,6 +579,15 @@ test("readMany matches per-key read for current and historical checkpoints and d
     assert.equal(current.has("kcl:v1:fence:missing"), false);
     assert.equal(projection.readMany([]).size, 0);
 
+    // 현재 tip 체크포인트 경로(isCurrentCheckpoint)도 같은 값을 돌려준다.
+    const tip = projection.checkpoint()!;
+    const atTip = projection.readMany([first.key, epochKey, "kcl:v1:fence:missing"], tip);
+    assert.deepEqual(atTip.get(first.key), first.value);
+    assert.equal(atTip.get(epochKey), 2);
+    assert.equal(atTip.size, 2);
+    // 빈 묶음이어도 위조 체크포인트는 거부된다.
+    assert.throws(() => projection.readMany([], { ...middle, block_hash: "ff".repeat(32) }), /checkpoint|integrity|untrusted/i);
+
     // 과거 체크포인트: replay 경로가 시점별 값과 부재를 재현한다.
     const historical = projection.readMany([first.key, second.key, third.key, epochKey], middle);
     assert.deepEqual(historical.get(first.key), first.value);

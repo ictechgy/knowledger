@@ -87,6 +87,10 @@ test('readMany matches individual reads, keeps checkpoint bounds, and tolerates 
   assert.equal(current.get(keyFor.eligibilityEpoch()), 2);
   assert.equal(current.get(keyFor.fence('nonce-0123456789abcdef'))?.nonce, 'nonce-0123456789abcdef');
   assert.equal(current.has(keyFor.fence('nonce-absent00000000')), false);
+  // 배치 결과는 키별 read()와 정확히 같은 값이어야 한다.
+  for (const key of keys) assert.deepEqual(current.get(key), ledger.read(key));
+  // 빈 묶음이어도 위조 체크포인트는 거부된다.
+  assert.throws(() => ledger.readMany([], { ...first.checkpoint, block_hash: 'forged' }), /checkpoint/i);
   const atFirst = ledger.readMany(keys, first.checkpoint);
   assert.equal(atFirst.get(keyFor.eligibilityEpoch()), 1);
   assert.equal(atFirst.has(keyFor.fence('nonce-0123456789abcdef')), false);
