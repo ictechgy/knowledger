@@ -11,7 +11,8 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
-- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`. 런타임 기준 커밋 `e1e9850`에 리네임 커밋이 올라간다.
+- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`.
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
 - 리네임 전 추적 파일은 clean, 사용자 `.serena/`와 `scorpionfish/`만 untracked. 둘 다 보존·커밋 제외.
@@ -57,6 +58,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 - `npm run check`: **274 passed /0 failed /1 GC 전용 skipped** — 리네임 후 동일. `npm run check:types`, `npm run demo` 통과.
 - `npm run config:init -- --output /tmp/...`으로 새 기본 설정 파일명 동작 확인. `kcl.config` 추적 파일 참조 0.
+- **원격 CI(run 35100485521, push `ad3693b`) 첫 실행 전 잡 통과**: local-runtime Node24·26, fabric-boundaries, browser-and-experiments.
 - 이전 런타임 `e1e9850` 근거(문서·이름만 달라진 동일 코드):
 
 - `npm run check`: **274 passed /0 failed /1 GC 전용 skipped**. `npm run check:types`, `npm run demo` 통과.
@@ -104,8 +106,7 @@ python3 -B tools/check_docs.py
 
 ## Next Steps / Open Work
 
-1. 공개 준비: README 설치/실행 경로와 `.github/workflows/ci.yml`을 로컬에서 확인하고 확인된 미비점만 수정한다.
-   원격 게시가 명시적으로 요청되면 대상 저장소 확인 → push → 원격 CI 결과/실패 수정 → 첫 릴리스로 이어간다.
+1. 공개 준비·게시·첫 릴리스 `v0.1.0` 완료. 이후 원격 CI는 push/PR마다 자동 실행된다.
 2. 선택 검증: 인증서 교체 중 실제 SIGKILL, 독립 호스트의 orderer 장애·재해 복구.
    부분 적용/rename 후 fsync 실패는 합성 검증을 마쳤지만 실제 다중 호스트 장애 시험은 하지 않았다.
 3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·운영 대시보드·파일럿.
@@ -114,7 +115,8 @@ python3 -B tools/check_docs.py
 
 ## Resume Prompt
 
-`/Users/jinhongan/Desktop/knowledge-consensus-ledger`(공개 이름 `knowledger`)에서 AGENTS.md와 HANDOFF.md를 읽고 공개 준비 상태를 로컬에서 점검해.
+`/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
+공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
-원격 게시·릴리스는 명시적 요청 이후 진행하고 실제 실행하지 않은 CI/장애 시험을 완료로 표시하지 마.
+실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
