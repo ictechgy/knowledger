@@ -258,7 +258,8 @@ export class KnowledgerService {
     const agreementIds = new Set<string>();
     for (const ref of refs) {
       const pointer = this.readAt(context, domain.keyFor.activeSlot(ref.slot));
-      const id = typeof pointer === 'string' ? pointer : pointer?.agreement_id;
+      // active_slot 값은 { agreement_id } 객체다 — 커밋 시 상태 검증이 보장한다.
+      const id = pointer?.agreement_id;
       if (typeof id === 'string') agreementIds.add(id);
     }
     this.prefetch(context, [...agreementIds].map(id => domain.keyFor.agreement(id)));
