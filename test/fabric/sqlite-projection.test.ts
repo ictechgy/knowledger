@@ -554,3 +554,57 @@ test("does not retain padded raw block history in process memory", { skip: !avai
     projection.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("readMany matches per-key read for current and historical checkpoints and detects tampering", { skip: !available }, () => {
+  const directory = mkdtempSync("/tmp/knowledger-fabric-readmany-");
+  const path = join(directory, "projection.sqlite");
+  try {
+    const projection = new SqliteFabricProjection(path, options);
+    const first = fence("readmany-first");
+    const second = fence("readmany-second");
+    const third = fence("readmany-third");
+    const epochKey = keyFor.eligibilityEpoch();
+    const firstResult = projection.applyBlock(block(0, [transaction("tx-rm-first", first.key, first.value), transaction("tx-rm-second", second.key, second.value), transaction("tx-rm-epoch", epochKey, 1)]));
+    const middle = transactionCheckpoint(firstResult, 2, "tx-rm-epoch");
+    const prior = projection.blockCheckpoint()!;
+    projection.applyBlock(block(1, [transaction("tx-rm-third", epochKey, 2), transaction("tx-rm-fourth", third.key, third.value)], Buffer.from(prior.block_hash, "hex")));
+
+    // 현재 커서: read()와 동일한 값 집합을 반환하고 부재 키는 생략한다.
+    const current = projection.readMany([first.key, second.key, third.key, epochKey, "kcl:v1:fence:missing", first.key]);
+    assert.equal(current.size, 4);
+    assert.deepEqual(current.get(first.key), first.value);
+    assert.deepEqual(current.get(second.key), second.value);
+    assert.deepEqual(current.get(third.key), third.value);
+    assert.equal(current.get(epochKey), 2);
+    assert.equal(current.has("kcl:v1:fence:missing"), false);
+    assert.equal(projection.readMany([]).size, 0);
+
+    // 과거 체크포인트: replay 경로가 시점별 값과 부재를 재현한다.
+    const historical = projection.readMany([first.key, second.key, third.key, epochKey], middle);
+    assert.deepEqual(historical.get(first.key), first.value);
+    assert.deepEqual(historical.get(second.key), second.value);
+    assert.equal(historical.get(epochKey), 1);
+    assert.equal(historical.has(third.key), false);
+
+    // 500키 바인드 청크 경계를 넘는 묶음도 같은 규칙을 유지한다.
+    const bulk: { key: string; value: unknown }[] = [];
+    const entries: Uint8Array[] = [];
+    for (let index = 0; index < 600; index += 1) {
+      const item = fence(`bulk-${String(index).padStart(8, '0')}`);
+      bulk.push(item);
+      entries.push(transaction(`tx-rm-bulk-${index}`, item.key, item.value));
+    }
+    projection.applyBlock(block(2, entries, Buffer.from(projection.blockCheckpoint()!.block_hash, "hex")));
+    const wide = projection.readMany(bulk.map(item => item.key));
+    assert.equal(wide.size, 600);
+    for (const item of bulk) assert.deepEqual(wide.get(item.key), item.value);
+
+    // 파생 테이블이 세션 중에 변조되면 read()와 마찬가지로 readMany도 탐지한다.
+    // (재시작 시 파생 테이블은 raw 블록에서 재구축되므로 열린 상태에서 시험한다.)
+    const other = new DatabaseSync(path);
+    other.prepare("UPDATE fabric_projection_state SET value_json = ? WHERE state_key = ?").run(JSON.stringify({ tampered: true }), first.key);
+    assert.throws(() => projection.readMany([first.key]), /integrity check failed/i);
+    other.close();
+    projection.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
