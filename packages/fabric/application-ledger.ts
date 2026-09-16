@@ -46,15 +46,16 @@ export class FabricApplicationLedger implements ApplicationLedger {
   private closed = false;
   private readonly routes: FabricSigningRoute[];
   private readonly maxPendingCommands: number;
-  private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number };
+  private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number; refreshTimeoutMs?: number };
   /** Optional so lightweight projection fixtures can use the explicit service scanner. */
   queryBrowse?: BrowseQueryFunction;
 
-  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number; mode?: 'fabric-test-network' | 'fabric' }) {
+  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number; mode?: 'fabric-test-network' | 'fabric'; refreshTimeoutMs?: number }) {
     this.mode = options.mode ?? 'fabric-test-network';
     this.options = options;
     this.channelId = options.projection.channelId;
     if (options.catchupTimeoutMs !== undefined && (!Number.isSafeInteger(options.catchupTimeoutMs) || options.catchupTimeoutMs <= 0)) throw new Error('Catch-up timeout must be positive integer milliseconds');
+    if (options.refreshTimeoutMs !== undefined && (!Number.isSafeInteger(options.refreshTimeoutMs) || options.refreshTimeoutMs <= 0)) throw new Error('Refresh timeout must be positive integer milliseconds');
     this.maxPendingCommands = options.maxPendingCommands ?? 64;
     if (!Number.isSafeInteger(this.maxPendingCommands) || this.maxPendingCommands <= 0) throw new Error('Maximum pending command count must be positive integer');
     this.routes = options.routes.map(route => ({ ...route, actor: { ...route.actor } }));
@@ -114,11 +115,28 @@ export class FabricApplicationLedger implements ApplicationLedger {
     const active = this.refreshInFlight;
     if (active && active.generation >= generation) return active.promise;
     const previous = active?.promise;
-    const promise = (async () => {
+    const tracked: { generation: number; promise: Promise<void> } = { generation, promise: undefined! };
+    const work = (async () => {
       if (previous) await previous.catch(() => undefined);
       await this.project(() => this.synchronize());
     })();
-    const tracked = { generation, promise };
+    const promise = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // 멈춘 갱신이 readiness를 영구히 가리지 못하게 버리고, 그 작업이 점유한
+        // 큐들도 해제해 다음 갱신·명령이 새로 시작될 수 있게 한다.
+        this.available = false;
+        if (this.refreshInFlight === tracked) this.refreshInFlight = undefined;
+        this.projectionQueue = Promise.resolve();
+        this.queue = Promise.resolve();
+        reject(new FabricLedgerError('FRESHNESS_UNAVAILABLE', '원장 갱신이 시간 안에 끝나지 않았습니다.'));
+      }, this.options.refreshTimeoutMs ?? 30_000);
+      timer.unref();
+      work.then(
+        () => { clearTimeout(timer); resolve(); },
+        error => { clearTimeout(timer); reject(error); },
+      );
+    });
+    tracked.promise = promise;
     this.refreshInFlight = tracked;
     void promise.finally(() => {
       if (this.refreshInFlight === tracked) this.refreshInFlight = undefined;

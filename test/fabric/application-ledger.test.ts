@@ -49,7 +49,7 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function controlledFixture(options: { maxPendingCommands?: number } = {}) {
+function controlledFixture(options: { maxPendingCommands?: number; refreshTimeoutMs?: number } = {}) {
   const records = new Map<string, any>([[keyFor.config(), demoFixtures().config], [keyFor.eligibilityEpoch(), 0]]);
   const oldTip = { height: 3, block_hash: checkpoint.block_hash };
   let tip = oldTip;
@@ -83,7 +83,7 @@ function controlledFixture(options: { maxPendingCommands?: number } = {}) {
       return { status: 'valid', tx_id: 'd'.repeat(64), payload_digest: idempotencyDigest(command), result: { unverified_wire_result: true } };
     },
     async recoverPending() { return []; },
-  } }], maxPendingCommands: options.maxPendingCommands });
+  } }], maxPendingCommands: options.maxPendingCommands, refreshTimeoutMs: options.refreshTimeoutMs });
   return {
     ledger,
     records,
@@ -196,6 +196,21 @@ test('concurrent refresh failure is shared and leaves the view unavailable', asy
   assert.equal(results[1]?.status, 'rejected');
   assert.deepEqual(f.counts(), { tipReads: 1, blockReads: 0 });
   assert.throws(() => f.ledger.read(keyFor.config()), (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
+});
+
+test('a refresh that never settles is abandoned so the next refresh can recover', async t => {
+  const f = controlledFixture({ refreshTimeoutMs: 80 }); t.after(() => f.ledger.close());
+  const tipStarted = deferred<void>();
+  f.setGetTip(async () => { tipStarted.resolve(); return new Promise<never>(() => {}); });
+  const stuck = f.ledger.refresh();
+  await tipStarted.promise;
+  const sharing = f.ledger.refresh();
+  await assert.rejects(stuck, (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
+  await assert.rejects(sharing, (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
+  // 버려진 갱신 이후의 새 갱신은 멈춘 projection 큐에 막히지 않아야 한다.
+  f.setGetTip(async () => f.oldTip);
+  await completesBefore(f.ledger.refresh());
+  assert.equal(f.ledger.read(keyFor.config()) !== undefined, true);
 });
 
 test('refresh remains available while external command transport is slow', async t => {
