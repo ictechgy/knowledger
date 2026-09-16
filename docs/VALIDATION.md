@@ -1,5 +1,29 @@
 # 검증 기록
 
+## 실제 장애 시험과 재시작 복원 — 2026-09-16
+
+공개 준비 중 로컬 재시작 검증에서 두 결함을 발견하고 수정했다. 장수 gRPC 채널이 Colima/VM
+포워딩 아래에서 조용히 죽어도 클라이언트가 감지하지 못해 모든 evaluate가 5초 deadline으로
+실패하는 문제는 peer 클라이언트 keepalive(`fabricPeerChannelOptions`)로 해결했다(`26e75a8`).
+settle되지 않은 갱신 promise가 `refreshInFlight`를 영구 점유해 readiness가 영구 정지하는
+문제는 갱신 상한 `refreshTimeoutMs`(기본30초)으로 해결했다(`f189e80`). 회귀 테스트를 포함해
+`npm run check` **275 passed /0 failed /1 skipped**, `check:types` 통과.
+
+기존 `kcl-demo` 네트워크(3 peer·3 Raft orderer, 채널/chaincode 미변경)를 유지한 채 실제
+장애를 주입했다.
+
+| 시험 | 결과 |
+| --- | --- |
+| peer 중단 | `fabric:http-smoke`가 Fulfillment peer를 `docker stop`→readiness/resolve 503(fail-closed)→재기동→200 복구를 확인 |
+| orderer 중단 중 거래 | `orderer1` 컨테이너 중지 상태에서 게시6건을 모두 커밋(잔여2/3 정족수). 재기동 후 복제로 동일 blockfile 수준까지 추월, 복구 후 게시가 **block288**에 커밋 |
+| 인증서 적용 중 SIGKILL | `apply`의 첫 rename 직후 실제 `SIGKILL` 주입으로 Sales만 NEW·나머지 OLD의 부분 적용 상태를 만들고, 같은 plan 재적용으로 재개해 3개 모두 설치(`renewal-20260916144157-3acf8bfc46847974`) |
+| 런타임 스냅샷 복원 | `.data/fabric-login`을 정지 상태에서 백업(5개 DB, SHA-256)·새 폴더 복원·복원본으로 기동해 readiness200과 최신 projection 동기화를 확인 후 원본으로 복귀 |
+
+인증서 재갱신으로 User1 인증서3개는 **2027-01-14T14:41:57Z**까지 유효하다. 갱신 후 앱5개와
+signer를 재기동해 readiness200을 확인하고 새 인증서로 실제 게시가 **block289**에 커밋됐다.
+이는 같은 Colima 호스트의 로컬 다중 컨테이너 시험이며 독립 물리 호스트 간 장애·재해 복구의
+증거는 아니다.
+
 ## 테스트 인증서 갱신 — 2026-09-16
 
 9월22일 만료 예정이던 예제 User1 인증서3개를 **2026-12-15T06:29:11Z**까지 갱신했다.

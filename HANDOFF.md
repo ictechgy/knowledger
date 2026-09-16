@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-16 22:15 KST by Devin_
+_Last updated: 2026-09-16 23:55 KST by Devin_
 
 ## Goal
 
@@ -16,13 +16,17 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
 - 리네임 전 추적 파일은 clean, 사용자 `.serena/`와 `scorpionfish/`만 untracked. 둘 다 보존·커밋 제외.
-- **마지막 실행 검증: 2026-09-16 15:41 KST.** 아래 실행 상태는 그때의 관측이며 이번 문서 작업에서 앱을 다시 검사하지 않았다.
-  기본 http://127.0.0.1:4317 은 빈 2조직 local workspace(block1·문서0개), 예제4318은 Fabric block265·최신 슬롯4개였다.
-- 앱4317/4318/4319/4321/4331/4341의 liveness 및 probe 후 readiness200, OIDC 앱4개의 익명 overview401 확인.
-  readiness는5초보다 오래된 표본에서503을 먼저 반환하고 비동기 probe로 갱신한다. 원격 push/CI/릴리스는 미실행.
+- **마지막 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
+  앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
+  재시작 중 발견된 두 결함을 수정했다: peer gRPC keepalive(`26e75a8`)와 원장 갱신 상한
+  `refreshTimeoutMs`(`f189e80`). 세부는 [검증 기록](docs/VALIDATION.md)의 최신 장애 시험 항목.
+- 실제 장애 시험 완료: peer 중단 503→복구(`fabric:http-smoke`), orderer1 중지 중 게시6건 커밋·
+  재기동 추월·복구 후 block288, 인증서 적용 중 실제 SIGKILL 후 같은 plan 재개, `.data/fabric-login`
+  백업→새 폴더 복원→기동 확인. 최신 원장 tip은 block289 부근이다.
 - Colima context `colima`, Compose project `kcl-fabric-smoke`:3 peer·3 Raft orderer running.
   chaincode0.1.0/sequence2, package `kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157` 유지.
-- User1 인증서3개는 **2026-12-15 15:29:11 KST 만료**, CA·peer/orderer 인증서는2036년까지 유효하다.
+- User1 인증서3개는 2026-09-16에 재갱신해 **2027-01-14T14:41:57Z 만료**다(plan
+  `certificate-renewals/renewal-20260916144157-3acf8bfc46847974`). CA·peer/orderer 인증서는2036년까지 유효하다.
 
 ## Completed
 
@@ -107,11 +111,11 @@ python3 -B tools/check_docs.py
 ## Next Steps / Open Work
 
 1. 공개 준비·게시·첫 릴리스 `v0.1.0` 완료. 이후 원격 CI는 push/PR마다 자동 실행된다.
-2. 선택 검증: 인증서 교체 중 실제 SIGKILL, 독립 호스트의 orderer 장애·재해 복구.
-   부분 적용/rename 후 fsync 실패는 합성 검증을 마쳤지만 실제 다중 호스트 장애 시험은 하지 않았다.
+2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
+   런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
 3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·운영 대시보드·파일럿.
    대규모 workload 최적화도 별도 목표다. 이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
-4. 유지보수: 기본14일 경고 창 기준 **12월1일 이후** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+4. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
