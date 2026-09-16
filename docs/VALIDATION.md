@@ -1,5 +1,40 @@
 # 검증 기록
 
+## 조회 참조 인덱스 최적화 — 2026-09-16
+
+기준 `de3e953`의 별도 source copy와 수정본을 같은 Node24·1,000개1KiB 문서·5회·모든50개 요약 페이지
+순회 조건으로 비교했다. 두 비교 실행 동안 다른 테스트/브라우저 부하를 함께 실행하지 않았다.
+
+| 항목 | 이전 | 이후 |
+| --- | ---: | ---: |
+| overview 전 페이지 p95 | 1,071.24ms | 176.56ms |
+| search 전 페이지 p95 | 995.32ms | 209.72ms |
+| publication p95 | 1.43ms | 1.58ms |
+| restart replay | 248.99ms | 268.17ms |
+
+읽기 비용은 이 표본에서 약84%/79% 감소했다. 인덱스 유지 비용으로 쓰기/재시작은 소폭 증가했다.
+10,000개에서도 전체 목록/검색/재시작 뒤 개수 일치. 단일 순회는 목록1.71초·검색2.05초·replay2.69초였다.
+운영 SLA나 대규모 Fabric 성능 보장은 아니다. [구조와 측정 범위](26-BROWSE-INDEX.md)에 제한을 명시했다.
+
+- `npm run check`: **264 passed /0 failed /1 GC 전용 skipped**.
+- `node --expose-gc --test test/fabric/sqlite-projection.test.ts`: **14 passed /0 skipped**.
+- `check:types`, `demo`, `demo:kb` 통과. Chromium **18개 통과**.
+- 외부 패키지 없는 source copy: **221 passed /0 failed /44 skipped**.
+- 페이지에서 전체 revision/proposal/agreement prefix scan 없이 선택된 canonical 값만 읽는 것을 계수했다.
+  metadata index와 검증 scan 호환 경로의 응답 순서/값, 과거 cursor, fresh withdrawal withheld를 확인했다.
+- 검색 scope·한글·emoji·짧은 문자열·literal `%_`·잘못된 Unicode, 캐시 entry/ID/byte 상한을 확인했다.
+- SQL rollback, 원시 journal 재생/복원, mutable indexed field 변조, 다중 거래/INVALID/빈 Fabric 블록,
+  파생 SQL 누락·변조를 검사했다. 시작 시 원문 write 배열을 누적하지 않고 generator로 참조를 구성한다.
+
+실제 설정 기반 Fabric 재검증도 통과했다. 게시232·승인234·활성235·철회243, 최종 block246.
+OIDC, 원래 receipt 재시도, SDK exact revision, 반환 직전 철회로 output 차단,
+version3 복원 후 index/source/초안/명령 유지가 근거다. 시험 합의는 withdrawn으로 확인했다.
+이번에는 peer 중단이나 chaincode 재배포를 반복하지 않았다.
+
+근거는 `.artifacts/browse-index/`의 비교 JSON, check/types/browser/memory/no-optional 로그와
+`.data/configured-smoke-X8z08j/evidence.json`이다. 기존6개 앱을 graceful restart했고 로그인 세션은 초기화됐다.
+기본4317의 빈 local block1과 기존 private 데이터·인증서를 보존했다. 원격 공개/CI는 실행하지 않았다.
+
 ## 실제 Fabric 쓰기·동시 요청·장애 복구 — 2026-09-16 13:23 KST
 
 런타임 `90bdcda`를 기존 Colima3 peer·3 Raft orderer에서 검증했다. 새 임시 앱 데이터/포트를 사용했고,

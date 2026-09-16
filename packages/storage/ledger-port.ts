@@ -1,5 +1,6 @@
 import type { Actor, Checkpoint, LedgerEvent } from './local-ledger.ts';
 import type { DomainCommand } from '../domain/index.ts';
+import type { BrowseQueryFunction } from './browse-contract.ts';
 
 export interface CommittedReceipt {
   status: 'committed';
@@ -22,6 +23,8 @@ export interface ApplicationLedger {
   refresh(): Promise<void>;
   read(key: string, at?: Checkpoint | null): any | undefined;
   entries(prefix: string, at?: Checkpoint | null): [string, any][];
+  /** Optional indexed metadata selection; canonical values still use read(). */
+  queryBrowse?: BrowseQueryFunction;
   checkpoint(): Checkpoint | null;
   assertCheckpoint(at: Checkpoint): void;
   checkpointForTransaction(transactionId: string): Checkpoint;

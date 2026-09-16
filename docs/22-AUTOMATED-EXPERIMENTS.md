@@ -18,6 +18,11 @@ Browse reads now traverse **all pages of compact summaries** (50 per page). The 
 `dataset.read_workload: all_pages_summary`; these timings are not equivalent to the earlier single unbounded
 response containing every body and history. Functional counts still cover the complete dataset before and after replay.
 
+The [verified browse index](26-BROWSE-INDEX.md) records a like-for-like comparison of this paginated workload.
+The first exact substring search still reads candidate bodies; subsequent cursor pages reuse bounded digest-ID results.
+Run comparative benchmarks sequentially without the test suite/browser running at the same time. Operation-count
+regressions in `test/api/browse-index.test.ts` check that ordinary pages no longer materialize the whole corpus.
+
 ## Revision history growth
 
 ```sh

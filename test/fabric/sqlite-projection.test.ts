@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
-import { keyFor } from "../../packages/domain/index.ts";
+import { digestPayload, keyFor, type DocumentRevision } from "../../packages/domain/index.ts";
 import type { Checkpoint } from "../../packages/storage/local-ledger.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
@@ -96,6 +96,37 @@ function fence(suffix: string): { key: string; value: unknown } {
   return { key: keyFor.fence(nonce), value: { nonce, eligibility_epoch: 0, tx_id: `tx-${suffix}` } };
 }
 
+function revision(id: string, documentId = "doc-browse"): DocumentRevision {
+  const payload = {
+    contract_type: "DocumentRevision" as const,
+    contract_version: 1 as const,
+    revision_id: id,
+    channel_id: channel,
+    document_id: documentId,
+    context_id: "context-browse",
+    scope_id: "scope-browse",
+    usage_scope: "domain-definition/v1",
+    visibility: "shared_channel" as const,
+    title: id,
+    body_markdown: `# ${id}`,
+    parents: [],
+    dependencies: [],
+    metadata: {
+      author_id: "person-browse",
+      author_org_id: "OrgBrowse",
+      created_at: "2026-09-16T00:00:00.000Z",
+      source_kind: "human_authored" as const,
+      shared_assertions: [],
+    },
+  };
+  return { revision_digest: digestPayload(payload), payload };
+}
+
+function transactionCheckpoint(result: { checkpoint: Pick<Checkpoint, "channel_id" | "block_number" | "block_hash"> }, transactionIndex: number, transactionId: string): Checkpoint {
+  return { channel_id: result.checkpoint.channel_id, block_number: result.checkpoint.block_number,
+    transaction_index: transactionIndex, transaction_id: transactionId, block_hash: result.checkpoint.block_hash };
+}
+
 test("persists exact transaction fences, restart state, and VALID-only receipts/events", { skip: !available }, () => {
   const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
   const path = join(directory, "projection.sqlite");
@@ -127,6 +158,96 @@ test("persists exact transaction fences, restart state, and VALID-only receipts/
     assert.equal(projection.checkpoint()?.transaction_index, 1);
     projection.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("publishes only verified VALID browse metadata after durable commit and rebuilds it on restart", { skip: !available }, () => {
+  const directory = mkdtempSync("/tmp/kcl-fabric-browse-index-");
+  const path = join(directory, "projection.sqlite");
+  try {
+    const first = revision("revision-fabric-first");
+    const second = revision("revision-fabric-second", "doc-fabric-second");
+    const ignored = revision("revision-fabric-invalid", "doc-fabric-invalid");
+    let projection = new SqliteFabricProjection(path, options);
+
+    // The first block has two transactions.  A checkpoint at tx 0 must not
+    // expose metadata written by tx 1, and the ref must carry that exact tx.
+    const firstBlock = block(0, [
+      transaction("tx-fabric-revision-first", keyFor.revision(first.revision_digest), first),
+      transaction("tx-fabric-fence-first", fence("fabric-browse-first").key, fence("fabric-browse-first").value),
+    ]);
+    const firstResult = projection.applyBlock(firstBlock);
+    const firstTx = transactionCheckpoint(firstResult, 0, "tx-fabric-revision-first");
+    const firstPage = projection.queryBrowse({ kind: "revisions", mode: "all", at: firstTx, offset: 0, limit: 10 });
+    assert.equal(firstPage.total, 1);
+    assert.equal(firstPage.items[0]?.revision_digest, first.revision_digest);
+    assert.deepEqual(firstPage.items[0]?.published_checkpoint, firstTx);
+
+    // An invalid transaction can contain arbitrary bytes, but it must never
+    // become a browse ref.  Appending the same block again is idempotent.
+    const prior = projection.blockCheckpoint()!;
+    const invalidBlock = block(1, [
+      transaction("tx-fabric-invalid", keyFor.revision(ignored.revision_digest), ignored),
+      transaction("tx-fabric-fence-second", fence("fabric-browse-second").key, fence("fabric-browse-second").value),
+    ], Buffer.from(prior.block_hash, "hex"), [11, 0]);
+    projection.applyBlock(invalidBlock);
+    projection.applyBlock(invalidBlock);
+    const invalidPage = projection.queryBrowse({ kind: "revisions", mode: "all", at: projection.checkpoint()!, offset: 0, limit: 10 });
+    assert.deepEqual(invalidPage.items.map(item => item.revision_digest), [first.revision_digest]);
+
+    // The index is prepared before SQL COMMIT but committed only afterward.
+    // A trigger failure must leave both durable state and browse metadata at
+    // the previous checkpoint.
+    const beforeFailure = projection.checkpoint()!;
+    const db = new DatabaseSync(path);
+    db.exec("CREATE TRIGGER fail_browse_projection BEFORE INSERT ON fabric_projection_history BEGIN SELECT RAISE(ABORT, 'browse index rollback'); END");
+    const next = block(2, [transaction("tx-fabric-revision-second", keyFor.revision(second.revision_digest), second)], Buffer.from(beforeFailure.block_hash, "hex"));
+    assert.throws(() => projection.applyBlock(next), /browse index rollback/);
+    assert.deepEqual(projection.checkpoint(), beforeFailure);
+    assert.equal(projection.queryBrowse({ kind: "revisions", mode: "all", at: beforeFailure, offset: 0, limit: 10 }).total, 1);
+    db.exec("DROP TRIGGER fail_browse_projection");
+    db.close();
+
+    projection.applyBlock(next);
+    const secondCheckpoint = projection.checkpoint()!;
+    const secondPage = projection.queryBrowse({ kind: "revisions", mode: "all", at: secondCheckpoint, offset: 0, limit: 10 });
+    assert.deepEqual(secondPage.items.map(item => item.revision_digest), [second.revision_digest, first.revision_digest]);
+    projection.close();
+
+    projection = new SqliteFabricProjection(path, options);
+    assert.deepEqual(projection.queryBrowse({ kind: "revisions", mode: "all", at: secondCheckpoint, offset: 0, limit: 10 }), secondPage);
+
+    // The browse index is an optimization.  A forged derived SQL row must be
+    // rejected by the canonical projection read used for the selected ref.
+    const tamper = new DatabaseSync(path);
+    tamper.prepare("UPDATE fabric_projection_state SET value_json = ? WHERE state_key = ?")
+      .run(JSON.stringify({ forged: true }), keyFor.revision(second.revision_digest));
+    tamper.close();
+    assert.throws(() => projection.read(keyFor.revision(second.revision_digest)), /integrity/);
+    projection.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps browse metadata available at an empty full-block checkpoint", { skip: !available }, () => {
+  const directory = mkdtempSync("/tmp/kcl-fabric-browse-empty-");
+  const path = join(directory, "projection.sqlite");
+  try {
+    const value = revision("revision-fabric-before-empty");
+    const projection = new SqliteFabricProjection(path, options);
+    const first = projection.applyBlock(block(0, [transaction("tx-fabric-before-empty", keyFor.revision(value.revision_digest), value)]));
+    const empty = block(1, [], Buffer.from(first.checkpoint.block_hash, "hex"));
+    projection.applyBlock(empty);
+    const at = projection.checkpoint()!;
+    assert.equal(at.block_number, 1);
+    assert.equal(at.transaction_index, -1);
+    assert.equal(at.transaction_id, "");
+    const page = projection.queryBrowse({ kind: "revisions", mode: "all", at, offset: 0, limit: 10 });
+    assert.deepEqual(page.items.map(item => item.revision_digest), [value.revision_digest]);
+    projection.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("rolls back raw journal, materialized state, and cursor on SQL failure", { skip: !available }, () => {

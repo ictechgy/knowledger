@@ -14,6 +14,7 @@ function fixture() {
   let online = true;
   let submissions = 0;
   let receiptReads = 0;
+  let browseQueries = 0;
   let submit: () => void = () => {};
   const projection = {
     channelId: 'kcl-demo',
@@ -22,7 +23,9 @@ function fixture() {
     read(key: string) { return structuredClone(records.get(key)); },
     entries: () => [...records.entries()], checkpoint: () => checkpoint,
     checkpointForTransaction(id: string) { receiptReads++; assert.equal(id, originalTx); return checkpoint; },
-    checkpointForStateCreation: () => checkpoint, assertCheckpoint() {}, events: () => [], close() {},
+    checkpointForStateCreation: () => checkpoint, assertCheckpoint() {},
+    queryBrowse(query: unknown) { browseQueries++; return { query }; },
+    events: () => [], close() {},
   };
   const ledger = new FabricApplicationLedger({ projection, source: {
     async getTip() { if (!online) throw new Error('peer offline'); return { height: 3, block_hash: checkpoint.block_hash }; },
@@ -36,7 +39,7 @@ function fixture() {
     command_digest: idempotencyDigest(command), actor, tx_id: originalTx,
     result: { status: 'fenced', nonce: command.input.nonce, eligibility_epoch: 0, tx_id: originalTx },
   });
-  return { ledger, records, commit, offline: () => { online = false; }, onSubmit: (fn: () => void) => { submit = fn; }, counts: () => ({ submissions, receiptReads }) };
+  return { ledger, records, commit, offline: () => { online = false; }, onSubmit: (fn: () => void) => { submit = fn; }, counts: () => ({ submissions, receiptReads, browseQueries }) };
 }
 
 function deferred<T = void>() {
@@ -142,6 +145,16 @@ test('loss of the trusted peer prevents serving a cached application view', asyn
   f.offline();
   await assert.rejects(() => f.ledger.refresh(), (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
   assert.throws(() => f.ledger.read(keyFor.config()), (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
+});
+
+test('forwards indexed browse queries only after the trusted peer is ready', async t => {
+  const f = fixture(); t.after(() => f.ledger.close());
+  const query = { kind: 'revisions' as const, mode: 'all' as const, at: checkpoint, offset: 0, limit: 10 };
+  assert.ok(f.ledger.queryBrowse);
+  assert.throws(() => f.ledger.queryBrowse!(query), (error: any) => error.code === 'FRESHNESS_UNAVAILABLE');
+  await f.ledger.refresh();
+  assert.deepEqual(f.ledger.queryBrowse!(query), { query });
+  assert.equal(f.counts().browseQueries, 1);
 });
 
 test('domain preflight rejects invalid commands before any Fabric submission', async t => {

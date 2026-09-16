@@ -5,6 +5,8 @@ import { dirname } from 'node:path';
 import { validateStateWrite as validateWrite, validateStateLinks, IMMUTABLE_KINDS } from './state-validation.ts';
 import { canonicalize, execute, bootstrap } from '../domain/index.ts';
 import type { DomainCommand } from '../domain/index.ts';
+import { VerifiedBrowseIndex } from './browse-index.ts';
+import type { BrowseQuery, BrowseResult, BrowseWriteBatch } from './browse-contract.ts';
 
 export interface Checkpoint {
   channel_id: string;
@@ -32,6 +34,7 @@ export interface LedgerEvent {
 }
 
 const ZERO_HASH = '0'.repeat(64);
+const isBrowseWrite = (key: string) => key.startsWith('kcl:v1:revision:') || key.startsWith('kcl:v1:proposal:') || key.startsWith('kcl:v1:agreement:');
 
 function hashRecord(record: Omit<LedgerEvent, 'checkpoint'> & { checkpoint: Omit<Checkpoint, 'block_hash'> }): string {
   return createHash('sha256').update(JSON.stringify(record)).digest('hex');
@@ -42,11 +45,13 @@ export class LocalLedger {
   readonly channelId: string;
   readonly mode = 'local-simulation' as const;
   private db: DatabaseSync;
+  private browseIndex: VerifiedBrowseIndex;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
 
   constructor(path: string, channelId: string) {
     this.channelId = channelId;
+    this.browseIndex = new VerifiedBrowseIndex(channelId);
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -120,6 +125,11 @@ export class LocalLedger {
     return history.map(row => { const value = JSON.parse(row.value_json); validateWrite(row.state_key, value); return [row.state_key, value]; });
   }
 
+  queryBrowse<Q extends BrowseQuery>(query: Q): BrowseResult<Q> {
+    this.assertCheckpoint(query.at);
+    return this.browseIndex.query(query);
+  }
+
   checkpoint(): Checkpoint | null {
     const row = this.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence DESC LIMIT 1').get() as any;
     return row ? JSON.parse(row.record_json).checkpoint : null;
@@ -179,7 +189,9 @@ export class LocalLedger {
         const event: LedgerEvent = { ...unsigned, checkpoint: { ...unsigned.checkpoint, block_hash: hashRecord(unsigned) } };
         this.db.prepare('INSERT INTO ledger_transactions VALUES (?, ?, ?)').run(sequence, txId, JSON.stringify(event));
         this.apply(event);
+        const browse = this.browseIndex.prepare([{ checkpoint: event.checkpoint, writes: event.writes }]);
         this.db.exec('COMMIT');
+        browse.commit();
         return { result, checkpoint: event.checkpoint, status: 'committed' as const };
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     });
@@ -206,11 +218,24 @@ export class LocalLedger {
   /** Rebuild only derived tables from the journal; no ledger transaction is changed. */
   rebuildProjection(): void {
     this.validateHistory();
+    const browseIndex = new VerifiedBrowseIndex(this.channelId);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.exec('DELETE FROM projection; DELETE FROM projection_history; DELETE FROM projection_cursor;');
-      for (const row of this.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>) this.apply(JSON.parse(row.record_json));
+      const self = this;
+      function* replayBrowse(): Generator<BrowseWriteBatch> {
+        for (const row of self.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>) {
+          const event: LedgerEvent = JSON.parse(row.record_json);
+          self.apply(event);
+          const writes = event.writes.filter(([key]) => isBrowseWrite(key));
+          if (writes.length) yield { checkpoint: event.checkpoint, writes };
+        }
+      }
+      // prepare consumes this stream synchronously, retaining only compact refs.
+      const browse = browseIndex.prepare(replayBrowse());
       this.db.exec('COMMIT');
+      browse.commit();
+      this.browseIndex = browseIndex;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 

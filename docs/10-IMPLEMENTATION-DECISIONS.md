@@ -157,3 +157,14 @@ Fabric projection은 raw journal을 한 블록씩 재생하고 현재 상태만 
 이 변경은 이력을 삭제하거나 무결성 검사를 health로 옮기지 않는다. 모든 durable raw/history 행을 유지하고
 재시작 시 파생 creation 인덱스를 재구축한다. 현재 상태 O(keys), 최대8개 과거 상태 복사본, cold replay 비용은
 명시적인 확장 한계다. 새로운 블록 합의 알고리즘이나 외부 quorum proof를 추가한 것은 아니다.
+
+### 검증된 조회 참조 인덱스 — 2026-09-16
+
+어댑터가 검증한 journal write에서 compact revision/proposal/agreement 참조를 만든다.
+SQLite 커밋 전에 delta를 준비하고 성공 후 공개한다. 재시작에는 기존 검증 pass의 generator를
+소비해 메타데이터만 구성하며 인덱스용 파일/schema는 추가하지 않는다.
+
+후보·순서는 이 독립 참조에서 고르고 선택된 원문/상태는 canonical read로 대조한다.
+HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은 같은 JS substring 규칙을 유지하고,
+원문을 읽어 구한 digest 목록만 actor/조건/snapshot에 결속해 제한적으로 캐시한다.
+구조, 캐시 상한, 비교 측정과 쓰기 비용은 [조회 인덱스](26-BROWSE-INDEX.md)에 기록했다.

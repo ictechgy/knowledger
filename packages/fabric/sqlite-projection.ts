@@ -13,6 +13,8 @@ import {
 } from "./block-projector.ts";
 import { sha256Digest } from "./canonical.ts";
 import type { Checkpoint, LedgerEvent } from "../storage/local-ledger.ts";
+import { VerifiedBrowseIndex } from "../storage/browse-index.ts";
+import type { BrowseResult, BrowseWriteBatch, BrowseQuery } from "../storage/browse-contract.ts";
 
 const SCHEMA_VERSION = 1;
 const MAX_HISTORICAL_SNAPSHOT_CACHE = 8;
@@ -107,6 +109,8 @@ export class SqliteFabricProjection {
   private readonly db: DatabaseSync;
   private readonly options: FabricBlockProjectorOptions;
   private projector!: FabricBlockProjector;
+  /** Metadata-only browse index derived from the same verified transaction stream. */
+  private browseIndex!: VerifiedBrowseIndex;
   /** Only the latest result is cached; raw blocks and historical results are on disk. */
   private latestResult: ProjectBlockResult | null = null;
   /** At most eight point-in-time snapshots; worst case is eight copies of current state. */
@@ -194,6 +198,7 @@ export class SqliteFabricProjection {
       this.ensureBinding();
       const replayed = this.replayAndRebuild();
       this.projector = replayed.projector;
+      this.browseIndex = replayed.browseIndex;
       this.latestResult = replayed.latestResult;
       this.latestRawDigest = replayed.latestRawDigest;
       this.journalDigest = replayed.journalDigest;
@@ -244,8 +249,13 @@ export class SqliteFabricProjection {
     const candidate = this.projector.fork();
     const result = candidate.applyBlock(incoming);
     if (result.checkpoint.block_number !== blockNumber || result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash) throw new Error("Fabric candidate result does not match block header");
+    // Prepare metadata before opening the SQL transaction.  `commit()` is
+    // deliberately delayed until the durable projection commit succeeds, so
+    // a failed SQL write cannot advance the in-memory browse view.
+    const preparedBrowse = this.browseIndex.prepare(this.browseBatches(block, result));
 
     this.db.exec("BEGIN IMMEDIATE");
+    let sqlCommitted = false;
     try {
       this.db.prepare(`INSERT INTO fabric_raw_blocks
         (block_number, block_hash, data_hash, previous_hash, raw_digest, block_bytes, result_json)
@@ -253,8 +263,10 @@ export class SqliteFabricProjection {
       this.insertTransactions(block.block_number, result);
       this.appendDerived(block, result);
       this.db.exec("COMMIT");
+      sqlCommitted = true;
+      preparedBrowse.commit();
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (!sqlCommitted) this.db.exec("ROLLBACK");
       throw error;
     }
     this.projector = candidate;
@@ -264,6 +276,17 @@ export class SqliteFabricProjection {
     this.recordStateCreationAnchors(this.stateCreationAnchors, block, result);
     this.rememberBlockResult(result, block.raw_digest);
     return clone(result);
+  }
+
+  /**
+   * Query only metadata derived from verified VALID transactions.  The
+   * checkpoint assertion is intentionally performed at this adapter boundary
+   * before the optimization index is consulted.
+   */
+  queryBrowse<Q extends BrowseQuery>(query: Q): BrowseResult<Q> {
+    this.ensureOpen();
+    this.assertCheckpoint(query.at);
+    return this.browseIndex.query(query);
   }
 
   read(key: string, at?: Checkpoint | null): unknown | undefined {
@@ -498,31 +521,60 @@ export class SqliteFabricProjection {
     return result;
   }
 
-  private replayAndRebuild(): { projector: FabricBlockProjector; latestResult: ProjectBlockResult | null; latestRawDigest: string | null; stateCreationAnchors: Map<string, StateCreationAnchor>; journalDigest: string } {
+  private replayAndRebuild(): { projector: FabricBlockProjector; browseIndex: VerifiedBrowseIndex; latestResult: ProjectBlockResult | null; latestRawDigest: string | null; stateCreationAnchors: Map<string, StateCreationAnchor>; journalDigest: string } {
     const projector = new FabricBlockProjector(this.options);
+    const browseIndex = new VerifiedBrowseIndex(this.channelId);
     let latestResult: ProjectBlockResult | null = null;
     let latestRawDigest: string | null = null;
     const stateCreationAnchors = new Map<string, StateCreationAnchor>();
     let journalDigest = EMPTY_JOURNAL_DIGEST;
+    let sqlCommitted = false;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec("DELETE FROM fabric_raw_transactions; DELETE FROM fabric_projection_state; DELETE FROM fabric_projection_history; DELETE FROM fabric_projection_state_creation; DELETE FROM fabric_projection_cursor;");
-      for (const block of this.iterateRawBlocks()) {
-        journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
-        const result = this.verifyAndApply(projector, block);
-        this.db.prepare("UPDATE fabric_raw_blocks SET result_json = ? WHERE block_number = ?").run(json(result), block.block_number);
-        this.insertTransactions(block.block_number, result);
-        this.appendDerived(block, result);
-        this.recordStateCreationAnchors(stateCreationAnchors, block, result);
-        latestResult = result;
-        latestRawDigest = block.raw_digest;
+      const self = this;
+      function* replayBrowse(): Generator<BrowseWriteBatch> {
+        for (const block of self.iterateRawBlocks()) {
+          journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+          const result = self.verifyAndApply(projector, block);
+          self.db.prepare("UPDATE fabric_raw_blocks SET result_json = ? WHERE block_number = ?").run(json(result), block.block_number);
+          self.insertTransactions(block.block_number, result);
+          self.appendDerived(block, result);
+          yield* self.browseBatches(block, result);
+          self.recordStateCreationAnchors(stateCreationAnchors, block, result);
+          latestResult = result;
+          latestRawDigest = block.raw_digest;
+        }
       }
+      // One staged metadata view consumes verified writes as a stream, without
+      // retaining journal bodies or copying the whole index for every block.
+      const preparedBrowse = browseIndex.prepare(replayBrowse());
       this.db.exec("COMMIT");
+      sqlCommitted = true;
+      preparedBrowse.commit();
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      // `commit()` is expected to be infallible after prepare.  Keep the
+      // durable rebuild intact if a future index implementation violates
+      // that contract after SQLite has already committed.
+      if (!sqlCommitted) this.db.exec("ROLLBACK");
       throw error;
     }
-    return { projector, latestResult, latestRawDigest, stateCreationAnchors, journalDigest };
+    return { projector, browseIndex, latestResult, latestRawDigest, stateCreationAnchors, journalDigest };
+  }
+
+  private browseBatches(block: BlockRow, result: ProjectBlockResult): BrowseWriteBatch[] {
+    // Empty valid configuration/lifecycle transactions carry no browseable
+    // metadata (and may legitimately have an empty Fabric tx id).
+    return result.transactions.filter(transaction => transaction.valid && transaction.writeset.length > 0).map(transaction => ({
+      checkpoint: checkpointFromRow({
+        channel_id: this.channelId,
+        block_number: block.block_number,
+        transaction_index: transaction.transaction_index,
+        transaction_id: transaction.tx_id,
+        block_hash: result.checkpoint.block_hash,
+      }),
+      writes: transaction.writeset.map(write => [write.key, write.value] as const),
+    }));
   }
 
   private replayBlock(blockNumber: number): ProjectBlockResult {

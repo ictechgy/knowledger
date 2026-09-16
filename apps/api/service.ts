@@ -2,6 +2,9 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { performance } from 'node:perf_hooks';
 import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
+import type { BrowseQuery, BrowseResult, RevisionBrowseRef, ProposalBrowseRef, AgreementBrowseRef, RevisionBrowseAnnotation } from '../../packages/storage/browse-contract.ts';
+import { ScanningBrowseQueries } from '../../packages/storage/scanning-browse.ts';
+import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
@@ -20,9 +23,13 @@ const slotKey = (payload: any) => JSON.stringify(slotFields(payload));
 interface PageInput { limit?: number; cursor?: string }
 interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string }
 interface OverviewInput extends PageInput { proposal_limit?: number; proposal_cursor?: string }
-const comparePublished = (a: any, b: any) => b.published_checkpoint.block_number - a.published_checkpoint.block_number
-  || b.published_checkpoint.transaction_index - a.published_checkpoint.transaction_index
-  || a.revision_digest.localeCompare(b.revision_digest);
+interface BrowseRequestContext {
+  checkpoint: Checkpoint;
+  config: any;
+  eligibility: Map<string, ReturnType<typeof domain.resolveAt>>;
+  annotations: Map<string, RevisionBrowseAnnotation>;
+  revisions: Map<string, any>;
+}
 
 export class ApiError extends Error {
   code: string; status: number; retryable: boolean;
@@ -48,6 +55,8 @@ export class KclService {
   private commandQueue: Promise<unknown> = Promise.resolve();
   private queuedCommands = 0;
   private readonly cursorKey = randomBytes(32);
+  private scanningBrowse: ScanningBrowseQueries | undefined;
+  private readonly searchMatches = new SearchMatchCache();
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas) {
     this.definition = definition;
@@ -210,37 +219,83 @@ export class KclService {
     return `${encoded}.${createHmac('sha256', this.cursorKey).update(encoded).digest('hex')}`;
   }
 
-  private browseState(at: Checkpoint) {
-    const revisions = this.values('revision', at).map(revision => ({ ...revision,
-      published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)) }));
-    const agreements = this.values('agreement', at);
-    const byRevision = new Map<string, any>();
-    for (const agreement of agreements) {
-      const previous = byRevision.get(agreement.revision_digest);
-      if (!previous || agreement.activated_at > previous.activated_at || (agreement.activated_at === previous.activated_at && agreement.agreement_id > previous.agreement_id)) byRevision.set(agreement.revision_digest, agreement);
-    }
-    const proposals = this.values('proposal', at);
-    return { revisions, byRevision, proposals, proposed: new Set(proposals.map(proposal => proposal.revision_digest)),
-      eligibility: new Map<string, ReturnType<typeof domain.resolveAt>>() };
+  private queryBrowse<Q extends BrowseQuery>(query: Q): BrowseResult<Q> {
+    if (this.ledger.queryBrowse) return this.ledger.queryBrowse(query);
+    this.scanningBrowse ??= new ScanningBrowseQueries(this.ledger);
+    return this.scanningBrowse.query(query);
   }
 
-  private async describeRevision(revision: any, at: Checkpoint, state: ReturnType<KclService['browseState']>, full = false) {
+  private browseContext(checkpoint: Checkpoint): BrowseRequestContext {
+    return { checkpoint, config: this.config(checkpoint), eligibility: new Map(), annotations: new Map(), revisions: new Map() };
+  }
+
+  private annotate(context: BrowseRequestContext, digests: string[]): void {
+    const missing = [...new Set(digests)].filter(digest => !context.annotations.has(digest));
+    if (!missing.length) return;
+    const annotations = this.queryBrowse({ kind: 'revision-annotations', at: context.checkpoint, revision_digests: missing });
+    for (const annotation of annotations) context.annotations.set(annotation.revision_digest, annotation);
+  }
+
+  private revisionRef(digest: string, context: BrowseRequestContext): RevisionBrowseRef {
+    this.annotate(context, [digest]);
+    const reference = context.annotations.get(digest)?.revision;
+    if (!reference) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    return reference;
+  }
+
+  private readIndexedRevision(reference: RevisionBrowseRef, at: Checkpoint) {
+    const revision = this.ledger.read(reference.key, at);
+    if (reference.key !== domain.keyFor.revision(reference.revision_digest) || !revision?.payload
+      || revision.revision_digest !== reference.revision_digest || !sameSlot(revision.payload, reference.slot)) {
+      throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 개정본이 일치하지 않습니다.', 503);
+    }
+    return { ...revision, published_checkpoint: reference.published_checkpoint };
+  }
+
+  private pageRevision(reference: RevisionBrowseRef, context: BrowseRequestContext) {
+    let value = context.revisions.get(reference.revision_digest);
+    if (!value) { value = this.readIndexedRevision(reference, context.checkpoint); context.revisions.set(reference.revision_digest, value); }
+    return value;
+  }
+
+  private readIndexedProposal(reference: ProposalBrowseRef, at: Checkpoint) {
+    const proposal = this.ledger.read(reference.key, at);
+    if (reference.key !== domain.keyFor.proposal(reference.proposal_id) || !proposal || proposal.proposal_id !== reference.proposal_id
+      || proposal.revision_digest !== reference.revision_digest || proposal.created_at !== reference.created_at || !sameSlot(proposal, reference.slot)) {
+      throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 제안이 일치하지 않습니다.', 503);
+    }
+    return proposal;
+  }
+
+  private readIndexedAgreement(reference: AgreementBrowseRef, at: Checkpoint) {
+    const agreement = this.ledger.read(reference.key, at);
+    if (reference.key !== domain.keyFor.agreement(reference.agreement_id) || !agreement || agreement.agreement_id !== reference.agreement_id
+      || agreement.revision_digest !== reference.revision_digest || agreement.activated_at !== reference.activated_at || !sameSlot(agreement, reference.slot)) {
+      throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 합의가 일치하지 않습니다.', 503);
+    }
+    return agreement;
+  }
+
+  private async describeRevision(revision: any, context: BrowseRequestContext, full = false) {
     const key = slotKey(revision.payload);
-    let pending = state.eligibility.get(key);
-    if (!pending) { pending = domain.resolveAt(async stateKey => this.ledger.read(stateKey, at), slotFields(revision.payload)); state.eligibility.set(key, pending); }
+    let pending = context.eligibility.get(key);
+    if (!pending) { pending = domain.resolveAt(async stateKey => this.ledger.read(stateKey, context.checkpoint), slotFields(revision.payload)); context.eligibility.set(key, pending); }
     const eligibility = await pending;
+    this.annotate(context, [revision.revision_digest]);
+    const annotation = context.annotations.get(revision.revision_digest);
+    const agreement = eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement
+      : annotation?.agreement ? this.readIndexedAgreement(annotation.agreement, context.checkpoint) : undefined;
     const { body_markdown, ...summary } = revision.payload;
     return { view: full ? 'full' : 'summary', revision_digest: revision.revision_digest, payload: full ? revision.payload : summary,
-      published_checkpoint: revision.published_checkpoint,
-      agreement: eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement : state.byRevision.get(revision.revision_digest),
+      published_checkpoint: revision.published_checkpoint, agreement,
       active_agreement: eligibility.agreement?.status === 'active' ? eligibility.agreement : null,
       eligible: eligibility.eligible && eligibility.revision?.revision_digest === revision.revision_digest,
-      reason: eligibility.reason, proposed: state.proposed.has(revision.revision_digest) };
+      reason: eligibility.reason, proposed: annotation?.has_proposal ?? false };
   }
 
-  private describeProposal(proposal: any, checkpoint: Checkpoint, revision: any) {
-    const config = this.config(checkpoint);
-    const representatives = config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
+  private describeProposal(proposal: any, context: BrowseRequestContext, revision: any) {
+    const checkpoint = context.checkpoint;
+    const representatives = context.config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
     const { body_markdown, ...payload } = revision.payload;
     return { ...proposal, agreement: proposal.agreement_id ? this.ledger.read(domain.keyFor.agreement(proposal.agreement_id), checkpoint) : undefined,
       revision_summary: { view: 'summary', revision_digest: revision.revision_digest, payload, published_checkpoint: revision.published_checkpoint },
@@ -250,11 +305,15 @@ export class KclService {
       }).filter(Boolean), required_representatives: representatives };
   }
 
-  private proposalPage(page: PageContext, state: ReturnType<KclService['browseState']>, digest?: string) {
-    const all = state.proposals.filter(proposal => !digest || proposal.revision_digest === digest).sort((a, b) => b.created_at.localeCompare(a.created_at) || a.proposal_id.localeCompare(b.proposal_id));
-    const revisions = new Map(state.revisions.map(revision => [revision.revision_digest, revision]));
-    const proposals = all.slice(page.offset, page.offset + page.limit).map(proposal => this.describeProposal(proposal, page.checkpoint, revisions.get(proposal.revision_digest)));
-    return { proposals, proposals_total: all.length, proposals_next_cursor: this.nextCursor(page, all.length) };
+  private proposalPage(page: PageContext, context: BrowseRequestContext, digest?: string) {
+    const result = this.queryBrowse({ kind: 'proposals', at: page.checkpoint, offset: page.offset, limit: page.limit, revision_digest: digest });
+    this.annotate(context, result.items.map(reference => reference.revision_digest));
+    const proposals = result.items.map(reference => {
+      const proposal = this.readIndexedProposal(reference, page.checkpoint);
+      const revision = this.pageRevision(this.revisionRef(reference.revision_digest, context), context);
+      return this.describeProposal(proposal, context, revision);
+    });
+    return { proposals, proposals_total: result.total, proposals_next_cursor: this.nextCursor(page, result.total) };
   }
 
   async getProposal(actor: Actor, id: string) {
@@ -262,69 +321,68 @@ export class KclService {
     const checkpoint = this.ledger.checkpoint()!;
     const proposal = this.ledger.read(domain.keyFor.proposal(id), checkpoint);
     if (!proposal) throw new ApiError('NOT_FOUND', '제안을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    const revision = this.revision(proposal.revision_digest, checkpoint);
-    return { ...this.describeProposal(proposal, checkpoint, { ...revision,
-      published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)) }), checkpoint };
+    const context = this.browseContext(checkpoint);
+    const revision = this.pageRevision(this.revisionRef(proposal.revision_digest, context), context);
+    return { ...this.describeProposal(proposal, context, revision), checkpoint };
   }
 
   async overview(actor: Actor, input: OverviewInput = {}) {
     onlyFields(input, ['limit', 'cursor', 'proposal_limit', 'proposal_cursor']);
     await this.refresh(); this.actor(actor);
     let page = this.page(actor, 'overview', input);
-    const proposalPage = this.page(actor, 'proposals', { limit: input.proposal_limit, cursor: input.proposal_cursor }, null, input.cursor ? page.checkpoint : undefined);
-    if (!input.cursor && input.proposal_cursor) page = this.page(actor, 'overview', input, null, proposalPage.checkpoint);
+    const proposals = this.page(actor, 'proposals', { limit: input.proposal_limit, cursor: input.proposal_cursor }, null, input.cursor ? page.checkpoint : undefined);
+    if (!input.cursor && input.proposal_cursor) page = this.page(actor, 'overview', input, null, proposals.checkpoint);
     const checkpoint = page.checkpoint;
-    const state = this.browseState(checkpoint);
-    const latest = new Map<string, any>();
-    for (const revision of state.revisions) {
-      const key = slotKey(revision.payload); const previous = latest.get(key);
-      if (!previous || comparePublished(revision, previous) < 0) latest.set(key, revision);
-    }
-    const all = [...latest.values()].sort(comparePublished);
-    const documents = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, checkpoint, state)));
-    const config = this.config(checkpoint);
+    const context = this.browseContext(checkpoint);
+    const result = this.queryBrowse({ kind: 'revisions', mode: 'latest-per-slot', at: checkpoint, offset: page.offset, limit: page.limit });
+    this.annotate(context, result.items.map(reference => reference.revision_digest));
+    const documents = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
+    const config = context.config;
+    const proposalPage = this.proposalPage({ ...proposals, checkpoint }, context);
     this.actor(actor);
     return { view: 'summary', workspace: this.definition.workspace, organizations: this.definition.organizations, demo: this.definition.demo, mode: this.ledger.mode,
       channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch },
-      actor, documents, documents_total: all.length, next_cursor: this.nextCursor(page, all.length),
-      ...this.proposalPage({ ...proposalPage, checkpoint }, state), policies: config.policies, checkpoint };
+      actor, documents, documents_total: result.total, next_cursor: this.nextCursor(page, result.total),
+      ...proposalPage, policies: config.policies, checkpoint };
   }
 
   async revisionView(actor: Actor, digest: string, input: { proposal_limit?: number; proposal_cursor?: string } = {}) {
     onlyFields(input, ['proposal_limit', 'proposal_cursor']);
     await this.refresh(); this.actor(actor);
     const page = this.page(actor, 'revision-proposals', { limit: input.proposal_limit, cursor: input.proposal_cursor }, digest);
-    const state = this.browseState(page.checkpoint);
-    const revision = state.revisions.find(revision => revision.revision_digest === digest);
-    if (!revision) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    const view = await this.describeRevision(revision, page.checkpoint, state, true);
+    const context = this.browseContext(page.checkpoint);
+    const revision = this.pageRevision(this.revisionRef(digest, context), context);
+    const view = await this.describeRevision(revision, context, true);
+    const proposals = this.proposalPage(page, context, digest);
     this.actor(actor);
-    return { ...view, ...this.proposalPage(page, state, digest), checkpoint: page.checkpoint };
+    return { ...view, ...proposals, checkpoint: page.checkpoint };
   }
 
   async revisionHistory(actor: Actor, digest: string, input: PageInput = {}) {
     onlyFields(input, ['limit', 'cursor']);
     await this.refresh(); this.actor(actor);
     const page = this.page(actor, 'revision-history', input, digest);
-    const state = this.browseState(page.checkpoint);
-    const revision = state.revisions.find(revision => revision.revision_digest === digest);
-    if (!revision) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    const all = state.revisions.filter(item => sameSlot(item.payload, revision.payload)).sort(comparePublished);
-    const revisions = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(item => this.describeRevision(item, page.checkpoint, state)));
+    const context = this.browseContext(page.checkpoint);
+    const target = this.revisionRef(digest, context);
+    this.pageRevision(target, context);
+    const result = this.queryBrowse({ kind: 'revisions', mode: 'slot', slot: target.slot, at: page.checkpoint, offset: page.offset, limit: page.limit });
+    this.annotate(context, result.items.map(reference => reference.revision_digest));
+    const revisions = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
-    return { revisions, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
+    return { revisions, total: result.total, next_cursor: this.nextCursor(page, result.total), checkpoint: page.checkpoint };
   }
 
   async documentRevisions(actor: Actor, id: string, input: PageInput = {}) {
     identifier(id); onlyFields(input, ['limit', 'cursor']);
     await this.refresh(); this.actor(actor);
     const page = this.page(actor, 'document-revisions', input, id);
-    const state = this.browseState(page.checkpoint);
-    const all = state.revisions.filter(revision => revision.payload.document_id === id).sort(comparePublished);
-    if (!all.length) throw new ApiError('NOT_FOUND', '문서를 찾을 수 없거나 접근할 수 없습니다.', 404);
-    const revisions = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, page.checkpoint, state)));
+    const context = this.browseContext(page.checkpoint);
+    const result = this.queryBrowse({ kind: 'revisions', mode: 'document', document_id: id, at: page.checkpoint, offset: page.offset, limit: page.limit });
+    if (!result.total) throw new ApiError('NOT_FOUND', '문서를 찾을 수 없거나 접근할 수 없습니다.', 404);
+    this.annotate(context, result.items.map(reference => reference.revision_digest));
+    const revisions = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
-    return { revisions, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
+    return { revisions, total: result.total, next_cursor: this.nextCursor(page, result.total), checkpoint: page.checkpoint };
   }
 
   async draft(actor: Actor, input: any) {
@@ -645,13 +703,35 @@ export class KclService {
     await this.refresh(); this.actor(actor);
     const filter = { query: input.query, context_id: input.context_id ?? null, scope_id: input.scope_id ?? null, usage_scope: input.usage_scope ?? null };
     const page = this.page(actor, 'search', input, filter);
-    const state = this.browseState(page.checkpoint);
-    const query = input.query.toLocaleLowerCase();
-    const all = state.revisions.filter(revision => ['context_id', 'scope_id', 'usage_scope'].every(field => !input[field] || revision.payload[field] === input[field])
-      && `${revision.payload.title}\n${revision.payload.body_markdown}`.toLocaleLowerCase().includes(query)).sort(comparePublished);
-    const results = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, page.checkpoint, state)));
+    const cacheKey = domain.canonicalize([page.binding, page.checkpoint]);
+    let matches = this.searchMatches.get(cacheKey);
+    if (!matches) {
+      const ids: string[] = []; const query = input.query.toLocaleLowerCase();
+      let offset = 0;
+      while (true) {
+        const candidates = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000,
+          context_id: input.context_id || undefined, scope_id: input.scope_id || undefined, usage_scope: input.usage_scope || undefined });
+        for (const reference of candidates.items) {
+          // Preserve the existing literal JS substring rule, including empty,
+          // short, CJK and UTF-16 queries; no SQL/FTS locale approximation.
+          if (query === '') ids.push(reference.revision_digest);
+          else {
+            const revision = this.readIndexedRevision(reference, page.checkpoint);
+            if (`${revision.payload.title}\n${revision.payload.body_markdown}`.toLocaleLowerCase().includes(query)) ids.push(reference.revision_digest);
+          }
+        }
+        offset += candidates.items.length;
+        if (offset >= candidates.total) break;
+        if (!candidates.items.length) throw new ApiError('PROJECTION_INVALID', '검증된 원장 조회를 계속할 수 없습니다.', 503);
+      }
+      matches = ids; this.searchMatches.put(cacheKey, ids);
+    }
+    const context = this.browseContext(page.checkpoint);
+    const selected = matches.slice(page.offset, page.offset + page.limit);
+    this.annotate(context, [...selected]);
+    const results = await Promise.all(selected.map(digest => this.describeRevision(this.pageRevision(this.revisionRef(digest, context), context), context)));
     this.actor(actor);
-    return { view: 'summary', results, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
+    return { view: 'summary', results, total: matches.length, next_cursor: this.nextCursor(page, matches.length), checkpoint: page.checkpoint };
   }
 
   async resolve(actor: Actor, input: any) {

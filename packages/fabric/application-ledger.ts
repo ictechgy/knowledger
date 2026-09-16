@@ -3,6 +3,7 @@ import { execute as validateCommand, idempotencyDigest, keyFor } from '../domain
 import type { DomainCommand } from '../domain/index.ts';
 import type { Actor, Checkpoint } from '../storage/local-ledger.ts';
 import type { ApplicationLedger, CommittedReceipt, PendingReceipt, CommandObservation } from '../storage/ledger-port.ts';
+import type { BrowseQuery, BrowseQueryFunction } from '../storage/browse-contract.ts';
 import type { SqliteFabricProjection } from './sqlite-projection.ts';
 import type { FabricGatewayTransport } from './gateway.ts';
 
@@ -25,7 +26,7 @@ export class FabricLedgerError extends Error {
   constructor(code: string, message: string, status = 503, retryable = true) { super(message); this.code = code; this.status = status; this.retryable = retryable; }
 }
 
-type Projection = Pick<SqliteFabricProjection, 'channelId' | 'applyBlock' | 'blockCheckpoint' | 'read' | 'entries' | 'checkpoint' | 'checkpointForTransaction' | 'checkpointForStateCreation' | 'assertCheckpoint' | 'events' | 'close'>;
+type Projection = Pick<SqliteFabricProjection, 'channelId' | 'applyBlock' | 'blockCheckpoint' | 'read' | 'entries' | 'checkpoint' | 'checkpointForTransaction' | 'checkpointForStateCreation' | 'assertCheckpoint' | 'events' | 'close'> & { queryBrowse?: BrowseQueryFunction };
 const sameActor = (a: Actor, b: Actor) => a.org_id === b.org_id && a.actor_id === b.actor_id && a.kind === b.kind;
 function isActor(value: unknown): value is Actor {
   return !!value && typeof value === 'object' && 'org_id' in value && typeof value.org_id === 'string'
@@ -46,6 +47,8 @@ export class FabricApplicationLedger implements ApplicationLedger {
   private readonly routes: FabricSigningRoute[];
   private readonly maxPendingCommands: number;
   private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number };
+  /** Optional so lightweight projection fixtures can use the explicit service scanner. */
+  queryBrowse?: BrowseQueryFunction;
 
   constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number; mode?: 'fabric-test-network' | 'fabric' }) {
     this.mode = options.mode ?? 'fabric-test-network';
@@ -56,6 +59,12 @@ export class FabricApplicationLedger implements ApplicationLedger {
     if (!Number.isSafeInteger(this.maxPendingCommands) || this.maxPendingCommands <= 0) throw new Error('Maximum pending command count must be positive integer');
     this.routes = options.routes.map(route => ({ ...route, actor: { ...route.actor } }));
     if (!this.routes.length || new Set(this.routes.map(route => JSON.stringify(route.actor))).size !== this.routes.length) throw new Error('Distinct authenticated Fabric signing routes are required');
+    if (options.projection.queryBrowse) {
+      this.queryBrowse = <Q extends BrowseQuery>(query: Q) => {
+        this.ready();
+        return options.projection.queryBrowse!(query);
+      };
+    }
   }
 
   private serial<T>(run: () => Promise<T>): Promise<T> {
