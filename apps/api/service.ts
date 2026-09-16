@@ -285,6 +285,7 @@ export class KnowledgerService {
     return reference;
   }
 
+  /** 브라우즈 색인 참조와 canonical 개정본의 일치를 검증한다 — 색인은 참조일 뿐 값의 근거가 아니다. */
   private checkIndexedRevision(reference: RevisionBrowseRef, revision: any): void {
     if (reference.key !== domain.keyFor.revision(reference.revision_digest) || !revision?.payload
       || revision.revision_digest !== reference.revision_digest || !sameSlot(revision.payload, reference.slot)) {
@@ -339,6 +340,7 @@ export class KnowledgerService {
       reason: eligibility.reason, proposed: annotation?.has_proposal ?? false };
   }
 
+  /** 제안이 바인딩된 정책 버전의 책임자 슬롯 목록을 반환한다. 정책이 없으면 예외 — 설정과 제안의 정합성은 커밋 시 보장된다. */
   private proposalRepresentatives(context: BrowseRequestContext, proposal: any): any[] {
     return context.config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
   }
@@ -349,8 +351,8 @@ export class KnowledgerService {
     const dependencyKeys: (string | undefined)[] = [];
     for (const proposal of proposals) {
       dependencyKeys.push(proposal.agreement_id ? domain.keyFor.agreement(proposal.agreement_id) : undefined);
-      for (const rep of this.proposalRepresentatives(context, proposal)) {
-        pointerKeys.push(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id));
+      for (const representative of this.proposalRepresentatives(context, proposal)) {
+        pointerKeys.push(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, representative.domain_role, representative.actor_org_id, representative.actor_id));
       }
     }
     this.prefetch(context, [...dependencyKeys, ...pointerKeys]);
@@ -813,7 +815,8 @@ export class KnowledgerService {
       while (true) {
         const candidates = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000,
           context_id: input.context_id || undefined, scope_id: input.scope_id || undefined, usage_scope: input.usage_scope || undefined });
-        const prefetched = this.ledger.readMany?.(candidates.items.map(reference => reference.key), page.checkpoint);
+        // 빈 질의는 본문을 전혀 읽지 않는다 — 스캔 결과를 결과 캐시에 싣지 않는 것과 같은 이유로 배치 읽기도 건너뛴다.
+        const prefetched = query === '' ? undefined : this.ledger.readMany?.(candidates.items.map(reference => reference.key), page.checkpoint);
         for (const reference of candidates.items) {
           // Preserve the existing literal JS substring rule, including empty,
           // short, CJK and UTF-16 queries; no SQL/FTS locale approximation.
