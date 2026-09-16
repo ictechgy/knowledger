@@ -75,6 +75,38 @@ test('a revision ID index cannot point to a missing immutable revision', async t
   assert.equal(ledger.checkpoint(), null);
 });
 
+test('readMany matches individual reads, keeps checkpoint bounds, and tolerates missing keys', async t => {
+  const ledger = fixture(t);
+  const first = await ledger.transact(actor, async ctx => { await ctx.put('kcl:v1:eligibility_epoch', 1); });
+  const second = await ledger.transact(actor, async ctx => {
+    await ctx.put('kcl:v1:eligibility_epoch', 2);
+    await ctx.put(keyFor.fence('nonce-0123456789abcdef'), { nonce: 'nonce-0123456789abcdef', eligibility_epoch: 2, tx_id: 'tx-test' });
+  });
+  const keys = [keyFor.eligibilityEpoch(), keyFor.fence('nonce-0123456789abcdef'), keyFor.fence('nonce-absent00000000')];
+  const current = ledger.readMany(keys);
+  assert.equal(current.get(keyFor.eligibilityEpoch()), 2);
+  assert.equal(current.get(keyFor.fence('nonce-0123456789abcdef'))?.nonce, 'nonce-0123456789abcdef');
+  assert.equal(current.has(keyFor.fence('nonce-absent00000000')), false);
+  const atFirst = ledger.readMany(keys, first.checkpoint);
+  assert.equal(atFirst.get(keyFor.eligibilityEpoch()), 1);
+  assert.equal(atFirst.has(keyFor.fence('nonce-0123456789abcdef')), false);
+  const atSecond = ledger.readMany(keys, second.checkpoint);
+  assert.equal(atSecond.get(keyFor.eligibilityEpoch()), 2);
+  assert.throws(() => ledger.readMany(keys, { ...first.checkpoint, block_hash: 'forged' }), /checkpoint/i);
+});
+
+test('readMany keeps the projection/history divergence check', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-readmany-test-'));
+  const path = join(directory, 'ledger.sqlite');
+  const ledger = new LocalLedger(path, 'channel-test');
+  t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });
+  await ledger.transact(actor, async ctx => { await ctx.put(keyFor.eligibilityEpoch(), 1); });
+  const external = new DatabaseSync(path);
+  external.prepare('UPDATE projection SET value_json = ? WHERE state_key = ?').run('999', keyFor.eligibilityEpoch());
+  external.close();
+  assert.throws(() => ledger.readMany([keyFor.eligibilityEpoch()]), /projection.*integrity/i);
+});
+
 test('current reads detect projection divergence from the historical write-set view', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'knowledger-projection-test-'));
   const path = join(directory, 'ledger.sqlite');

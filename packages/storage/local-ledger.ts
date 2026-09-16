@@ -48,6 +48,21 @@ export class LocalLedger {
   private browseIndex: VerifiedBrowseIndex;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private statements!: {
+    insertTransaction: ReturnType<DatabaseSync['prepare']>;
+    upsertProjection: ReturnType<DatabaseSync['prepare']>;
+    insertHistory: ReturnType<DatabaseSync['prepare']>;
+    selectProjection: ReturnType<DatabaseSync['prepare']>;
+    selectHistoryLatest: ReturnType<DatabaseSync['prepare']>;
+    selectHistoryAt: ReturnType<DatabaseSync['prepare']>;
+    upsertCursor: ReturnType<DatabaseSync['prepare']>;
+    selectCursor: ReturnType<DatabaseSync['prepare']>;
+    selectTip: ReturnType<DatabaseSync['prepare']>;
+    selectTransactionBySequence: ReturnType<DatabaseSync['prepare']>;
+    selectTransactionById: ReturnType<DatabaseSync['prepare']>;
+    selectStateCreation: ReturnType<DatabaseSync['prepare']>;
+    iterateTransactions: ReturnType<DatabaseSync['prepare']>;
+  };
 
   constructor(path: string, channelId: string) {
     this.channelId = channelId;
@@ -80,7 +95,24 @@ export class LocalLedger {
     const stored = this.db.prepare('SELECT value FROM metadata WHERE key = ?').get('channel_id') as any;
     if (stored && stored.value !== channelId) { this.db.close(); throw new Error('Ledger channel mismatch'); }
     this.db.prepare('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)').run('channel_id', channelId);
-    try { this.validateHistory(); this.rebuildProjection(); }
+    // 대규모 저널 재생과 요청 경로에서 매 호출 prepare 비용을 없앤다.
+    this.statements = {
+      insertTransaction: this.db.prepare('INSERT INTO ledger_transactions VALUES (?, ?, ?)'),
+      upsertProjection: this.db.prepare('INSERT INTO projection VALUES (?, ?) ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json'),
+      insertHistory: this.db.prepare('INSERT INTO projection_history VALUES (?, ?, ?)'),
+      selectProjection: this.db.prepare('SELECT value_json FROM projection WHERE state_key = ?'),
+      selectHistoryLatest: this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? ORDER BY sequence DESC LIMIT 1'),
+      selectHistoryAt: this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 1'),
+      upsertCursor: this.db.prepare('INSERT INTO projection_cursor VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET sequence = excluded.sequence'),
+      selectCursor: this.db.prepare('SELECT sequence FROM projection_cursor WHERE singleton = 1'),
+      selectTip: this.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence DESC LIMIT 1'),
+      selectTransactionBySequence: this.db.prepare('SELECT record_json FROM ledger_transactions WHERE sequence = ?'),
+      selectTransactionById: this.db.prepare('SELECT record_json FROM ledger_transactions WHERE transaction_id = ?'),
+      selectStateCreation: this.db.prepare('SELECT t.record_json FROM projection_history h JOIN ledger_transactions t ON t.sequence = h.sequence WHERE h.state_key = ? ORDER BY h.sequence LIMIT 1'),
+      iterateTransactions: this.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence'),
+    };
+    // rebuildProjection이 저널 해시 검증을 다시 수행하므로 여기서 따로 검증하지 않는다.
+    try { this.rebuildProjection(); }
     catch (error) { this.db.close(); throw error; }
   }
 
@@ -94,16 +126,55 @@ export class LocalLedger {
     let row: any;
     if (at) {
       this.assertCheckpoint(at);
-      row = this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 1').get(key, at.block_number);
+      row = this.statements.selectHistoryAt.get(key, at.block_number);
     } else {
-      row = this.db.prepare('SELECT value_json FROM projection WHERE state_key = ?').get(key);
-      const history = this.db.prepare('SELECT value_json FROM projection_history WHERE state_key = ? ORDER BY sequence DESC LIMIT 1').get(key) as any;
+      row = this.statements.selectProjection.get(key);
+      const history = this.statements.selectHistoryLatest.get(key) as any;
       if (row?.value_json !== history?.value_json) throw new Error('Projection integrity check failed; rebuild the derived view');
     }
     if (!row) return undefined;
     const value = JSON.parse(row.value_json);
     validateWrite(key, value);
     return value;
+  }
+
+  /** 트랜잭션 내부 적용 전용 — 최신 projection 행만 읽는다. 서빙 읽기의 이중 검증은 read()에 남는다. */
+  private readCurrent(key: string): any | undefined {
+    const row = this.statements.selectProjection.get(key) as any;
+    if (!row) return undefined;
+    const value = JSON.parse(row.value_json);
+    validateWrite(key, value);
+    return value;
+  }
+
+  /** read()와 같은 projection/history 교차 검증을 키 묶음 단위로 수행한다. */
+  readMany(keys: string[], at?: Checkpoint | null): Map<string, any> {
+    const unique = [...new Set(keys)];
+    if (at) this.assertCheckpoint(at);
+    const result = new Map<string, any>();
+    // SQLite 바인드 변수 상한 안에서 묶는다.
+    for (let start = 0; start < unique.length; start += 500) {
+      const chunk = unique.slice(start, start + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      const history = this.db.prepare(`SELECT h.state_key, h.value_json FROM projection_history h JOIN
+        (SELECT state_key, MAX(sequence) sequence FROM projection_history
+         WHERE state_key IN (${placeholders}) ${at ? 'AND sequence <= ?' : ''} GROUP BY state_key) latest
+        ON h.state_key = latest.state_key AND h.sequence = latest.sequence`)
+        .all(...chunk, ...(at ? [at.block_number] : [])) as any[];
+      if (!at) {
+        const current = new Map<string, string>((this.db.prepare(`SELECT state_key, value_json FROM projection WHERE state_key IN (${placeholders})`).all(...chunk) as any[])
+          .map(row => [row.state_key, row.value_json]));
+        if (current.size !== history.length || history.some(row => current.get(row.state_key) !== row.value_json)) {
+          throw new Error('Projection integrity check failed; rebuild the derived view');
+        }
+      }
+      for (const row of history) {
+        const value = JSON.parse(row.value_json);
+        validateWrite(row.state_key, value);
+        result.set(row.state_key, value);
+      }
+    }
+    return result;
   }
 
   entries(prefix: string, at?: Checkpoint | null): [string, any][] {
@@ -131,12 +202,12 @@ export class LocalLedger {
   }
 
   checkpoint(): Checkpoint | null {
-    const row = this.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence DESC LIMIT 1').get() as any;
+    const row = this.statements.selectTip.get() as any;
     return row ? JSON.parse(row.record_json).checkpoint : null;
   }
 
   checkpointForTransaction(transactionId: string): Checkpoint {
-    const row = this.db.prepare('SELECT record_json FROM ledger_transactions WHERE transaction_id = ?').get(transactionId) as any;
+    const row = this.statements.selectTransactionById.get(transactionId) as any;
     if (!row) throw new Error('Committed transaction checkpoint is missing');
     const checkpoint = JSON.parse(row.record_json).checkpoint;
     this.assertCheckpoint(checkpoint);
@@ -144,18 +215,18 @@ export class LocalLedger {
   }
 
   checkpointForStateCreation(key: string): Checkpoint {
-    const row = this.db.prepare('SELECT t.record_json FROM projection_history h JOIN ledger_transactions t ON t.sequence = h.sequence WHERE h.state_key = ? ORDER BY h.sequence LIMIT 1').get(key) as any;
+    const row = this.statements.selectStateCreation.get(key) as any;
     if (!row) throw new Error('State creation checkpoint is missing');
     return JSON.parse(row.record_json).checkpoint;
   }
 
   assertCheckpoint(at: Checkpoint): void {
     if (at.channel_id !== this.channelId || at.transaction_index !== 0 || !Number.isSafeInteger(at.block_number)) throw new Error('Invalid checkpoint');
-    const row = this.db.prepare('SELECT record_json FROM ledger_transactions WHERE sequence = ?').get(at.block_number) as any;
+    const row = this.statements.selectTransactionBySequence.get(at.block_number) as any;
     if (!row) throw new Error('Checkpoint is ahead of projection');
     const known = JSON.parse(row.record_json).checkpoint;
     if (known.transaction_id !== at.transaction_id || known.block_hash !== at.block_hash) throw new Error('Untrusted checkpoint');
-    const cursor = this.db.prepare('SELECT sequence FROM projection_cursor WHERE singleton = 1').get() as any;
+    const cursor = this.statements.selectCursor.get() as any;
     if (!cursor || cursor.sequence < at.block_number) throw new Error('Checkpoint is ahead of projection');
   }
 
@@ -187,7 +258,7 @@ export class LocalLedger {
           writes: [...writes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
         };
         const event: LedgerEvent = { ...unsigned, checkpoint: { ...unsigned.checkpoint, block_hash: hashRecord(unsigned) } };
-        this.db.prepare('INSERT INTO ledger_transactions VALUES (?, ?, ?)').run(sequence, txId, JSON.stringify(event));
+        this.statements.insertTransaction.run(sequence, txId, JSON.stringify(event));
         this.apply(event);
         const browse = this.browseIndex.prepare([{ checkpoint: event.checkpoint, writes: event.writes }]);
         this.db.exec('COMMIT');
@@ -202,7 +273,7 @@ export class LocalLedger {
   validateHistory(): void {
     let previousHash = ZERO_HASH;
     let expectedSequence = 1;
-    for (const row of this.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>) {
+    for (const row of this.statements.iterateTransactions.iterate() as Iterable<any>) {
       const event: LedgerEvent = JSON.parse(row.record_json);
       const { block_hash, ...checkpoint } = event.checkpoint;
       const unsigned = { checkpoint, previous_hash: event.previous_hash, timestamp: event.timestamp, validation_code: event.validation_code, reducer_version: event.reducer_version, writes: event.writes };
@@ -224,7 +295,7 @@ export class LocalLedger {
       this.db.exec('DELETE FROM projection; DELETE FROM projection_history; DELETE FROM projection_cursor;');
       const self = this;
       function* replayBrowse(): Generator<BrowseWriteBatch> {
-        for (const row of self.db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>) {
+        for (const row of self.statements.iterateTransactions.iterate() as Iterable<any>) {
           const event: LedgerEvent = JSON.parse(row.record_json);
           self.apply(event);
           const writes = event.writes.filter(([key]) => isBrowseWrite(key));
@@ -243,13 +314,15 @@ export class LocalLedger {
     if (event.reducer_version !== 1) throw new Error('Unknown write-set reducer');
     for (const [key, value] of event.writes) {
       validateWrite(key, value);
-      const prior = this.read(key);
-      if (prior !== undefined && IMMUTABLE_KINDS.has(key.split(':')[2]) && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
+      if (IMMUTABLE_KINDS.has(key.split(':')[2])) {
+        const prior = this.readCurrent(key);
+        if (prior !== undefined && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
+      }
       const encoded = JSON.stringify(value);
-      this.db.prepare('INSERT INTO projection VALUES (?, ?) ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json').run(key, encoded);
-      this.db.prepare('INSERT INTO projection_history VALUES (?, ?, ?)').run(key, event.checkpoint.block_number, encoded);
+      this.statements.upsertProjection.run(key, encoded);
+      this.statements.insertHistory.run(key, event.checkpoint.block_number, encoded);
     }
-    for (const [key, value] of event.writes) validateStateLinks(key, value, referenced => this.read(referenced));
-    this.db.prepare('INSERT INTO projection_cursor VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET sequence = excluded.sequence').run(event.checkpoint.block_number);
+    for (const [key, value] of event.writes) validateStateLinks(key, value, referenced => this.readCurrent(referenced));
+    this.statements.upsertCursor.run(event.checkpoint.block_number);
   }
 }

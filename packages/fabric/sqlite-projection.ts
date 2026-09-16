@@ -312,6 +312,37 @@ export class SqliteFabricProjection {
     return expected === undefined ? undefined : clone(expected);
   }
 
+  /** read()와 동일한 검증을 키 묶음 단위로 수행한다. 없는 키는 결과 Map에 없다. */
+  readMany(keys: string[], at?: Checkpoint | null): Map<string, unknown> {
+    this.ensureOpen();
+    const unique = [...new Set(keys)];
+    const result = new Map<string, unknown>();
+    if (!unique.length) return result;
+    let replayed: HistoricalReplay | null = null;
+    if (at === undefined || at === null) this.verifyCurrentCursor();
+    else if (this.isCurrentCheckpoint(at)) this.verifyCurrentCheckpoint(at);
+    else replayed = this.replayCheckpoint(at);
+    for (let start = 0; start < unique.length; start += 500) {
+      const chunk = unique.slice(start, start + 500);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = (at
+        ? this.db.prepare(`SELECT state_key, value_json FROM (
+            SELECT state_key, value_json, ROW_NUMBER() OVER (PARTITION BY state_key ORDER BY block_number DESC, transaction_index DESC) AS latest
+            FROM fabric_projection_history
+            WHERE (block_number < ? OR (block_number = ? AND transaction_index <= ?)) AND state_key IN (${placeholders})
+          ) WHERE latest = 1`).all(at.block_number, at.block_number, at.transaction_index, ...chunk)
+        : this.db.prepare(`SELECT state_key, value_json FROM fabric_projection_state WHERE state_key IN (${placeholders})`).all(...chunk)) as any[];
+      const actual = new Map<string, unknown>();
+      for (const row of rows) actual.set(row.state_key, JSON.parse(row.value_json));
+      for (const key of chunk) {
+        const expected = replayed && at ? this.valueAtCheckpoint(key, at, replayed.before, replayed.result) : this.projector.read(key);
+        if (!sameJson(actual.get(key), expected)) throw new Error("Fabric projection integrity check failed; rebuild the derived view");
+        if (expected !== undefined) result.set(key, clone(expected));
+      }
+    }
+    return result;
+  }
+
   entries(prefix = "", at?: Checkpoint | null): [string, unknown][] {
     this.ensureOpen();
     let expected: [string, unknown][];
