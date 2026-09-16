@@ -27,6 +27,10 @@ let app:Awaited<ReturnType<typeof createConfiguredApp>>|undefined;
 let issuer:Awaited<ReturnType<typeof startDevelopmentIssuer>>|undefined;
 let signer:ChildProcess|undefined;
 let phase='startup';
+let agreementId:string|undefined;
+let proposalId:string|undefined;
+let withdrawn=false;
+let cleanupAgreement:(()=>Promise<void>)|undefined;
 const evidence:Record<string,unknown>={mode:'configured-real-fabric',run_id:run,network:'existing-three-organization-example'};
 async function freePort(){const server=createServer();await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const port=(server.address() as {port:number}).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}
 try {
@@ -59,6 +63,15 @@ try {
       const value=await response.json();if(response.status===202&&status===200){await delay(300);continue;}assert.equal(response.status,status,`${path}: ${value.code}`);return value;
     }throw new Error('Command stayed pending');
   };
+  cleanupAgreement=async()=>{
+    if(withdrawn||!app||(!agreementId&&!proposalId))return;
+    issuer!.setAccountEnabled('configured-reviewer',true);await login();
+    agreementId??=(await get(`/agreement-proposals/${proposalId}`)).agreement_id;
+    if(!agreementId)return;
+    const agreement=await get(`/agreements/${agreementId}`);
+    if(['active','suspended'].includes(agreement.status))await post(`/agreements/${agreementId}/withdraw`,{reason:'Clean up incomplete configured verification',command_id:`config-cleanup-${run}`});
+    withdrawn=true;
+  };
   assert.equal((await browser.request(`${origin}/v1/workspaces/configured-knowledge/overview`)).status,401);
   await login();await post('/api/session',{org_id:actor.org_id,actor_id:actor.actor_id},403);
   phase='publication and agreement';
@@ -77,8 +90,10 @@ try {
   assert.equal(JSON.stringify(await get('/commands')).includes('Configured shared knowledge'),false);
   const retried=await post(`/commands/config-publish-${run}/retry`,{});assert.deepEqual(retried.checkpoint,publish.checkpoint);
   const proposal=await post('/agreement-proposals',{revision_digest:draft.revision.revision_digest,policy_id:'policy-sales-v1',policy_version:1,command_id:`config-propose-${run}`});
+  proposalId=proposal.result.proposal_id;evidence.proposal_id=proposalId;
   const approval=await post(`/agreement-proposals/${proposal.result.proposal_id}/decisions`,{decision:'approve',rationale:'Reviewed configured runtime publication',command_id:`config-approve-${run}`});evidence.approval_checkpoint=approval.checkpoint;
-  const active=await post(`/agreement-proposals/${proposal.result.proposal_id}/activate`,{expected_active_agreement_id:candidates.find((doc:any)=>doc.eligible)?.agreement.agreement_id??null,command_id:`config-activate-${run}`});
+  const active=await post(`/agreement-proposals/${proposal.result.proposal_id}/activate`,{expected_active_agreement_id:base.active_agreement?.agreement_id??null,command_id:`config-activate-${run}`});
+  agreementId=active.result.agreement_id;evidence.activation_checkpoint=active.checkpoint;
   const scope={document_ids:[base.payload.document_id],context_id:base.payload.context_id,scope_id:base.payload.scope_id,usage_scope:base.payload.usage_scope};
   assert.equal((await post('/resolve',scope)).status,'provided');
   phase='SDK and guarded model release';
@@ -88,7 +103,10 @@ try {
   const generated=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async()=>true,generate:async()=>({draft:'local stub output'})});assert.equal(generated.status,'provided');
   let generatedCalls=0;
   const withheld=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async({phase})=>{
-    if(phase==='release')await post(`/agreements/${active.result.agreement_id}/withdraw`,{reason:'Configured runtime verification completed',command_id:`config-withdraw-${run}`});return true;
+    if(phase==='release'){
+      const withdrawal=await post(`/agreements/${active.result.agreement_id}/withdraw`,{reason:'Configured runtime verification completed',command_id:`config-withdraw-${run}`});
+      withdrawn=true;evidence.withdrawal_checkpoint=withdrawal.checkpoint;
+    }return true;
   },generate:async()=>{generatedCalls++;return 'must be withheld';}});
   assert.equal(generatedCalls,1);assert.equal(withheld.status,'withheld');assert.equal('output' in withheld,false);
   evidence.sdk_exact_revision=true;evidence.release_authorization_withdrawal_withheld=true;
@@ -106,6 +124,13 @@ try {
   assert.equal((await get('/drafts')).total,1);assert.equal((await post('/resolve',scope)).status,'withheld');
   assert.ok(readdirSync(restoredDir).includes(configuredOutboxFile(actor.org_id,actor.actor_id)));
   evidence.checks=['private-source-sync','SDK-exact-revision','generation-release-revalidation','private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
-  writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});console.log(`Configured Fabric smoke passed. Evidence: ${join(directory,'evidence.json')}`);
-} catch(error) {console.error(`Configured Fabric smoke failed during ${phase}: ${error instanceof Error?error.message:'unknown failure'}`);process.exitCode=1;}
-finally {await app?.close();await issuer?.close();if(signer&&signer.exitCode===null){const closed=new Promise<void>(resolve=>signer!.once('exit',()=>resolve()));signer.kill('SIGTERM');await closed;}}
+  evidence.passed=true;evidence.final_checkpoint=(await get('/overview?limit=1')).checkpoint;
+} catch {evidence.passed=false;evidence.failure_phase=phase;console.error(`Configured Fabric smoke failed during ${phase}. Inspect the isolated evidence file.`);process.exitCode=1;}
+finally {
+  try{await cleanupAgreement?.();}catch{evidence.agreement_cleanup_failed=true;process.exitCode=1;}
+  try{await app?.close();}catch{evidence.application_shutdown_failed=true;process.exitCode=1;}
+  try{await issuer?.close();}catch{evidence.issuer_shutdown_failed=true;process.exitCode=1;}
+  if(signer&&signer.exitCode===null){const closed=new Promise<void>(resolve=>signer!.once('exit',()=>resolve()));signer.kill('SIGTERM');await closed;}
+  evidence.cleanup_withdrawn=withdrawn;evidence.completed_at=new Date().toISOString();if(process.exitCode)evidence.passed=false;
+  writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});console.log(`Configured Fabric evidence: ${join(directory,'evidence.json')}`);
+}

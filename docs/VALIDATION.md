@@ -1,5 +1,46 @@
 # 검증 기록
 
+## 실제 Fabric 쓰기·동시 요청·장애 복구 — 2026-09-16 13:23 KST
+
+런타임 `90bdcda`를 기존 Colima3 peer·3 Raft orderer에서 검증했다. 새 임시 앱 데이터/포트를 사용했고,
+최초 `fabric:smoke`, 네트워크 초기화, chaincode 재배포는 실행하지 않았다.
+
+| 시나리오 | 확인한 결과 |
+| --- | --- |
+| HTTP 게시→승인→활성→철회 | VALID block207→209→210→214. peer 전체 블록에서 확인한 원래 receipt 사용 |
+| 동시 요청 | 동일 게시3건이 같은 receipt와 VALID 게시1건, private import2건이 초안1개로 귀결 |
+| 읽기/상태 확인 병행 | overview8건, `/healthz`16건, `/readyz`16건 병행 완료 |
+| 원장 제출 대기 분리 | 해당 실행에서 private import 약111.5ms, 첫 게시 receipt 약1,174.1ms. private 작업이 먼저 완료 |
+| 실제 peer 장애 | Fulfillment peer 중단 중 readiness/resolve503, liveness200. 다시 기동한 뒤 fresh provided 복구 |
+| 앱 재시작 | 동일 승인 명령이 원래 checkpoint/result 반환. 이전 run은 `SESSION_RESTARTED_RESOLVE_AGAIN`으로 보류 |
+| 철회 전파 | 기존 manifest 재검증과 새 resolve 모두 withheld |
+| 설정 기반 OIDC/별도 signer | 선택한 조직만 연결, 미등록 subject403, 브라우저 역할 변경403, 계정 비활성화 후401 |
+| 설정 기반 게시→승인→활성→철회 | VALID block217→219→220→228 |
+| SDK/guarded generation | 정확한 원문/manifest 검사, 결과 반환 직전 철회 시 output 미반환 |
+| version3 백업/복원 | 원장 projection·원래 command receipt·private source·초안 유지, 복원 후 철회 상태 유지 |
+
+HTTP 검증은206→216, 설정 기반 검증은216→231까지 진행됐다. 시험 합의2건은 최종 앱에서
+다시 조회해 **withdrawn**을 확인했다. 합성 공유 개정/승인/철회 이력은 원장에 남는다.
+
+`fabric:http-smoke`는 이번 실행 시작 checkpoint 이후의 events만 검사하도록 수정했다.
+처음100블록만 확인하던 방식으로는 긴 원장에서 새 게시를 검증할 수 없었다. 두 스크립트의 활성화 기대값은
+새 목록 계약의 `active_agreement`를 사용한다. 실패 시 단계와 정리 결과도 evidence에 남기고,
+기동한 peer 복구 및 아직 활성인 시험 합의 철회를 시도하도록 보완했다.
+
+최종3 peer·3 orderer가 모두 running.4317·4318·4319·4321·4331·4341의 health/readiness200,
+OIDC 앱4개의 익명 overview401을 확인했다. 기본4317은 block1·문서0개 그대로이며4318은 Fabric block231이다.
+기존 앱을 재시작하거나 기존 private DB를 바꾸지 않았다. 시험 앱과 signer/issuer는 종료했다.
+
+실행 근거:
+
+- `.data/fabric-http-smoke-Z7z3wH/http-evidence.json`
+- `.data/configured-smoke-1R4sjZ/evidence.json`
+- `.artifacts/fabric-verification/{http-smoke,configured-smoke,types}.log`, `final-state.json`
+
+`npm run fabric:http-smoke`, `npm run configured:smoke`, `npm run check:types` 통과.
+제품 런타임 변경은 없으며 기존249개 런타임·Chromium18개 검사는 앞선 기록을 재사용했다.
+수치는 한 번의 작은 통합 시나리오이며 운영 처리량/SLA, 독립 호스트 장애나 orderer quorum 장애의 증거가 아니다.
+
 ## Claude 리뷰 후 성능·보안·구조·사용성 수정 — 2026-09-16
 
 `399f78b`의 리뷰 기록에 대한 R1–R6 수정이다. 원래 발견과 최종 제한은

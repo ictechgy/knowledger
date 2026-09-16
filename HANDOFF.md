@@ -1,31 +1,49 @@
 # Handoff
 
-_Last updated: 2026-09-16 13:00 KST by Codex_
+_Last updated: 2026-09-16 13:23 KST by Codex_
 
 ## Goal
 
 MIT 지식 합의 원장. 사용자는 남은 코드 작업을 중간 재승인 없이 진행하길 원한다.
 오픈소스 제품이므로 영업·이행·정산은 선택형 예제이며 제품의 필수 조직 구성이 아니다.
-최신 요청은 **Claude 리뷰에서 확인한 R1–R6 수정**이다. 모두 구현·검증했고 아래 제한은 명시했다.
+Claude 리뷰의 R1–R6 수정은 `90bdcda`에서 완료했다. 최신 요청인 **실제 Fabric 쓰기·동시 요청·장애 복구 검증**도
+HTTP와 설정 기반 OIDC/SDK/백업 복원 경로까지 완료했다. 아래 제한은 유지한다.
 운영 SSO/KMS/모델 업체 선택을 코드 작업 blocker로 다시 요구하지 않는다.
 
 ## Current Status
 
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`.
-  리뷰 대상 구현은 `419a26d`, 리뷰 문서는 `399f78b`. 이번 수정 커밋은 `git log -1`로 확인한다.
+  리뷰 대상 구현은 `419a26d`, 리뷰 문서는 `399f78b`, 런타임 수정은 `90bdcda`.
+  최신 검증 스크립트/문서 커밋은 `git log -1`로 확인한다.
 - **기본 앱 http://127.0.0.1:4317**, Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local`.
   초기 문서 없는2조직 제품 설정을 보존했다. 최신 앱 health/readiness200, local block1·문서0개.
 - 예제 앱도 최신 코드로 graceful restart:4318 Fabric 개발 계정,4319 OIDC 통합/IdP4320,
   4321 영업/4322,4331 이행/4332,4341 정산/4342. 전부 health/readiness200.
-  4318의 실제 Fabric block206·최신 슬롯4개. OIDC 앱4개는 익명 overview401.
-  개발 로그인 세션은 재시작으로 초기화됐다.
+  4318의 실제 Fabric block231·최신 슬롯4개. OIDC 앱4개는 익명 overview401.
+  최신 검증에서는 기존 앱을 재시작하지 않았다. 앞선 런타임 수정 직후 재시작한 상태를 유지한다.
 - `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement` 보존.
 - 네트워크는 Colima `colima`의3 peer·3 Raft orderer. 테스트 인증서 **2026-09-22 만료**.
   chaincode0.1.0/sequence2, package `kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157` 유지.
-  이번에는 새 Fabric 거래 제출·peer 정지·네트워크 초기화·chaincode 재배포를 하지 않았다.
+  최신 검증은206→231의 합성 게시/승인/활성/철회와 Fulfillment peer 일시 중단·복구를 수행했다.
+  시험 합의2건 모두 withdrawn. 네트워크 초기화·chaincode 재배포는 하지 않았다.
 - 사용자 `.serena/`는 보존하고 커밋에서 제외했다. 원격 push는 하지 않았다.
 
 ## Latest Delivery
+
+### 실제 Fabric 통합 검증
+
+- HTTP: 게시207·승인209·활성210·철회214. 동일 게시3건은 VALID1건·같은 receipt,
+  private import2건은 초안1개. overview8건, health/readiness 각각16건 병행 성공.
+  이 실행에서 private import 약111.5ms, 게시 receipt 약1,174.1ms로 private 작업이 먼저 끝났다.
+- Fulfillment peer 중단 동안 readiness/resolve503, liveness200. peer 복구 뒤 provided,
+  앱 재시작 뒤 원래 승인 receipt, 오래된 run 거부, 철회 뒤 재검증/새 resolve withheld.
+- 설정 기반: 게시217·승인219·활성220·철회228. OIDC 인가/회수, 별도 signer, SDK exact revision,
+  모델 결과 반환 직전 철회 차단, version3 복원 후 source/초안/명령 보존 확인. 최종 block231.
+- `infra/fabric/http-smoke.ts`: 시작 checkpoint 이후 이벤트 검사·동시 요청·liveness/readiness 분리·실패 정리 추가.
+  `tools/configured-smoke.ts`: `active_agreement` 계약 반영, 실패 evidence/생성 합의 정리 보완.
+  제품 런타임 코드는 바꾸지 않았다. 두 smoke는 같은 슬롯을 사용하므로 동시에 실행하지 않는다.
+
+### R1–R6 수정 (`90bdcda`)
 
 - **R1:** overview는 full slot별 최신 게시본 요약과 별도 제안 페이지다. 검색/이력도 기본20·최대50.
   본문/누적 history를 목록에 반복하지 않는다. 정확한 원문 SDK 계약은 유지한다.
@@ -71,8 +89,15 @@ npm run demo:kb
   `node packages/browser-tests/node_modules/playwright/cli.js install chromium`.
 - `test:performance -- --documents 1000 --samples 5 --body-bytes 1024`는 모든 요약 페이지 순회 시간이다.
 - `test:resilience`는 격리 로컬 복구 실험. 기존 네트워크에 최초 `fabric:smoke`를 반복하지 않는다.
+- 실제 후속 검증은 `npm run fabric:http-smoke` 후 `npm run configured:smoke`. 새 합성 이력을 남기고 합의를 철회한다.
 
 ## Verification
+
+- 최신 `fabric:http-smoke`, `configured:smoke`, `check:types` 통과.
+  `.data/fabric-http-smoke-Z7z3wH/http-evidence.json`, `.data/configured-smoke-1R4sjZ/evidence.json`.
+  `.artifacts/fabric-verification/`의 실행/type 로그와 `final-state.json`.
+  최종3 peer·3 orderer running, 개발 앱6개 health/readiness200, 시험 합의2건 withdrawn을 재확인했다.
+- 아래249개/Chromium18개/성능 측정은 변경되지 않은 제품 런타임의 이전 검증이며 이번에 반복하지 않았다.
 
 - `npm run check`: **249 passed /0 failed /1 GC 전용 skipped**.
 - 별도 `--expose-gc` projection 검사 **12 passed /0 skipped**, `check:types`·`demo`·`demo:kb` 통과.
@@ -85,7 +110,8 @@ npm run demo:kb
 - 1,000개 문서 전 페이지 순회/재시작 전후 총개수 일치. 이전 단일 전체 응답과 latency를 직접 비교하지 않는다.
 - `.artifacts/review-fixes/`: 최종 check/types/browser/no-optional/projection-memory 로그,
   history-after/performance-1000 JSON, runtime-health/live-fabric-browse JSON.
-- 실제4318에서 새 summary와 정확한 revision view/history200 확인, block206 유지. 이번에는 읽기 전용 검증이다.
+- 앞선 읽기 검증은 block206에서 summary와 정확한 revision view/history200을 확인했다.
+  이후 실제 쓰기/장애 검증까지 위 기록으로 완료했다.
 - 이전 `.data/configured-smoke-zv1THX/evidence.json`의 실제 VALID 게시192·승인194, source/SDK/release 철회 차단,
   v3 restore 검증은 이전 구현 근거로 유지한다. 이번에 같은 네트워크 쓰기를 반복했다고 주장하지 않는다.
 
@@ -113,11 +139,13 @@ npm run demo:kb
 
 ## Remaining / Resume
 
-요청한 R1–R6 코드 수정은 완료했다. 범위를 임의로 확장하거나 운영 업체 결정을 다시 blocker로 삼지 않는다.
+요청한 R1–R6 코드 수정과 실제 Fabric 쓰기/동시 요청/peer 장애/복원 검증은 완료했다.
+범위를 임의로 확장하거나 운영 업체 결정을 다시 blocker로 삼지 않는다.
 남는 명시적 한계는 페이지당 O(N) browse 계산, 현재 key 수에 비례하는 상태/anchor,
 최대8개 과거 snapshot과 cold replay/시작 replay 비용이다. 운영 부하/독립 인프라 검증은 별도 목표다.
 
-실제 기관 SSO·모델 egress 정책/공급자 설정, 파일럿 운영, 독립 호스트 장애/재해 복구, 원격 공개/CI는 별도 도입 단계다.
+테스트 인증서9월22일 만료 대응, 추가 조회 인덱스/대규모 replay 최적화, 원격 공개/CI 실행은 남아 있다.
+실제 기관 SSO·모델 egress 정책/공급자 설정, 파일럿 운영, 독립 호스트 장애/재해 복구는 별도 도입 단계다.
 SaaS별 connector·벡터 검색·운영 대시보드는 별도 확장 기능이다.
 
 재개: 이 저장소의 AGENTS.md/HANDOFF.md와 docs/25-CLAUDE-REVIEW.md 후속 수정을 읽고 새 요청 범위부터 진행해.

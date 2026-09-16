@@ -76,10 +76,17 @@ npm run fabric:http-smoke
 ```
 
 `fabric:http-smoke`는 기존 원장을 보존하면서 새 가상 영업 개정본을 생성한다.
+동일 게시3건·private import2건·overview8건·health/readiness 각각16건을 병행해
+중복 명령의 원래 VALID receipt와 private CAS를 확인한다. events는 이번 실행 시작 checkpoint 이후를 조회한다.
 비공개 초안·공개 확인·권한 거부·승인·채택을 검사하고, Fulfillment 테스트 peer를
-잠시 정지해 503을 확인한 뒤 다시 기동한다. API 프로세스도 다시 시작해 원래
-receipt·데이터 복원과 이전 manifest 거부를 검사한 후 해당 가상 합의를 철회한다.
-근거는 `.data/fabric-http-smoke-*/http-evidence.json`에 저장한다.
+잠시 정지해 readiness/resolve503과 liveness200을 확인한 뒤 다시 기동한다. API 프로세스도 다시 시작해
+원래 receipt·데이터 복원과 이전 manifest 거부를 검사한 후 해당 가상 합의를 철회한다.
+실패 시에도 peer 복구와 생성한 합의 정리를 시도하며 결과를
+`.data/fabric-http-smoke-*/http-evidence.json`에 저장한다. 합성 이력은 원장에 남는다.
+
+`npm run configured:smoke`는 별도 임시 OIDC issuer·signer·설정 기반 앱에서 source 동기화,
+SDK/guarded generation, 반환 직전 철회 차단, version3 백업/복원까지 검사한다.
+두 명령은 같은 예제 슬롯을 사용하므로 순서대로 실행한다. 실제 운영 SSO나 모델 공급자를 호출하지 않는다.
 
 소스 변경으로 테스트 chaincode package가 달라졌다면 `npm run fabric:upgrade`로
 각 조직이 다음 lifecycle sequence를 승인·커밋한다. 고정된 genesis, 논리 버전
