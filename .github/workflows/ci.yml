@@ -37,3 +37,20 @@ jobs:
       - run: npm ci --prefix packages/auth --ignore-scripts --no-fund
       - run: npm run check:types
       - run: node --test 'test/fabric/*.test.ts' 'test/auth/*.test.ts' 'test/api/*.test.ts'
+
+  browser-and-experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci --prefix packages/browser-tests --ignore-scripts --no-fund
+      - run: node packages/browser-tests/node_modules/playwright/cli.js install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm run test:performance -- --documents 25 --samples 3
+      - run: npm run test:resilience

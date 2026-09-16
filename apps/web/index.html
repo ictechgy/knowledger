@@ -92,6 +92,13 @@
               <p class="form-hint">서버가 지정한 대표자이고 아직 결정하지 않은 제안만 표시합니다.</p>
               <div id="review-inbox" class="review-inbox-list"><p class="empty-state">검토함을 불러오는 중…</p></div>
             </section>
+            <section class="command-inbox" aria-labelledby="command-inbox-title">
+              <div class="panel-heading"><div><p class="section-kicker">REQUESTS</p><h2 id="command-inbox-title">내 요청</h2></div><span id="command-count" class="count-pill">—</span></div>
+              <p class="form-hint">제출한 요청의 원장 확인 상태입니다. 자동으로 다시 보내지 않습니다.</p>
+              <div class="command-actions"><button id="refresh-commands" class="outline-button" type="button">요청 새로고침</button></div>
+              <ul id="command-list" class="command-list" aria-live="polite"><li class="empty-state">요청을 불러오는 중…</li></ul>
+              <button id="more-commands" class="outline-button full-width" type="button" hidden>요청 더 보기</button>
+            </section>
             <div class="panel-heading">
               <div><p class="section-kicker">DOCUMENTS &amp; DRAFTS</p><h2 id="documents-title">문서 · 초안</h2></div>
               <span class="count-pill" id="document-count">—</span>
@@ -125,6 +132,10 @@
                 <span id="review-state-chip" class="state-chip state-chip-neutral">문서 선택 필요</span>
               </div>
               <div id="review-content" class="review-content"><p class="empty-state">문서를 선택하면 이 문서에 연결된 제안과 대표자 응답이 표시됩니다.</p></div>
+              <section id="revision-compare" class="revision-compare" aria-labelledby="revision-compare-title">
+                <div class="subheading-row"><h3 id="revision-compare-title" class="subheading">개정본 비교</h3><span class="form-hint">같은 문서 범위 안에서만 비교합니다.</span></div>
+                <div id="revision-compare-content"><p class="empty-state">문서를 선택하면 이전 개정본을 비교할 수 있습니다.</p></div>
+              </section>
             </section>
 
             <section id="composer-panel" class="composer-panel panel" aria-labelledby="composer-title" hidden>

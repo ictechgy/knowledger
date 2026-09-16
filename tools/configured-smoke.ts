@@ -66,6 +66,9 @@ try {
   const preview=await post('/publication-previews',{draft_id:draft.draft_id});
   const publish=await post('/revisions',{preview_id:preview.preview_id,confirm_shared:true,command_id:`config-publish-${run}`});
   assert.equal(publish.status,'committed');evidence.publication_checkpoint=publish.checkpoint;
+  const tracked=await get(`/commands/config-publish-${run}`);assert.equal(tracked.status,'committed');assert.deepEqual(tracked.checkpoint,publish.checkpoint);
+  assert.equal(JSON.stringify(await get('/commands')).includes('Configured shared knowledge'),false);
+  const retried=await post(`/commands/config-publish-${run}/retry`,{});assert.deepEqual(retried.checkpoint,publish.checkpoint);
   const proposal=await post('/agreement-proposals',{revision_digest:draft.revision.revision_digest,policy_id:'policy-sales-v1',policy_version:1,command_id:`config-propose-${run}`});
   const approval=await post(`/agreement-proposals/${proposal.result.proposal_id}/decisions`,{decision:'approve',rationale:'Reviewed configured runtime publication',command_id:`config-approve-${run}`});evidence.approval_checkpoint=approval.checkpoint;
   const active=await post(`/agreement-proposals/${proposal.result.proposal_id}/activate`,{expected_active_agreement_id:candidates.find((doc:any)=>doc.eligible)?.agreement.agreement_id??null,command_id:`config-activate-${run}`});
@@ -81,9 +84,10 @@ try {
   const snapshot=createRuntimeSnapshot({dataDir,snapshotDir});assert.equal(JSON.parse(readFileSync(join(snapshotDir,'manifest.json'),'utf8')).version,3);assert.equal(snapshot.mode,'configured-fabric');
   restoreRuntimeSnapshot({snapshotDir,dataDir:restoredDir});
   app=await createConfiguredApp(config,{dataDir:restoredDir,port,organization:actor.org_id});await app.listen(port);await login();
+  assert.equal((await get('/commands')).commands.some((item:any)=>item.command_id===`config-publish-${run}`&&item.status==='committed'),true);
   assert.equal((await get('/drafts')).total,1);assert.equal((await post('/resolve',scope)).status,'withheld');
   assert.ok(readdirSync(restoredDir).includes(configuredOutboxFile(actor.org_id,actor.actor_id)));
-  evidence.checks=['configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
+  evidence.checks=['private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
   writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});console.log(`Configured Fabric smoke passed. Evidence: ${join(directory,'evidence.json')}`);
 } catch(error) {console.error(`Configured Fabric smoke failed during ${phase}: ${error instanceof Error?error.message:'unknown failure'}`);process.exitCode=1;}
 finally {await app?.close();await issuer?.close();if(signer&&signer.exitCode===null){const closed=new Promise<void>(resolve=>signer!.once('exit',()=>resolve()));signer.kill('SIGTERM');await closed;}}

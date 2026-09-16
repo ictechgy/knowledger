@@ -33,7 +33,10 @@
     "demo:web": "node apps/api/main.ts --demo",
     "demo:fabric": "node apps/api/main.ts --demo --ledger fabric-test-network --port 4318",
     "demo:login": "node tools/development-auth.ts",
-    "configured:smoke": "node tools/configured-smoke.ts"
+    "configured:smoke": "node tools/configured-smoke.ts",
+    "test:browser": "npm --prefix packages/browser-tests test --",
+    "test:performance": "node tools/performance-smoke.ts",
+    "test:resilience": "node tools/resilience-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.4",

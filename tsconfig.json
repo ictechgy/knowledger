@@ -16,7 +16,7 @@
     "apps/api/**/*.ts",
     "packages/**/*.ts",
     "infra/fabric/*.ts",
-    "tools/*.ts",
+    "tools/**/*.ts",
     "examples/**/*.ts"
   ],
   "exclude": [

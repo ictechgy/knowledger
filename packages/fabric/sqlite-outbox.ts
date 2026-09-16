@@ -37,6 +37,8 @@ export class SqliteOutbox implements DurableOutbox {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS fabric_outbox_recovery_idx
         ON fabric_outbox_attempts(status, updated_at);
+      CREATE INDEX IF NOT EXISTS fabric_outbox_command_idx
+        ON fabric_outbox_attempts(actor_org_id, command_id, updated_at DESC);
     `);
   }
 
@@ -73,6 +75,13 @@ export class SqliteOutbox implements DurableOutbox {
       ...(row.detail === null ? {} : { detail: row.detail }),
       ...(row.commit_bytes === null ? {} : { commit_bytes: new Uint8Array(row.commit_bytes) }),
     }));
+  }
+  async listCommandAttempts(actor_org_id: string, command_id: string): Promise<OutboxAttempt[]> {
+    // One extra row exposes the bound without silently declaring older attempts terminal.
+    const rows = this.db.prepare(`SELECT command_id,actor_org_id,payload_digest,tx_id,status,detail,commit_bytes
+      FROM fabric_outbox_attempts WHERE actor_org_id=? AND command_id=? ORDER BY updated_at DESC,tx_id DESC LIMIT 129`)
+      .all(actor_org_id,command_id) as unknown as Row[];
+    return rows.map(row=>({...row,...(row.commit_bytes ? {commit_bytes:new Uint8Array(row.commit_bytes)} : {commit_bytes:undefined}),detail:row.detail??undefined}));
   }
 
   close(): void { this.db.close(); }

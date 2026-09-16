@@ -30,7 +30,8 @@ export class PrivateStore {
           PRIMARY KEY(kind, record_id, org_id, actor_id)
         );
         CREATE INDEX IF NOT EXISTS private_draft_actor_order
-          ON private_records(org_id, actor_id, kind, ${CREATED_AT} DESC, record_id DESC);`);
+          ON private_records(org_id, actor_id, kind, ${CREATED_AT} DESC, record_id DESC);
+        CREATE INDEX IF NOT EXISTS private_command_actor_order ON private_records(org_id, actor_id, kind);`);
     } catch (error) { this.db.close(); throw error; }
   }
   put(kind: 'draft' | 'preview' | 'run' | 'command', id: string, actor: Actor, value: any): void {
@@ -39,6 +40,21 @@ export class PrivateStore {
   get(kind: 'draft' | 'preview' | 'run' | 'command', id: string, actor: Actor): any | undefined {
     const row = this.db.prepare('SELECT value_json FROM private_records WHERE kind = ? AND record_id = ? AND org_id = ? AND actor_id = ?').get(kind, id, actor.org_id, actor.actor_id) as any;
     return row ? JSON.parse(row.value_json) : undefined;
+  }
+  updateCommand(id: string, actor: Actor, value: any): void {
+    const result = this.db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'command' AND record_id = ? AND org_id = ? AND actor_id = ?")
+      .run(JSON.stringify(value), id, actor.org_id, actor.actor_id);
+    if (result.changes !== 1) throw new Error('Private command is missing');
+  }
+  commandPage(actor: Actor, limit: number, cursor?: string): { rows: {id:string;value:any}[]; nextCursor: string | null } | undefined {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Invalid command page size');
+    const position = cursor ? this.db.prepare("SELECT rowid FROM private_records WHERE kind = 'command' AND org_id = ? AND actor_id = ? AND record_id = ?")
+      .get(actor.org_id, actor.actor_id, cursor) as {rowid:number}|undefined : undefined;
+    if (cursor && !position) return undefined;
+    const rows = this.db.prepare(`SELECT record_id, value_json FROM private_records WHERE kind = 'command' AND org_id = ? AND actor_id = ?
+      ${position ? 'AND rowid < ?' : ''} ORDER BY rowid DESC LIMIT ?`)
+      .all(...(position ? [actor.org_id, actor.actor_id, position.rowid, limit+1] : [actor.org_id, actor.actor_id, limit+1])) as {record_id:string;value_json:string}[];
+    return {rows:rows.slice(0,limit).map(row=>({id:row.record_id,value:JSON.parse(row.value_json)})),nextCursor:rows.length>limit ? rows[limit-1].record_id : null};
   }
   listDrafts(actor: Actor, limit: number, cursor?: string): { rows: any[]; total: number; nextCursor: string | null; corrupt: boolean } {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Invalid draft page size');

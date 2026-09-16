@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { execute as validateCommand, idempotencyDigest, keyFor } from '../domain/index.ts';
 import type { DomainCommand } from '../domain/index.ts';
 import type { Actor, Checkpoint } from '../storage/local-ledger.ts';
-import type { ApplicationLedger, CommittedReceipt, PendingReceipt } from '../storage/ledger-port.ts';
+import type { ApplicationLedger, CommittedReceipt, PendingReceipt, CommandObservation } from '../storage/ledger-port.ts';
 import type { SqliteFabricProjection } from './sqlite-projection.ts';
 import type { FabricGatewayTransport } from './gateway.ts';
 
@@ -14,7 +14,7 @@ export interface PeerBlockSource {
 
 export interface FabricSigningRoute {
   actor: Actor;
-  transport: Pick<FabricGatewayTransport, 'execute' | 'recoverPending'>;
+  transport: Pick<FabricGatewayTransport, 'execute' | 'recoverPending'> & Partial<Pick<FabricGatewayTransport,'observeCommand'>>;
   close?(): void | Promise<void>;
 }
 
@@ -138,6 +138,19 @@ export class FabricApplicationLedger implements ApplicationLedger {
     return this.serial(async () => {
       for (const route of this.routes) await route.transport.recoverPending();
       await this.synchronize();
+    });
+  }
+
+  observeCommand(actor: Actor, command: DomainCommand, queryPeer: boolean): Promise<CommandObservation|undefined> {
+    return this.serial(async()=>{
+      const route=this.routes.find(route=>sameActor(route.actor,actor));
+      if(!route) throw new FabricLedgerError('SIGNER_FORBIDDEN','인증된 서명 신원이 없는 사용자입니다.',403,false);
+      this.ready();
+      const prior=this.committed(actor,command);
+      if(prior)return prior;
+      const observed=await route.transport.observeCommand?.({...command,actor_org_id:actor.org_id},queryPeer);
+      if(queryPeer)await this.synchronize();
+      return this.committed(actor,command)??observed;
     });
   }
 

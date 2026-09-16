@@ -13,6 +13,7 @@ export interface PendingReceipt {
   tx_id: string;
   payload_digest: string;
 }
+export type CommandObservation = CommittedReceipt | { status: 'pending' | 'rejected' | 'cancelled'; code?: string };
 
 /** Application reads use verified committed state; writes remain adapter-owned. */
 export interface ApplicationLedger {
@@ -27,6 +28,7 @@ export interface ApplicationLedger {
   checkpointForStateCreation(key: string): Checkpoint;
   events(after?: number, limit?: number): LedgerEvent[];
   execute(actor: Actor, command: DomainCommand): Promise<CommittedReceipt | PendingReceipt>;
+  observeCommand?(actor: Actor, command: DomainCommand, queryPeer: boolean): Promise<CommandObservation | undefined>;
   bootstrap?(actor: Actor, config: unknown): Promise<CommittedReceipt>;
   close(): void | Promise<void>;
 }

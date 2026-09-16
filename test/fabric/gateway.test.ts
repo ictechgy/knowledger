@@ -195,3 +195,19 @@ test('the official SDK wire result is decoded only after VALID into the domain r
   assert.deepEqual(result.result, { status: 'fenced', nonce: 'nonce-test-long-value' });
   assert.deepEqual(events, ['VALID', 'result']);
 });
+
+test('command observation recovers status without resubmitting and keeps VALID pending for projection',async()=>{
+  const outbox=new SqliteOutbox(':memory:');let writes=0;let status:'UNKNOWN'|'INVALID'|'VALID'='UNKNOWN';
+  const cmd=command('command-observe');const digest=idempotencyDigest(cmd);
+  await outbox.recordAttempt({command_id:cmd.command_id,actor_org_id:cmd.actor_org_id,payload_digest:digest,tx_id:'tx-observe',status:'unknown',commit_bytes:new Uint8Array([1])});
+  const transport=new FabricGatewayTransport({outbox,client:{async newProposal(){writes++;throw new Error('Must not write');},async getStatus(){return {status};}}});
+  try {
+    assert.equal((await transport.observeCommand(cmd,true))?.status,'pending');
+    status='VALID';assert.equal((await transport.observeCommand(cmd,true))?.status,'pending');assert.equal(writes,0);
+    await outbox.recordAttempt({command_id:'command-reject',actor_org_id:cmd.actor_org_id,payload_digest:digest,tx_id:'tx-reject',status:'unknown'});
+    status='INVALID';assert.equal((await transport.observeCommand({...cmd,command_id:'command-reject'},true))?.status,'rejected');
+    await outbox.recordAttempt({command_id:'command-cancel',actor_org_id:cmd.actor_org_id,payload_digest:digest,tx_id:'tx-cancel',status:'cancelled'});
+    assert.equal((await transport.observeCommand({...cmd,command_id:'command-cancel'},true))?.status,'cancelled');
+    assert.equal(await transport.observeCommand({...cmd,actor_org_id:'OtherMSP'},true),undefined);assert.equal(writes,0);
+  } finally {outbox.close();}
+});

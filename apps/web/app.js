@@ -1,3 +1,5 @@
+import { compareRevisions, RevisionComparisonError } from './revision-diff.js';
+
 let apiBase = '';
 
 const state = {
@@ -6,6 +8,7 @@ const state = {
   selectedDocumentKey: null,
   selectedRevisionDigest: null,
   selectedProposalId: null,
+  compareRevisionDigest: null,
   draft: null,
   draftBaseDigest: null,
   composerVersion: 0,
@@ -14,6 +17,15 @@ const state = {
   draftEditRequest: null,
   privateDrafts: { drafts: [], total: 0, next_cursor: null },
   draftListVersion: 0,
+  commands: { commands: [], next_cursor: null },
+  commandListVersion: 0,
+  commandPollTimer: null,
+  commandPollBusy: false,
+  commandPollDelay: 5000,
+  commandPollToken: 0,
+  commandPollOffset: 0,
+  commandInFlight: new Map(),
+  commandUnavailable: new Set(),
   activeSpace: 'documents',
 };
 
@@ -64,13 +76,14 @@ function showStatus(message, tone = 'success') {
 function clearStatus() { const node = el('global-status'); if (node) node.hidden = true; }
 
 async function request(path, options = {}) {
-  const headers = new Headers(options.headers || {});
+  const { sessionGuard, ...fetchOptions } = options;
+  const headers = new Headers(fetchOptions.headers || {});
   headers.set('Accept', 'application/json');
-  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  if (options.method && options.method !== 'GET' && state.session?.csrf_token) headers.set('X-KCL-CSRF', state.session.csrf_token);
+  if (fetchOptions.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (fetchOptions.method && fetchOptions.method !== 'GET' && state.session?.csrf_token) headers.set('X-KCL-CSRF', state.session.csrf_token);
   let response;
   try {
-    response = await fetch(path, { ...options, headers, credentials: 'same-origin' });
+    response = await fetch(path, { ...fetchOptions, headers, credentials: 'same-origin' });
   } catch {
     throw new Error('서버에 연결할 수 없습니다. 로컬 API가 실행 중인지 확인한 뒤 다시 시도하세요.');
   }
@@ -78,12 +91,12 @@ async function request(path, options = {}) {
   let body = null;
   if (raw) { try { body = JSON.parse(raw); } catch { body = null; } }
   if (!response.ok) {
-    if (response.status === 401 || (state.session?.auth_mode && ['AUTHORIZATION_REVOKED', 'AUTHORIZATION_REQUIRED', 'SESSION_EXPIRED'].includes(body?.code))) {
+    if ((response.status === 401 || (state.session?.auth_mode && ['AUTHORIZATION_REVOKED', 'AUTHORIZATION_REQUIRED', 'SESSION_EXPIRED'].includes(body?.code))) && (!sessionGuard || sessionGuard === state.session)) {
       const authMode = state.session?.auth_mode;
       state.session = null;
       state.overview = null;
       if (authMode) renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
-      else { state.selectedDocumentKey = null; resetComposer(); clearPrivateDrafts(); renderOverview(); }
+      else { state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null; resetComposer(); clearPrivateDrafts(); clearCommands(); renderOverview(); }
     }
     const apiError = body && body.code ? `${body.code}: ${body.message || '요청이 거절되었습니다.'}` : `요청 실패 (${response.status})`;
     const error = new Error(apiError);
@@ -91,7 +104,7 @@ async function request(path, options = {}) {
     error.status = response.status;
     throw error;
   }
-  if (response.status === 202 || body?.status === 'pending') {
+  if (response.status === 202) {
     const error = new Error(body?.message || '요청이 접수됐지만 아직 VALID 커밋으로 확인되지 않았습니다.');
     error.api = body;
     error.status = response.status;
@@ -148,8 +161,10 @@ function renderAuthState(session) {
     state.selectedDocumentKey = null;
     state.selectedRevisionDigest = null;
     state.selectedProposalId = null;
+    state.compareRevisionDigest = null;
     resetComposer();
     clearPrivateDrafts();
+    clearCommands();
     renderOverview();
     const result = el('resolver-result');
     if (result) { result.replaceChildren(); result.hidden = true; }
@@ -195,7 +210,7 @@ async function loadPrivateDrafts(append = false) {
   text(el('private-draft-status'), '내 초안을 불러오는 중…');
   el('refresh-drafts').disabled = true; el('more-drafts').disabled = true;
   try {
-    const page = await request(`${apiBase}/drafts?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    const page = await request(`${apiBase}/drafts?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
     if (version !== state.draftListVersion || session !== state.session) return;
     const drafts = append ? [...state.privateDrafts.drafts, ...page.drafts] : page.drafts;
     state.privateDrafts = { ...page, drafts: [...new Map(drafts.map(draft => [draft.draft_id, draft])).values()] };
@@ -205,6 +220,143 @@ async function loadPrivateDrafts(append = false) {
   } finally {
     if (version === state.draftListVersion) { el('refresh-drafts').disabled = false; el('more-drafts').disabled = false; }
   }
+}
+
+const commandStatusLabel = {
+  pending: '확인 중', committed: '커밋 확인됨', rejected: '거절됨', cancelled: '취소됨',
+};
+const commandTypeLabel = {
+  publish_revision: '공유 게시', propose: '검토 제안', decide: '대표자 결정', activate: '합의 활성화', suspend: '합의 정지', withdraw: '합의 철회',
+};
+
+function commandTargetLabel(command) {
+  if (!command?.target_id) return '대상 확인 중';
+  return shortDigest(command.target_id);
+}
+
+function clearCommands() {
+  state.commandListVersion++;
+  state.commands = { commands: [], next_cursor: null };
+  state.commandUnavailable = new Set();
+  if (state.commandPollTimer) window.clearTimeout(state.commandPollTimer);
+  state.commandPollTimer = null;
+  state.commandPollBusy = false;
+  state.commandPollToken++;
+  state.commandInFlight.clear();
+  state.commandPollOffset = 0;
+  el('command-list')?.replaceChildren();
+  text(el('command-count'), '—');
+  el('more-commands')?.toggleAttribute('hidden', true);
+}
+
+function renderCommands() {
+  const list = el('command-list');
+  if (!list) return;
+  list.replaceChildren();
+  text(el('command-count'), state.commands.commands.length);
+  if (!state.commands.commands.length) { const empty = document.createElement('li'); empty.className = 'empty-state'; empty.textContent = '최근 요청이 없습니다.'; list.append(empty); }
+  state.commands.commands.forEach((command) => {
+    const item = document.createElement('li'); item.className = 'command-item';
+    const head = document.createElement('div'); head.className = 'command-item-head';
+    const title = document.createElement('strong'); title.textContent = commandTypeLabel[command.command_type] || '원장 요청';
+    const status = document.createElement('span'); status.className = `status-chip ${command.status === 'committed' ? 'state-chip-active' : command.status === 'pending' ? 'state-chip-review' : 'state-chip-blocked'}`; status.textContent = state.commandUnavailable.has(command.command_id) ? '미확정 · 확인 불가' : commandStatusLabel[command.status] || command.status;
+    head.append(title, status);
+    const meta = document.createElement('span'); meta.className = 'command-item-meta'; meta.textContent = `${commandTargetLabel(command)} · ${formatDate(command.created_at)}`;
+    item.append(head, meta);
+    const evidence = document.createElement('details'); evidence.className = 'technical-evidence'; const summary = document.createElement('summary'); summary.textContent = '요청 증거 보기'; const evidenceBody = document.createElement('div'); evidenceBody.className = 'metadata-row';
+    const idItem = document.createElement('span'); const idLabel = document.createElement('strong'); idLabel.textContent = 'command_id '; idItem.append(idLabel, document.createTextNode(command.command_id || '—')); evidenceBody.append(idItem);
+    if (command.checkpoint) { const checkpoint = document.createElement('span'); const checkpointLabel = document.createElement('strong'); checkpointLabel.textContent = '검증된 checkpoint '; checkpoint.append(checkpointLabel, document.createTextNode(`block ${command.checkpoint.block_number ?? '—'} · tx ${command.checkpoint.transaction_index ?? '—'}`)); evidenceBody.append(checkpoint); }
+    evidence.append(summary, evidenceBody); item.append(evidence);
+    if (command.code) { const code = document.createElement('span'); code.className = 'command-item-code'; code.textContent = command.code; item.append(code); }
+    if (command.status !== 'committed') {
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'outline-button'; retry.textContent = '같은 요청 다시 보내기'; retry.addEventListener('click', () => retryCommand(command)); item.append(retry);
+    }
+    list.append(item);
+  });
+  el('more-commands').hidden = !state.commands.next_cursor;
+}
+
+async function loadCommands(append = false) {
+  if (!state.session?.actor || !apiBase) { clearCommands(); return; }
+  state.commandPollToken++;
+  state.commandPollBusy = false;
+  const session = state.session; const version = ++state.commandListVersion;
+  const cursor = append ? state.commands.next_cursor : null;
+  el('refresh-commands').disabled = true; el('more-commands').disabled = true;
+  try {
+    const page = await request(`${apiBase}/commands?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
+    if (version !== state.commandListVersion || session !== state.session) return;
+    const commands = append ? [...state.commands.commands, ...(page.commands || [])] : (page.commands || []);
+    state.commands = { ...page, commands: [...new Map(commands.map((command) => [command.command_id, command])).values()] };
+    renderCommands();
+    state.commandPollDelay = 5000;
+    scheduleCommandPoll();
+  } catch (error) {
+    if (version === state.commandListVersion && session === state.session) showStatus(`요청 목록을 불러오지 못했습니다. ${error.message}`, 'error');
+  } finally {
+    if (version === state.commandListVersion) { el('refresh-commands').disabled = false; el('more-commands').disabled = false; }
+  }
+}
+
+function scheduleCommandPoll() {
+  if (state.commandPollTimer || document.hidden || !state.session?.actor) return;
+  if (!state.commands.commands.some((command) => command.status === 'pending')) return;
+  state.commandPollTimer = window.setTimeout(() => { state.commandPollTimer = null; void pollPendingCommands(); }, state.commandPollDelay);
+}
+
+async function pollPendingCommands() {
+  if (state.commandPollBusy || document.hidden || !state.session?.actor) return;
+  state.commandPollBusy = true;
+  const token = ++state.commandPollToken;
+  const session = state.session; const version = state.commandListVersion;
+  const waiting = state.commands.commands.filter((command) => command.status === 'pending');
+  const offset = state.commandPollOffset % Math.max(waiting.length, 1);
+  const pending = waiting.slice(offset, offset + 3);
+  state.commandPollOffset = (offset + pending.length) % Math.max(waiting.length, 1);
+  let committed = false;
+  try {
+    for (const command of pending) {
+      if (session !== state.session || version !== state.commandListVersion || token !== state.commandPollToken) return;
+      try {
+        const detail = await request(`${apiBase}/commands/${encodeURIComponent(command.command_id)}`, { sessionGuard: session });
+        if (session !== state.session || version !== state.commandListVersion || token !== state.commandPollToken) return;
+        const updated = detail.command || detail;
+        state.commands.commands = state.commands.commands.map((item) => item.command_id === command.command_id ? updated : item);
+        if (updated.status === 'committed' || updated.status === 'valid') committed = true;
+        state.commandUnavailable.delete(command.command_id);
+        renderCommands();
+      } catch (error) {
+        if (session !== state.session || version !== state.commandListVersion || token !== state.commandPollToken) return;
+        if (error.status === 503 || error.api?.retryable) state.commandUnavailable.add(command.command_id);
+      }
+    }
+    if (committed && session === state.session && version === state.commandListVersion && token === state.commandPollToken) await loadOverview();
+  } finally {
+    if (token !== state.commandPollToken) return;
+    if (session !== state.session || version !== state.commandListVersion) { state.commandPollBusy = false; return; }
+    state.commandPollBusy = false;
+    state.commandPollDelay = Math.min(Math.max(state.commandPollDelay * 1.5, 5000), 30000);
+    renderCommands();
+    scheduleCommandPoll();
+  }
+}
+
+async function retryCommand(command) {
+  if (!state.session?.actor) return;
+  const session = state.session; const version = state.commandListVersion;
+  const key = `${session.actor.org_id}|${session.actor.actor_id}|retry|${command.command_id}`;
+  if (state.commandInFlight.has(key)) { showStatus('이 요청은 이미 다시 보내는 중입니다. 결과를 확인하세요.', 'pending'); return; }
+  state.commandInFlight.set(key, command.command_id);
+  showStatus(`${commandTypeLabel[command.command_type] || '원장 요청'} · ${commandTargetLabel(command)}를 같은 요청으로 다시 보냅니다.`, 'pending');
+  try {
+    const result = await request(`${apiBase}/commands/${encodeURIComponent(command.command_id)}/retry`, { method: 'POST', body: jsonBody({}), sessionGuard: session });
+    if (session !== state.session || version !== state.commandListVersion) return;
+    if (result.status === 'pending') showStatus('같은 요청을 다시 보냈습니다. 아직 VALID 커밋으로 확인되지 않았습니다.', 'pending');
+    else if (result.status === 'committed' && result.checkpoint) { showStatus('같은 요청의 커밋을 확인했습니다.', 'success'); await loadOverview(); }
+    else showStatus('요청 결과를 아직 확인하지 못했습니다.', 'pending');
+  } catch (error) {
+    if (session === state.session && version === state.commandListVersion) showStatus(error.pending || error.status === 202 ? '같은 요청의 결과가 아직 미확정입니다. 내 요청에서 다시 확인하세요.' : `같은 요청 재전송 실패: ${error.message}`, error.pending || error.status === 202 ? 'pending' : 'error');
+  } finally { if (state.commandInFlight.get(key) === command.command_id) state.commandInFlight.delete(key); if (session === state.session && version === state.commandListVersion) void loadCommands(); }
 }
 
 function setDraftSlotReadOnly(readOnly) {
@@ -272,7 +424,7 @@ async function openSavedDraft(id) {
   const version = state.composerVersion; const session = state.session;
   text(el('private-draft-status'), '선택한 초안을 여는 중…');
   try {
-    const draft = await request(`${apiBase}/drafts/${encodeURIComponent(id)}`);
+    const draft = await request(`${apiBase}/drafts/${encodeURIComponent(id)}`, { sessionGuard: session });
     if (version !== state.composerVersion || session !== state.session) return;
     const payload = draft.revision.payload;
     state.draftBaseDigest = payload.parents[0] ?? null;
@@ -290,8 +442,10 @@ async function openSavedDraft(id) {
 }
 
 async function loadOverview({ preserveSelection = true } = {}) {
+  const session = state.session;
   const previous = preserveSelection ? state.selectedDocumentKey : null;
-  const overview = await request(`${apiBase}/overview`);
+  const overview = await request(`${apiBase}/overview`, { sessionGuard: session });
+  if (session !== state.session) return;
   state.overview = overview;
   renderMode(overview.mode, state.session?.auth_mode);
   const docs = currentDocuments();
@@ -317,6 +471,7 @@ function renderOverview() {
   renderDocumentList(docs);
   renderDocumentDetail(findSelectedDocument());
   renderReview(findSelectedDocument());
+  renderRevisionComparison(findSelectedDocument());
   renderResolverDocuments(docs);
   renderReviewInbox();
   syncDraftPolicies();
@@ -386,7 +541,7 @@ function renderDocumentList(documents) {
     const presentation = statusForDocument(doc);
     const status = document.createElement('span'); status.className = `status-chip ${presentation.className}`; status.textContent = presentation.label;
     meta.append(context, status); button.append(title, meta); list.append(button);
-    button.addEventListener('click', () => { state.selectedDocumentKey = key; state.selectedRevisionDigest = null; state.selectedProposalId = null; renderOverview(); el('document-title')?.focus?.(); });
+    button.addEventListener('click', () => { state.selectedDocumentKey = key; state.selectedRevisionDigest = null; state.selectedProposalId = null; state.compareRevisionDigest = null; renderOverview(); el('document-title')?.focus?.(); });
   });
 }
 
@@ -499,7 +654,7 @@ function renderReviewInbox() {
     const meta = document.createElement('span'); meta.textContent = `${metadataLabel('contexts', doc?.payload?.context_id)} · 검토 정책`;
     button.append(title, meta);
     button.addEventListener('click', () => {
-      if (doc) { state.selectedDocumentKey = slotKeyFor(doc.payload); state.selectedRevisionDigest = doc.revision_digest; state.selectedProposalId = proposal.proposal_id; }
+      if (doc) { state.selectedDocumentKey = slotKeyFor(doc.payload); state.selectedRevisionDigest = doc.revision_digest; state.selectedProposalId = proposal.proposal_id; state.compareRevisionDigest = null; }
       setWorkspace('review'); renderOverview(); el('review-title')?.focus?.();
     });
     list.append(button);
@@ -510,7 +665,7 @@ async function proposeCurrentRevision(doc) {
   if (!canPropose()) { showStatus('이 계정에는 검토 제안을 제출할 권한이 없습니다.', 'error'); return; }
   const policy = matchingPolicy(doc);
   if (!policy) { showStatus('이 개정본의 문서 범위와 일치하는 정책이 없어 제안을 제출할 수 없습니다.', 'error'); return; }
-  await executeMutation('/agreement-proposals', { revision_digest: doc.revision_digest, policy_id: policy.policy_id, policy_version: policy.policy_version, command_id: nowCommand() }, '새 합의 검토 제안');
+  await executeMutation('/agreement-proposals', { revision_digest: doc.revision_digest, policy_id: policy.policy_id, policy_version: policy.policy_version, command_id: nowCommand() }, '새 합의 검토 제안', { command_type: 'propose', target_id: doc.revision_digest });
 }
 
 function renderReview(doc) {
@@ -536,6 +691,72 @@ function renderReview(doc) {
 
 function roleLabel(role) { return metadataLabel('roles', role); }
 function decisionLabel(decision) { return { approve: '승인', object: '이의 제기', abstain: '기권', retract: '내 결정 철회' }[decision] || decision; }
+
+function sameRevisionSlot(left, right) {
+  return ['channel_id', 'document_id', 'context_id', 'scope_id', 'usage_scope'].every((field) => left?.[field] === right?.[field]);
+}
+
+function revisionCandidates(current) {
+  const all = (state.overview?.documents || []).filter((candidate) => candidate.revision_digest !== current?.revision_digest && sameRevisionSlot(candidate.payload, current?.payload) && compareDocumentOrder(candidate, current) < 0);
+  const parents = new Set(current?.payload?.parents || []);
+  return all.sort((left, right) => {
+    const parentOrder = Number(parents.has(right.revision_digest)) - Number(parents.has(left.revision_digest));
+    return parentOrder || -compareDocumentOrder(left, right);
+  });
+}
+
+function appendDigestEvidence(container, current, previous) {
+  const details = document.createElement('details'); details.className = 'technical-evidence';
+  const summary = document.createElement('summary'); summary.textContent = '비교 대상 digest 보기';
+  const body = document.createElement('div'); body.className = 'metadata-row';
+  [['현재 개정본', current?.revision_digest], ['비교 대상', previous?.revision_digest || '이전 개정본 없음']].forEach(([label, value]) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(value)); body.append(item); });
+  details.append(summary, body); container.append(details);
+}
+
+function renderRevisionComparison(current) {
+  const container = el('revision-compare-content');
+  if (!container) return;
+  container.replaceChildren();
+  if (!current) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '문서를 선택하면 이전 개정본을 비교할 수 있습니다.'; container.append(empty); return; }
+  const candidates = revisionCandidates(current);
+  const preferred = state.compareRevisionDigest && candidates.some((candidate) => candidate.revision_digest === state.compareRevisionDigest)
+    ? state.compareRevisionDigest : candidates[0]?.revision_digest || null;
+  state.compareRevisionDigest = preferred;
+  const controls = document.createElement('div'); controls.className = 'revision-compare-controls';
+  const label = document.createElement('label'); label.textContent = '비교할 이전 개정본';
+  const select = document.createElement('select'); select.setAttribute('aria-label', '비교할 이전 개정본');
+  candidates.forEach((candidate) => { const option = document.createElement('option'); option.value = candidate.revision_digest; option.textContent = `${candidate.payload?.title || '제목 없음'} · ${formatDate(candidate.payload?.metadata?.created_at)} · ${shortDigest(candidate.revision_digest)}`; option.selected = candidate.revision_digest === preferred; select.append(option); });
+  label.append(select); controls.append(label); container.append(controls);
+  select.addEventListener('change', () => { state.compareRevisionDigest = select.value || null; renderRevisionComparison(current); });
+  const previous = candidates.find((candidate) => candidate.revision_digest === preferred) || null;
+  let comparison;
+  try { comparison = compareRevisions(current, previous); }
+  catch (error) { const message = document.createElement('p'); message.className = 'review-error'; message.textContent = error instanceof RevisionComparisonError ? error.message : '개정본을 비교할 수 없습니다.'; container.append(message); return; }
+  appendDigestEvidence(container, current, previous);
+  const title = document.createElement('div'); title.className = 'revision-compare-title';
+  const beforeTitle = document.createElement('span'); beforeTitle.textContent = comparison.title.before ?? '이전 개정본 없음';
+  const afterTitle = document.createElement('strong'); afterTitle.textContent = comparison.title.after;
+  title.append(beforeTitle, document.createTextNode(' → '), afterTitle); container.append(title);
+  const dependency = document.createElement('p'); dependency.className = 'form-hint'; dependency.textContent = `의존성 변경 ${comparison.dependencies.added.length}개 추가 · ${comparison.dependencies.removed.length}개 제거 · ${comparison.dependencies.changed.length}개 관계 변경`;
+  container.append(dependency);
+  if (comparison.dependencies.added.length || comparison.dependencies.removed.length) {
+    const dependencyDetails = document.createElement('details'); dependencyDetails.className = 'technical-evidence'; const dependencySummary = document.createElement('summary'); dependencySummary.textContent = '의존성 digest 변경 보기'; const dependencyBody = document.createElement('div'); dependencyBody.className = 'metadata-row';
+    [['추가', comparison.dependencies.added], ['제거', comparison.dependencies.removed]].forEach(([label, values]) => { if (!values.length) return; const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(values.join(', '))); dependencyBody.append(item); });
+    comparison.dependencies.changed.forEach((change) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `관계 변경 ${change.revision_digest} `; item.append(strong, document.createTextNode(`이전 ${JSON.stringify(change.before)} · 현재 ${JSON.stringify(change.after)}`)); dependencyBody.append(item); });
+    dependencyDetails.append(dependencySummary, dependencyBody); container.append(dependencyDetails);
+  }
+  const bodyHeading = document.createElement('h4'); bodyHeading.className = 'subheading'; bodyHeading.textContent = comparison.has_previous ? '본문 변경' : comparison.body.message; container.append(bodyHeading);
+  if (comparison.body.line_endings_changed) { const lineEndingNote = document.createElement('p'); lineEndingNote.className = 'form-hint'; lineEndingNote.textContent = '줄바꿈 형식이 바뀌었습니다. 원문 바이트는 서로 다릅니다.'; container.append(lineEndingNote); }
+  if (comparison.body.fallback) {
+    const columns = document.createElement('div'); columns.className = 'revision-diff-columns';
+    [['이전 원문', comparison.body.before_text], ['현재 원문', comparison.body.after_text]].forEach(([heading, value]) => { const section = document.createElement('section'); const name = document.createElement('h5'); name.textContent = heading; const pre = document.createElement('pre'); pre.className = 'markdown-source'; pre.textContent = value; section.append(name, pre); columns.append(section); });
+    const note = document.createElement('p'); note.className = 'form-hint'; note.textContent = comparison.body.message; container.append(note, columns);
+  } else if (comparison.has_previous) {
+    const lines = document.createElement('div'); lines.className = 'revision-diff-lines';
+    comparison.body.lines.forEach((line) => { const row = document.createElement('div'); row.className = `revision-diff-line revision-diff-${line.type}`; const marker = document.createElement('span'); marker.className = 'revision-diff-marker'; marker.textContent = line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '; const value = document.createElement('span'); value.textContent = line.text; row.append(marker, value); lines.append(row); });
+    container.append(lines);
+  }
+}
 
 function renderResolverDocuments(documents) {
   const select = el('resolve-documents'); const previous = select.value; select.replaceChildren();
@@ -567,19 +788,46 @@ function activeAgreementForSlot(document) {
 }
 
 function jsonBody(value) { return JSON.stringify(value); }
-async function executeMutation(path, payload, label) {
+function pendingDuplicate(commandMeta) {
+  return commandMeta && state.commands.commands.find((command) => command.status === 'pending' && command.command_type === commandMeta.command_type && command.target_id === commandMeta.target_id);
+}
+async function executeMutation(path, payload, label, commandMeta) {
+  const session = state.session;
+  const inFlightKey = commandMeta && session?.actor ? `${session.actor.org_id}|${session.actor.actor_id}|${commandMeta.command_type}|${commandMeta.target_id}` : null;
+  if (inFlightKey && state.commandInFlight.has(inFlightKey)) {
+    showStatus(`같은 대상의 ${commandTypeLabel[commandMeta.command_type] || '요청'}을 이미 보내는 중입니다. 결과를 확인하세요.`, 'pending');
+    return null;
+  }
+  const duplicate = pendingDuplicate(commandMeta);
+  if (duplicate) {
+    showStatus(`같은 대상의 ${commandTypeLabel[commandMeta.command_type] || '요청'}이 이미 확인 중입니다. 내 요청에서 상태를 확인하세요.`, 'pending');
+    void loadCommands();
+    return null;
+  }
+  if (inFlightKey) state.commandInFlight.set(inFlightKey, payload.command_id);
   try {
-    const result = await request(`${apiBase}${path}`, { method: 'POST', body: jsonBody(payload) });
-    if (result.status === 'pending') { showStatus(`${label} 요청이 접수됐습니다. 아직 VALID 커밋으로 확인되지 않았습니다.`, 'pending'); return result; }
-    if (result.status && result.status !== 'committed' && result.status !== 'valid') { showStatus(`${label} 상태가 ${result.status}입니다. 결과를 확정하지 않았습니다.`, 'pending'); return result; }
-    showStatus(`${label}이(가) 커밋됐습니다.`, 'success'); await loadOverview(); return result;
+    const result = await request(`${apiBase}${path}`, { method: 'POST', body: jsonBody(payload), sessionGuard: session });
+    if (session !== state.session) return null;
+    if (result.status === 'pending') { showStatus(`${label} 요청이 접수됐습니다. 아직 VALID 커밋으로 확인되지 않았습니다.`, 'pending'); void loadCommands(); return result; }
+    if (result.status !== 'committed' || !result.checkpoint) { showStatus(`${label} 상태가 ${result.status}입니다. 결과를 확정하지 않았습니다.`, 'pending'); void loadCommands(); return result; }
+    showStatus(`${label}이(가) 커밋됐습니다.`, 'success'); await loadOverview(); if (session !== state.session) return null; void loadCommands(); return result;
   } catch (error) {
+    if (session !== state.session) return null;
     if (error.pending || error.status === 202 || error.api?.status === 'pending') {
       showStatus(`${label} 요청이 접수됐습니다. 아직 VALID 커밋으로 확인되지 않았습니다.`, 'pending');
-      return error.api || null;
+      void loadCommands(); return error.api || null;
     }
-    showStatus(`${label} 실패: ${error.message}`, 'error'); return null;
-  }
+    if (!error.status || error.status >= 500) {
+      showStatus(`${label} 결과를 확인하지 못했습니다. 요청 이력에서 커밋 상태를 확인합니다.`, 'pending');
+      await loadCommands();
+      if (session === state.session && state.commands.commands.some(command => command.command_id === payload.command_id && command.status === 'committed')) {
+        await loadOverview();
+        if (session === state.session) showStatus(`${label}의 커밋을 요청 이력에서 확인했습니다.`, 'success');
+      }
+      return null;
+    }
+    showStatus(`${label} 실패: ${error.message}`, 'error'); void loadCommands(); return null;
+  } finally { if (inFlightKey && state.commandInFlight.get(inFlightKey) === payload.command_id) state.commandInFlight.delete(inFlightKey); }
 }
 
 async function submitDecision(proposal, decision) {
@@ -587,18 +835,18 @@ async function submitDecision(proposal, decision) {
   if (!rationale) { showStatus('결정의 근거를 입력하세요.', 'error'); return; }
   const payload = { decision, rationale, command_id: nowCommand() };
   if (decision === 'retract') { const own = (proposal.decisions || []).find((item) => item.actor_id === state.session?.actor?.actor_id && item.actor_org_id === state.session?.actor?.org_id && item.decision !== 'retract'); if (!own) { showStatus('철회할 본인 결정이 없습니다.', 'error'); return; } payload.retracts_decision_id = own.decision_id; }
-  await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/decisions`, payload, `결정 ${decisionLabel(decision)}`);
+  await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/decisions`, payload, `결정 ${decisionLabel(decision)}`, { command_type: 'decide', target_id: proposal.proposal_id });
 }
 
 async function activateProposal(proposal) {
   const selected = findSelectedDocument();
-  await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/activate`, { expected_active_agreement_id: activeAgreementForSlot(selected), command_id: nowCommand() }, '합의 활성화');
+  await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/activate`, { expected_active_agreement_id: activeAgreementForSlot(selected), command_id: nowCommand() }, '합의 활성화', { command_type: 'activate', target_id: proposal.proposal_id });
 }
 
 async function changeAgreement(proposal, action) {
   const reason = el(`agreement-reason-${proposal.agreement_id}`)?.value.trim() || '';
   if (!reason) { showStatus(`${action === 'suspend' ? '정지' : '철회'} 사유를 입력하세요.`, 'error'); return; }
-  await executeMutation(`/agreements/${encodeURIComponent(proposal.agreement_id)}/${action}`, { reason, command_id: nowCommand() }, action === 'suspend' ? '합의 정지' : '합의 철회');
+  await executeMutation(`/agreements/${encodeURIComponent(proposal.agreement_id)}/${action}`, { reason, command_id: nowCommand() }, action === 'suspend' ? '합의 정지' : '합의 철회', { command_type: action, target_id: proposal.agreement_id });
 }
 
 async function onDraftSubmit(event) {
@@ -626,7 +874,7 @@ async function onDraftSubmit(event) {
       if (state.draftEditRequest?.fingerprint !== fingerprint) state.draftEditRequest = { fingerprint, editId: nowCommand() };
       input.edit_id = state.draftEditRequest.editId;
     }
-    const draft = await request(path, { method: 'POST', body: jsonBody(input) });
+    const draft = await request(path, { method: 'POST', body: jsonBody(input), sessionGuard: session });
     if (version !== state.composerVersion || session !== state.session) return;
     enterSavedDraftMode(draft); text(el('draft-status'), '비공개 초안이 저장됐습니다. 이제 공유 미리보기를 생성하세요.'); showStatus('비공개 초안이 저장됐습니다. 아직 공용 원장에 게시되지 않았습니다.', 'success'); renderPreviewStep(draft); void loadPrivateDrafts();
   } catch (error) {
@@ -670,7 +918,7 @@ async function importMarkdown() {
     payload.content_base64 = btoa(binary);
     const fingerprint = JSON.stringify(payload);
     if (state.markdownImportRequest?.fingerprint !== fingerprint) state.markdownImportRequest = { fingerprint, importId: nowCommand() };
-    const draft = await request(`${apiBase}/draft-imports/markdown`, { method: 'POST', body: jsonBody({ ...payload, import_id: state.markdownImportRequest.importId }) });
+    const draft = await request(`${apiBase}/draft-imports/markdown`, { method: 'POST', body: jsonBody({ ...payload, import_id: state.markdownImportRequest.importId }), sessionGuard: session });
     if (version !== state.composerVersion || session !== state.session) return;
     enterSavedDraftMode(draft);
     setValue(el('draft-body'), draft.revision.payload.body_markdown);
@@ -693,7 +941,7 @@ function renderPreviewStep(draft) {
 async function createPublicationPreview(draft) {
   const version = state.composerVersion; const session = state.session;
   try {
-    const preview = await request(`${apiBase}/publication-previews`, { method: 'POST', body: jsonBody({ draft_id: draft.draft_id }) });
+    const preview = await request(`${apiBase}/publication-previews`, { method: 'POST', body: jsonBody({ draft_id: draft.draft_id }), sessionGuard: session });
     if (version !== state.composerVersion || session !== state.session) return;
     renderPublicationPreview(preview); showStatus('공유 게시 미리보기가 생성됐습니다. 수신 조직과 만료 시각을 확인하세요.', 'success');
   } catch (error) { if (version === state.composerVersion && session === state.session) showStatus(`미리보기 생성 실패: ${error.message}`, 'error'); }
@@ -707,8 +955,10 @@ function renderPublicationPreview(preview) {
 
 async function publishRevision(preview, checkbox) {
   if (!checkbox.checked) return;
-  const result = await executeMutation('/revisions', { preview_id: preview.preview_id, confirm_shared: true, command_id: nowCommand() }, '공유 개정본 게시');
-  if (result?.status === 'committed' || result?.status === 'valid') {
+  const session = state.session; const version = state.composerVersion;
+  const result = await executeMutation('/revisions', { preview_id: preview.preview_id, confirm_shared: true, command_id: nowCommand() }, '공유 개정본 게시', { command_type: 'publish_revision', target_id: preview.revision_digest });
+  if (session !== state.session || version !== state.composerVersion) return;
+  if (result?.status === 'committed') {
     text(el('draft-status'), '게시가 커밋됐습니다. 아래에서 검토 제안을 시작할 수 있습니다.');
     renderProposalStep(result?.result?.revision_digest || preview.revision_digest);
   }
@@ -726,7 +976,7 @@ function renderProposalStep(revisionDigest) {
   const button = document.createElement('button'); button.type = 'button'; button.className = 'primary-button'; button.textContent = '검토 제안 제출'; button.disabled = !policies.length || !canPropose();
   button.addEventListener('click', async () => {
     const [policyId, policyVersion] = select.value.split('|');
-    await executeMutation('/agreement-proposals', { revision_digest: revisionDigest, policy_id: policyId, policy_version: Number(policyVersion), command_id: nowCommand() }, '합의 검토 제안');
+    await executeMutation('/agreement-proposals', { revision_digest: revisionDigest, policy_id: policyId, policy_version: Number(policyVersion), command_id: nowCommand() }, '합의 검토 제안', { command_type: 'propose', target_id: revisionDigest });
   });
   if (!policies.length) { const noPolicy = document.createElement('p'); noPolicy.textContent = '이 개정본의 문서 범위와 일치하는 정책이 없어 제안을 제출할 수 없습니다.'; noPolicy.className = 'form-hint'; callout.append(heading, copy, noPolicy); } else { const hint = document.createElement('p'); hint.className = 'form-hint'; hint.textContent = canPropose() ? '정책을 확인한 뒤 검토 제안을 제출하세요.' : '이 계정에는 검토 제안 제출 권한이 없습니다.'; callout.append(heading, copy, select, hint, button); }
   section.replaceChildren(callout); section.hidden = false;
@@ -734,8 +984,9 @@ function renderProposalStep(revisionDigest) {
 
 async function onResolverSubmit(event) {
   event.preventDefault(); const documents = [...el('resolve-documents').selectedOptions].map((option) => option.dataset.documentId).filter(Boolean); if (!documents.length) { showStatus('조회할 문서를 하나 선택하세요.', 'error'); return; }
+  const session = state.session;
   const result = el('resolver-result'); result.hidden = true; text(el('resolver-status'), '현재 원장 상태와 활성 합의를 확인 중…');
-  try { const response = await request(`${apiBase}/resolve`, { method: 'POST', body: jsonBody({ document_ids: documents, context_id: el('resolve-context').value.trim(), scope_id: el('resolve-scope').value.trim(), usage_scope: el('resolve-usage').value.trim() }) }); renderResolverResult(response); text(el('resolver-status'), response.status === 'provided' ? '현재 확인 시점에 제공 가능한 결과입니다.' : '사용이 보류된 결과입니다.'); } catch (error) { text(el('resolver-status'), error.message); showStatus(`컨텍스트 확인 실패: ${error.message}`, 'error'); }
+  try { const response = await request(`${apiBase}/resolve`, { method: 'POST', body: jsonBody({ document_ids: documents, context_id: el('resolve-context').value.trim(), scope_id: el('resolve-scope').value.trim(), usage_scope: el('resolve-usage').value.trim() }), sessionGuard: session }); if (session !== state.session) return; renderResolverResult(response); text(el('resolver-status'), response.status === 'provided' ? '현재 확인 시점에 제공 가능한 결과입니다.' : '사용이 보류된 결과입니다.'); } catch (error) { if (session === state.session) { text(el('resolver-status'), error.message); showStatus(`컨텍스트 확인 실패: ${error.message}`, 'error'); } }
 }
 
 function renderResolverResult(response) {
@@ -753,8 +1004,8 @@ async function switchPersona(event) {
   try { selected = JSON.parse(event.target.value); } catch { return; }
   if (!selected?.org_id || !selected?.actor_id || (selected.org_id === state.session?.actor?.org_id && selected.actor_id === state.session?.actor?.actor_id)) return;
   event.target.disabled = true;
-  resetComposer(); clearPrivateDrafts(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null;
-  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); }
+  resetComposer(); clearPrivateDrafts(); clearCommands(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null;
+  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); await loadCommands(); }
 }
 
 function resetComposer() {
@@ -796,6 +1047,12 @@ function bindEvents() {
   el('refresh-overview').addEventListener('click', async () => { clearStatus(); try { await loadOverview(); showStatus('원장 체크포인트에서 최신 상태를 읽었습니다.', 'success'); } catch (error) { showStatus(error.message, 'error'); } });
   el('refresh-drafts').addEventListener('click', () => loadPrivateDrafts());
   el('more-drafts').addEventListener('click', () => loadPrivateDrafts(true));
+  el('refresh-commands')?.addEventListener('click', () => loadCommands());
+  el('more-commands')?.addEventListener('click', () => loadCommands(true));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (state.commandPollTimer) window.clearTimeout(state.commandPollTimer); state.commandPollTimer = null; }
+    else scheduleCommandPoll();
+  });
   el('persona-select').addEventListener('change', switchPersona);
   el('logout-button')?.addEventListener('click', async () => {
     try {
@@ -804,6 +1061,7 @@ function bindEvents() {
       const authMode = state.session?.auth_mode || 'oidc';
       state.session = null;
       state.overview = null;
+      clearCommands();
       renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
       showStatus('로그아웃했습니다.', 'success');
     } catch (error) { showStatus(`로그아웃 실패: ${error.message}`, 'error'); }
@@ -819,7 +1077,7 @@ function bindEvents() {
   el('resolver-form').addEventListener('submit', onResolverSubmit);
   el('resolve-documents').addEventListener('change', (event) => {
     const selected = currentDocuments().find((doc) => slotKeyFor(doc.payload) === event.target.value);
-    if (selected) { state.selectedDocumentKey = slotKeyFor(selected.payload); state.selectedRevisionDigest = null; state.selectedProposalId = null; syncResolverFields(selected); renderOverview(); }
+  if (selected) { state.selectedDocumentKey = slotKeyFor(selected.payload); state.selectedRevisionDigest = null; state.selectedProposalId = null; state.compareRevisionDigest = null; syncResolverFields(selected); renderOverview(); }
   });
 }
 
@@ -831,6 +1089,7 @@ async function init() {
     await loadOverview({ preserveSelection: false });
     setWorkspace(outstandingReviews().length ? 'review' : 'documents');
     await loadPrivateDrafts();
+    await loadCommands();
   } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
 }
 

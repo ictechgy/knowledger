@@ -94,4 +94,8 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로�
 
 [조직별 개발 앱](docs/17-ORGANIZATION-RUNTIME.md)은 계정·서명 키·private 데이터 폴더를 조직 단위로 제한한다. 웹 화면은 [Claude 검토](docs/18-DESIGN-REVIEW.md)에 따라 검토함·영역 내비게이션·기술 증거 접기를 반영했다. 기준과 남은 조정 범위는 [DESIGN.md](DESIGN.md)에 있다.
 
+[내 요청](docs/20-REQUEST-TRACKING.md)에서 미확정 거래를 이어서 확인하고 원래 명령으로 재시도한다.
+[개정본 비교·브라우저 검사](docs/21-BROWSER-AND-REVISION-TESTS.md)와
+[성능·장애 실험](docs/22-AUTOMATED-EXPERIMENTS.md)을 로컬과 CI에서 반복 실행할 수 있다.
+
 [MIT 라이선스](LICENSE)로 제공한다. [기여 가이드](CONTRIBUTING.md)와 [보안 안내](SECURITY.md)를 참고한다. 예제의 이름과 ID는 모두 가상이며 실제 인증정보가 없다.

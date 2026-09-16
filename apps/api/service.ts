@@ -312,18 +312,107 @@ export class KclService {
       let stored = this.vault.get('command', input.command_id, actor);
       if (stored && stored.request_digest !== digest) throw new ApiError('IDEMPOTENCY_CONFLICT', '같은 command_id로 다른 요청을 보낼 수 없습니다.', 409);
       if (!stored) {
-        stored = { request_digest: digest, command: { command_id: input.command_id, ...build() } };
+        stored = { request_digest: digest, command: { command_id: input.command_id, ...build() }, tracking: {created_at:new Date().toISOString(),status:'pending'} };
         this.vault.put('command', input.command_id, actor, stored);
       }
-      const receipt = await this.ledger.execute(actor, stored.command);
-      if (receipt.status === 'pending') return receipt;
-      const committed = this.ledger.read(domain.keyFor.idempotency(actor.org_id, input.command_id));
-      if (!committed?.tx_id) throw new ApiError('PROJECTION_BEHIND', '원장 projection에서 커밋된 거래를 확인하지 못했습니다.', 503, true);
-      const checkpoint = this.ledger.checkpointForTransaction(committed.tx_id);
-      return { command_id: input.command_id, ...receipt, checkpoint };
+      return this.executeStoredCommand(actor, stored);
+
     });
     this.commandQueue = run.catch(() => undefined);
     return run;
+  }
+
+  private storedCommand(actor: Actor, id: string, supplied?: any): any {
+    let stored: any;
+    try {
+      stored = supplied ?? this.vault.get('command', id, actor);
+      if (!stored) throw new ApiError('NOT_FOUND', '요청을 찾을 수 없거나 접근할 수 없습니다.', 404);
+      if (!/^[a-f0-9]{64}$/.test(stored.request_digest) || stored.command?.command_id !== id
+        || !['publish_revision','propose','decide','activate','withdraw','suspend'].includes(stored.command.type)) throw new Error('Invalid command');
+      domain.idempotencyDigest(stored.command);
+      if (stored.tracking !== undefined && (!stored.tracking || !['pending','rejected'].includes(stored.tracking.status)
+        || !Number.isFinite(Date.parse(stored.tracking.created_at))
+        || (stored.tracking.code !== undefined && !/^[A-Z][A-Z0-9_]{1,63}$/.test(stored.tracking.code)))) throw new Error('Invalid tracking metadata');
+      return stored;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError('PRIVATE_COMMAND_CORRUPT', '저장된 요청을 확인할 수 없습니다.', 503, true);
+    }
+  }
+
+  private committedCommand(actor: Actor, command: any) {
+    const committed = this.ledger.read(domain.keyFor.idempotency(actor.org_id, command.command_id));
+    if (!committed) return undefined;
+    if (committed.record_type !== 'IdempotencyRecord' || committed.command_id !== command.command_id
+      || committed.actor?.org_id !== actor.org_id || committed.actor?.actor_id !== actor.actor_id || committed.actor?.kind !== actor.kind
+      || committed.command_digest !== domain.idempotencyDigest(command) || committed.command_type !== command.type || typeof committed.tx_id !== 'string') {
+      throw new ApiError('IDEMPOTENCY_CONFLICT', '원장 기록이 이 요청의 사용자 또는 내용과 일치하지 않습니다.', 409);
+    }
+    return {status:'committed' as const,result:committed.result,checkpoint:this.ledger.checkpointForTransaction(committed.tx_id)};
+  }
+
+  private async executeStoredCommand(actor: Actor, stored: any) {
+    const id = stored.command.command_id;
+    try {
+      const receipt = await this.ledger.execute(actor, stored.command);
+      if (receipt.status === 'pending') {
+        stored.tracking = {created_at:stored.tracking?.created_at ?? new Date().toISOString(),status:'pending'};
+        this.vault.updateCommand(id,actor,stored);
+        return receipt;
+      }
+      const committed = this.committedCommand(actor,stored.command);
+      if (!committed) throw new ApiError('PROJECTION_BEHIND', '원장 projection에서 커밋된 거래를 확인하지 못했습니다.', 503, true);
+      return {command_id:id,...committed};
+    } catch (error:any) {
+      // Only definitive preflight/authorization/conflict errors become rejection hints.
+      // A verified ledger receipt or outstanding transport attempt always takes precedence.
+      if (Number.isInteger(error?.status) && error.status>=400 && error.status<500 && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)) {
+        stored.tracking={created_at:stored.tracking?.created_at ?? new Date().toISOString(),status:'rejected',code:error.code};
+        this.vault.updateCommand(id,actor,stored);
+      }
+      throw error;
+    }
+  }
+
+  private async describeCommand(actor: Actor, stored: any, queryPeer: boolean) {
+    const command=stored.command;
+    const observed=this.committedCommand(actor,command) ?? await this.ledger.observeCommand?.(actor,command,queryPeer);
+    const status=observed?.status ?? stored.tracking?.status ?? 'pending';
+    const input=command.input;
+    const target=command.type==='publish_revision' ? input?.revision?.revision_digest
+      : command.type==='propose' ? input?.revision_digest : command.type==='decide' ? input?.decision?.proposal_id : input?.proposal_id ?? input?.agreement_id;
+    const result:any={command_id:command.command_id,command_type:command.type,target_id:typeof target==='string'?target:null,
+      status,created_at:stored.tracking?.created_at ?? null};
+    if(observed?.status==='committed') result.checkpoint=observed.checkpoint;
+    if(status==='rejected'||status==='cancelled') result.code=(observed && 'code' in observed ? observed.code : undefined) ?? stored.tracking?.code ?? 'LEDGER_CONFLICT';
+    return result;
+  }
+
+  async listCommands(actor: Actor, limit=20, cursor?:string) {
+    await this.refresh();this.actor(actor);
+    let page;
+    try { page=this.vault.commandPage(actor,limit,cursor); }
+    catch { throw new ApiError('PRIVATE_COMMAND_CORRUPT','저장된 요청 목록을 확인할 수 없습니다.',503,true); }
+    if(!page) throw new ApiError('NOT_FOUND','요청을 찾을 수 없거나 접근할 수 없습니다.',404);
+    const commands=[];
+    for(const row of page.rows) commands.push(await this.describeCommand(actor,this.storedCommand(actor,row.id,row.value),false));
+    this.actor(actor);
+    return {commands,next_cursor:page.nextCursor};
+  }
+
+  async getCommand(actor: Actor,id:string) {
+    identifier(id);await this.refresh();this.actor(actor);
+    const description=await this.describeCommand(actor,this.storedCommand(actor,id),true);
+    this.actor(actor);return description;
+  }
+
+  retryCommand(actor: Actor,id:string,input:any) {
+    identifier(id);onlyFields(input,[]);
+    const operation=this.commandQueue.then(async()=>{
+      await this.refresh();this.actor(actor);
+      return this.executeStoredCommand(actor,this.storedCommand(actor,id));
+    });
+    this.commandQueue=operation.catch(()=>undefined);return operation;
   }
 
   async publish(actor: Actor, input: any) {

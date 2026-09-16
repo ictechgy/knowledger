@@ -280,6 +280,25 @@ export class FabricGatewayTransport {
     return results;
   }
 
+  /** Observe at most one outstanding attempt; never create, endorse or submit a proposal. */
+  async observeCommand(command: GatewayCommand, queryPeer: boolean): Promise<{status:'pending'|'rejected'|'cancelled';code?:string}|undefined> {
+    const load = () => this.config.outbox.listCommandAttempts?.(command.actor_org_id,command.command_id);
+    let attempts = await load();
+    if (!attempts?.length) return undefined;
+    const digest = idempotencyDigest(command);
+    const validate = () => {
+      if (attempts!.some(attempt=>attempt.command_id!==command.command_id || attempt.actor_org_id!==command.actor_org_id || attempt.payload_digest!==digest
+        || !['pending','endorsed','acknowledged','unknown','valid','invalid','reconciled','cancelled'].includes(attempt.status))) throw new Error('Outbox command binding is invalid');
+    };
+    validate();
+    if (attempts.length>128) return {status:'pending'};
+    const pendingAttempt=attempts.find(attempt=>['pending','endorsed','acknowledged','unknown'].includes(attempt.status));
+    if (queryPeer && pendingAttempt) { await this.recover(pendingAttempt); attempts=await load(); validate(); }
+    // SDK VALID/reconciliation is still waiting for the application projection.
+    if (attempts!.some(attempt=>!['invalid','cancelled'].includes(attempt.status))) return {status:'pending'};
+    return attempts!.every(attempt=>attempt.status==='cancelled') ? {status:'cancelled',code:'AUTHORIZATION_CANCELLED'} : {status:'rejected',code:'LEDGER_CONFLICT'};
+  }
+
   private async reconcileInvalid(command: GatewayCommand, digest: string): Promise<{ state: "unavailable" | "absent" | "matched"; result?: AuthoritativeCommandResult }> {
     if (!this.config.client.getAuthoritativeCommandResult) return { state: "absent" };
     let result: AuthoritativeCommandResult | undefined;

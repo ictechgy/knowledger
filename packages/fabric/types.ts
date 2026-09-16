@@ -144,6 +144,7 @@ export interface DurableOutbox {
   recordAttempt(attempt: OutboxAttempt): Promise<void>;
   updateAttempt(tx_id: string, update: Pick<OutboxAttempt, "status"> & Partial<Pick<OutboxAttempt, "detail" | "commit_bytes">>): Promise<void>;
   listRecoverable?(): Promise<OutboxAttempt[]>;
+  listCommandAttempts?(actor_org_id: string, command_id: string): Promise<OutboxAttempt[]>;
 }
 
 export interface GatewaySubmitResult {

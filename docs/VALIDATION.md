@@ -1,5 +1,34 @@
 # 검증 기록
 
+## 요청 추적·개정 비교·자동화 검사 — 2026-09-16
+
+- `npm run check`: **197 passed /0 failed /0 skipped**. `check:types`, `demo` 통과.
+- 외부 패키지 없는 source copy: **162 passed /0 failed /35 optional skipped**.
+- `npm run test:browser`: **Chromium 7개 통과**. 기본 실행과 분리된 Playwright1.63.0 패키지를 고정했다.
+  게시·2조직 승인·조회·철회, 계정별 비공개 상태, exact revision diff, 앱 재시작 후 pending 복원,
+  확인503·지연 커밋·이전 계정의 늦은401·빠른 중복 클릭·게시 응답 유실을 검사한다.
+- 미확정 거래 GET은 새 proposal/endorsement/submission을 만들지 않는다. 확인된 peer 상태는
+  로컬 outbox 관측 캐시에 저장할 수 있다. SDK VALID만으로 완료하지 않고 projection의
+  원래 actor/type/digest/tx receipt를 확인한다. POST retry는 저장된 명령을 그대로 사용한다.
+- 실제 `configured:smoke`: VALID 게시184·승인186, 요청 조회의 동일 checkpoint,
+  같은 요청 재시도의 원래 receipt, v3 복원 후 요청 이력 보존 통과.
+  근거 `.data/configured-smoke-911QRl/evidence.json`.
+- `test:performance --documents 1000 --samples 5 --body-bytes 1024`:
+  Node24.18.0/macOS arm64/12 logical CPU. 작성·미리보기·게시 p95 약1.85ms,
+  검색 p95 약247.59ms, overview p95 약249.07ms, 재시작 replay 약262.15ms,
+  DB footprint30,367,448 bytes. 생성/조회/replay 문서1,000개를 각각 확인했다.
+  `.artifacts/experiments/performance-1000.json`에 기록했다. 작은 표본의 현재 장비 측정이며 SLA 판정은 아니다.
+- `test:resilience`: 별도 Node worker 강제 종료→재기동→동일 명령 재시도의 단일 효과,
+  종료 후 snapshot/restore 동일 상태, fixture peer 장애의 strict503→복구200 통과.
+  `.artifacts/experiments/resilience.json`. 실제 Fabric 호스트 장애나 재해 복구 시간의 증거는 아니다.
+- 새 체크아웃에서 `.data`가 없어도 CLI가 실행되며 상대 output 경로를 지원한다.
+  기존 nonempty 데이터 폴더를 거부한다. CI에 브라우저·소규모 성능·장애 실험 명령을 연결했다.
+- 브라우저 검사 중 발견한 재시도 후 화면 갱신 누락, 계정 전환 뒤 요청 목록 재로딩 누락,
+  응답 유실 뒤 게시 결과 미표시를 회귀 검사와 함께 고쳤다.
+
+근거 로그는 `.artifacts/delivery/{check,browser,no-optional-check}.log`다.
+기존 원장·키·데이터는 보존했고 원격 push/CI 실행은 하지 않았다.
+
 ## 범용 조직 설정과 예제 분리 — 2026-09-16
 
 - `npm run check`: **178 passed / 0 failed / 0 skipped**, 설계 계약·문서 검사 통과.

@@ -80,3 +80,11 @@ test('domain preflight rejects invalid commands before any Fabric submission', a
   await assert.rejects(() => f.ledger.execute(actor, { ...command, input: { nonce: 'short' } }), (error: any) => error.code === 'INVALID_INPUT');
   assert.equal(f.counts().submissions, 0);
 });
+
+test('command observation accepts only projected receipts and never creates another attempt',async t=>{
+  const f=fixture();t.after(()=>f.ledger.close());await f.ledger.refresh();
+  assert.equal(await f.ledger.observeCommand(actor,command,false),undefined);
+  f.commit();const observed=await f.ledger.observeCommand(actor,command,true);
+  assert.equal(observed?.status,'committed');assert.deepEqual(observed?.checkpoint,checkpoint);assert.equal(f.counts().submissions,0);
+  await assert.rejects(f.ledger.observeCommand({...actor,actor_id:'another-person'},command,true),/서명|신원/);
+});
