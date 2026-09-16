@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
 import { createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
-import { connectOfficialFabricGateway, FabricGatewayTransport } from "../../packages/fabric/gateway.ts";
+import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
 import { FabricApplicationLedger } from "../../packages/fabric/application-ledger.ts";
 import type { SqliteFabricProjection } from "../../packages/fabric/sqlite-projection.ts";
@@ -64,7 +64,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
   const references = configuredReferences(configuration, options.organization);
   const { SqliteFabricProjection } = await import("../../packages/fabric/sqlite-projection.ts");
   const require = requireFabric;
-  const grpc = require("@grpc/grpc-js") as { Client: new (target: string, credentials: unknown, options?: Record<string, string>) => { close(): void }; credentials: { createSsl(certificate: Uint8Array): unknown } };
+  const grpc = require("@grpc/grpc-js") as { Client: new (target: string, credentials: unknown, options?: Record<string, string | number>) => { close(): void }; credentials: { createSsl(certificate: Uint8Array): unknown } };
   const sdk = require("@hyperledger/fabric-gateway") as { connect(options: Record<string, unknown>): { close(): void; getNetwork(channelId: string): { getContract(name: string): { evaluateTransaction(name: string, ...args: string[]): Promise<Uint8Array> } } } };
   const { common } = require("@hyperledger/fabric-protos") as { common: { BlockchainInfo: { deserializeBinary(bytes: Uint8Array): { getHeight(): number; getCurrentblockhash_asU8(): Uint8Array } } } };
   const routes: FabricSigningRoute[] = [];
@@ -80,6 +80,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       const rpc = new grpc.Client(reference.peer_endpoint, grpc.credentials.createSsl(tlsCertificate), {
         "grpc.ssl_target_name_override": reference.peer_host_alias,
         "grpc.default_authority": reference.peer_host_alias,
+        ...fabricPeerChannelOptions,
       });
       let client: Awaited<ReturnType<typeof connectOfficialFabricGateway>> | undefined;
       let gateway: ReturnType<typeof sdk.connect> | undefined;

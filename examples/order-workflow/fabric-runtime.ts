@@ -9,7 +9,7 @@ import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from './organiz
 import type { DevelopmentOrganization } from './organizations.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
-import { connectOfficialFabricGateway, FabricGatewayTransport } from '../../packages/fabric/gateway.ts';
+import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
 import type { FabricSigningRoute } from '../../packages/fabric/application-ledger.ts';
@@ -59,6 +59,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       if (identity.getAttributeValue('kcl.actor_id') !== actor.actor_id || identity.getAttributeValue('kcl.actor_kind') !== actor.kind) throw new Error('Test certificate attributes do not match the signing route');
       const rpc = new grpc.Client(`127.0.0.1:${selected.peer_port}`, grpc.credentials.createSsl(readFileSync(join(base, 'peers', `peer0.${domain}`, 'tls/ca.crt'))), {
         'grpc.ssl_target_name_override': `peer0.${domain}`, 'grpc.default_authority': `peer0.${domain}`,
+        ...fabricPeerChannelOptions,
       });
       let client: Awaited<ReturnType<typeof connectOfficialFabricGateway>> | undefined;
       let gateway: any;

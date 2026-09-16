@@ -62,6 +62,18 @@ interface OfficialGatewayModule {
   }): OfficialGateway;
 }
 
+/**
+ * peer 연결용 gRPC 채널 keepalive. 포워딩된 연결이 중간 경로에서 조용히 끊겨도
+ * 응답 없는 ping으로 감지해 채널을 재연결한다. 간격은 Fabric 서버의
+ * enforcementMinTime(기본 5s)보다 충분히 길게 둔다.
+ */
+export const fabricPeerChannelOptions = Object.freeze({
+  "grpc.keepalive_time_ms": 20_000,
+  "grpc.keepalive_timeout_ms": 5_000,
+  "grpc.keepalive_permit_without_calls": 1,
+  "grpc.http2.max_pings_without_data": 0,
+});
+
 export interface OfficialGatewayConnectionOptions {
   client: unknown;
   channel_id: string;

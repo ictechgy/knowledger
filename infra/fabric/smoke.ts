@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { demoFixtures, PERSONAS, slotFields } from '../../examples/order-workflow/config.ts';
 import { idempotencyDigest, keyFor, resolveAt } from '../../packages/domain/index.ts';
-import { connectOfficialFabricGateway, FabricGatewayTransport } from '../../packages/fabric/gateway.ts';
+import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions } from '../../packages/fabric/gateway.ts';
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
 import type { FabricGatewayClient, GatewayCommand } from '../../packages/fabric/types.ts';
 
@@ -37,6 +37,7 @@ async function connect(index: number, outboxName = `outbox-${names[index]}`) {
   };
   const rpc = new grpc.Client(`127.0.0.1:${17051 + index * 1000}`, grpc.credentials.createSsl(readFileSync(join(base, 'peers', `peer0.${domain}`, 'tls/ca.crt'))), {
     'grpc.ssl_target_name_override': `peer0.${domain}`, 'grpc.default_authority': `peer0.${domain}`,
+    ...fabricPeerChannelOptions,
   });
   const client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials });
   const gateway = sdk.connect({ client: rpc, identity: { mspId: credentials.msp_id, credentials: credentials.certificate }, signer: credentials.signer,
