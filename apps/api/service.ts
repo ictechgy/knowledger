@@ -236,7 +236,10 @@ export class KnowledgerService {
   /** 요청 범위 캐시를 통한 읽기. 모든 값은 ledger.read와 동일한 무결성 검증을 거친다. */
   private readAt(context: BrowseRequestContext, key: string): any {
     if (!context.values.has(key)) context.values.set(key, this.ledger.read(key, context.checkpoint) ?? null);
-    return context.values.get(key) ?? undefined;
+    const value = context.values.get(key);
+    // 캐시된 객체는 요청 안에서 공유되므로, 호출자의 in-place 변형이 다른 소비자를
+    // 오염시키지 않도록 read()와 같은 격리를 위해 복제본을 돌려준다.
+    return value === undefined || value === null ? undefined : structuredClone(value);
   }
 
   /** 알려진 키를 한 번의 배치 조회로 미리 적재한다. 어댑터가 readMany를 제공하지 않으면 순차 읽기로 되돌아간다. */

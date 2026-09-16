@@ -319,6 +319,8 @@ export class LocalLedger {
     for (const [key, value] of event.writes) {
       validateWrite(key, value);
       const immutable = IMMUTABLE_KINDS.has(key.split(':')[2]);
+      // 라이브 커밋은 모든 쓰기 키를 read()로 읽어 projection/history 발산을 탐지한다.
+      // mutable 키는 prior 값 자체가 필요 없어도 탐지 부수효과를 위해 읽는다.
       const prior = replayTrusted && !immutable ? undefined : priorOf(key);
       if (immutable && prior !== undefined && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
       const encoded = JSON.stringify(value);
