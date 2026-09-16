@@ -15,7 +15,7 @@ export interface PeerBlockSource {
 
 export interface FabricSigningRoute {
   actor: Actor;
-  transport: Pick<FabricGatewayTransport, 'execute' | 'recoverPending'> & Partial<Pick<FabricGatewayTransport,'observeCommand'>>;
+  transport: Pick<FabricGatewayTransport, 'execute' | 'recoverPending'> & Partial<Pick<FabricGatewayTransport,'observeCommand' | 'recoverableAttempts'>>;
   close?(): void | Promise<void>;
 }
 
@@ -147,6 +147,32 @@ export class FabricApplicationLedger implements ApplicationLedger {
   refresh(): Promise<void> {
     if (this.closed) return Promise.reject(new FabricLedgerError('LEDGER_CLOSED', '원장 연결이 종료되었습니다.'));
     return this.refreshAt(this.refreshGeneration);
+  }
+
+  /** 운영 관측 스냅샷. peer tip 조회는 deadline이 적용된 evaluate 한 번이며 실패를 삼키지 않고 표시한다. */
+  async operations() {
+    const recoverable: { actor: Actor; attempts: { command_id: string; tx_id: string; status: string }[] }[] = [];
+    for (const route of this.routes) {
+      const attempts = await route.transport.recoverableAttempts?.() ?? [];
+      recoverable.push({ actor: route.actor, attempts: attempts.map(attempt => ({ command_id: attempt.command_id, tx_id: attempt.tx_id, status: attempt.status })) });
+    }
+    let peerTip: { height: number; block_hash: string } | null = null;
+    let peerTipError: string | undefined;
+    if (!this.closed) {
+      try { peerTip = await this.options.source.getTip(); }
+      catch { peerTipError = 'unavailable'; }
+    }
+    const projected = this.options.projection.blockCheckpoint();
+    return {
+      available: this.available,
+      pending_commands: this.pendingCommands,
+      projected_block: projected?.block_number ?? null,
+      peer_tip: peerTip,
+      peer_tip_error: peerTipError,
+      projection_lag: peerTip ? Math.max(0, peerTip.height - 1 - (projected?.block_number ?? -1)) : null,
+      recoverable_outbox: recoverable,
+      recoverable_outbox_total: recoverable.reduce((count, route) => count + route.attempts.length, 0),
+    };
   }
 
   private ready(): void {

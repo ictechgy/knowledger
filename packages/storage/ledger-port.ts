@@ -33,5 +33,7 @@ export interface ApplicationLedger {
   execute(actor: Actor, command: DomainCommand): Promise<CommittedReceipt | PendingReceipt>;
   observeCommand?(actor: Actor, command: DomainCommand, queryPeer: boolean): Promise<CommandObservation | undefined>;
   bootstrap?(actor: Actor, config: unknown): Promise<CommittedReceipt>;
+  /** 운영 관측 스냅샷(어댑터별). 없으면 서버가 공통 정보만 보고한다. */
+  operations?(): Promise<Record<string, unknown>>;
   close(): void | Promise<void>;
 }

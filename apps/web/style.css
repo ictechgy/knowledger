@@ -273,3 +273,19 @@ input::placeholder, textarea::placeholder { color: #596475; }
 .page-intro h1 { font-family: inherit; font-size: clamp(1.6rem, 3vw, 2.1rem); line-height: 1.25; }
 .page-intro { margin-bottom: 1.5rem; }
 #review-inbox-title, #documents-title, #resolver-title, #review-title { scroll-margin-top: 7rem; }
+
+/* 운영 상태 패널 — 관측 전용이며 원장 읽기 권한을 부여하지 않는다. */
+.operations-panel { margin-top: 1rem; }
+#operations-title { scroll-margin-top: 7rem; }
+.operations-actions { display: flex; align-items: center; gap: .6rem; }
+.operations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .7rem; margin: .8rem 0; }
+.operations-card { padding: .8rem .9rem; border: 1px solid var(--line); border-radius: 9px; background: rgba(21, 27, 37, .86); }
+.operations-card p { margin: 0 0 .25rem; color: var(--muted); font-size: .68rem; }
+.operations-card strong { display: block; font-size: 1.05rem; font-weight: 500; }
+.operations-card span { display: block; margin-top: .3rem; color: var(--faint); font-size: .66rem; line-height: 1.5; }
+.operations-metadata { margin: .4rem 0 .9rem; }
+.operations-event-list { display: grid; gap: .4rem; margin: .6rem 0 0; padding: 0; list-style: none; }
+.operations-event { display: flex; justify-content: space-between; gap: .8rem; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.02); font-size: .7rem; }
+.operations-event-head { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.operations-event-detail { color: var(--faint); font-size: .66rem; text-align: right; }
+@media (max-width: 760px) { .operations-event { flex-direction: column; gap: .2rem; } .operations-event-detail { text-align: left; } }

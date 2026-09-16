@@ -85,6 +85,7 @@ export async function createApp(options: AppOptions) {
   const sessions = new Map<string, Session>();
   const rateLimits = new Map<string, { minute: number; count: number; touched: number }>();
   const readiness = new ReadinessMonitor(() => service.refresh());
+  const startedAt = performance.now();
 
   function json(res: ServerResponse, status: number, value: any) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -304,6 +305,7 @@ export async function createApp(options: AppOptions) {
         const draftDetail = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})$/.exec(resourcePath);
         if (draftDetail) { json(res, 200, await run(() => service.getDraft(actor, draftDetail[1]))); return; }
         if (path === `${workspaceRoot}/overview`) { const input = pageQuery(url, ['limit', 'cursor', 'proposal_limit', 'proposal_cursor']); json(res, 200, await run(() => service.overview(actor, input))); return; }
+        if (path === `${workspaceRoot}/operations`) { json(res, 200, { ...await run(() => service.operations(actor)), readiness: readiness.read(), process_uptime_ms: Math.round(performance.now() - startedAt) }); return; }
         if (path === `${workspaceRoot}/events`) {
           const cursor = Number(url.searchParams.get('cursor') ?? 0);
           if (!Number.isSafeInteger(cursor) || cursor < 0) throw new ApiError('INVALID_CURSOR', '올바른 커서가 필요합니다.');

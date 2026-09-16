@@ -950,9 +950,76 @@ function reasonLabel(reason) {
 }
 
 function setWorkspace(space) {
-  if (!['review', 'documents', 'resolver'].includes(space)) return;
+  if (!['review', 'documents', 'resolver', 'operations'].includes(space)) return;
   state.activeSpace = space;
   document.querySelectorAll('[data-workspace]').forEach((button) => button.setAttribute('aria-current', button.dataset.workspace === space ? 'page' : 'false'));
+  if (space === 'operations') void loadOperations();
+}
+
+const modeLabel = (mode) => mode === 'local-simulation' ? '로컬 시뮬레이션' : mode === 'fabric-test-network' ? 'Fabric 테스트 네트워크' : mode === 'fabric' ? 'Fabric 네트워크' : mode;
+
+async function loadOperations() {
+  const session = state.session;
+  if (!session?.actor || !apiBase) return;
+  const container = el('operations-content');
+  const chip = el('operations-readiness');
+  try {
+    const data = await request(`${apiBase}/operations`, { sessionGuard: session });
+    if (session !== state.session) return;
+    renderOperations(data);
+  } catch (error) {
+    if (session !== state.session) return;
+    if (chip) { chip.className = 'state-chip state-chip-withheld'; chip.textContent = '조회 실패'; }
+    if (container) { container.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = `운영 상태를 불러오지 못했습니다: ${error.message}`; container.append(message); }
+  }
+}
+
+function renderOperations(data) {
+  const chip = el('operations-readiness');
+  if (chip) {
+    const healthy = data.readiness?.healthy === true;
+    chip.className = `state-chip ${healthy ? 'state-chip-active' : 'state-chip-withheld'}`;
+    const age = data.readiness?.sample_age_ms;
+    chip.textContent = healthy ? `정상 · 표본 ${Math.round(age ?? 0)}ms` : `준비 안 됨${age == null ? '' : ` · 표본 ${Math.round(age)}ms`}`;
+  }
+  const container = el('operations-content');
+  if (!container) return;
+  container.replaceChildren();
+  const grid = document.createElement('div'); grid.className = 'operations-grid';
+  const card = (label, value, note) => { const item = document.createElement('article'); item.className = 'operations-card'; const p = document.createElement('p'); p.textContent = label; const strong = document.createElement('strong'); strong.textContent = value; item.append(p, strong); if (note) { const span = document.createElement('span'); span.textContent = note; item.append(span); } grid.append(item); };
+  card('원장 모드', modeLabel(data.mode), `채널 ${data.channel_id}`);
+  card('검증 체크포인트', data.checkpoint ? `블록 ${data.checkpoint.block_number}` : '확인 불가', data.checkpoint ? shortDigest(data.checkpoint.block_hash) : '원장 상태를 읽을 수 없습니다');
+  const fabric = data.fabric;
+  if (fabric) {
+    card('peer 최신 블록', fabric.peer_tip ? `높이 ${fabric.peer_tip.height}` : 'peer 연결 불가', fabric.projection_lag === null ? 'projection 지연 측정 불가' : fabric.projection_lag === 0 ? 'projection 동기화됨' : `projection ${fabric.projection_lag}블록 지연`);
+    card('처리 중 원장 요청', String(fabric.pending_commands ?? 0), fabric.available ? '원장 읽기 가능' : '원장 읽기 불가');
+    card('복구 대기 outbox', String(fabric.recoverable_outbox_total ?? 0), '재시작 후 자동으로 상태를 재확인합니다');
+  } else {
+    card('process 업타임', `${Math.round((data.process_uptime_ms ?? 0) / 1000)}초`, '현재 애플리케이션 프로세스');
+  }
+  const counts = data.counts;
+  card('공유 문서', counts ? String(counts.documents) : '—', '최신 슬롯 기준');
+  card('합의 제안', counts ? String(counts.proposals) : '—', '누적 제안 수');
+  card('채택된 합의', counts ? String(counts.agreements) : '—', '누적 합의 수');
+  container.append(grid);
+  const config = data.configuration;
+  if (config) {
+    const meta = document.createElement('div'); meta.className = 'metadata-row operations-metadata';
+    [['config', `v${config.config_version}`], ['membership epoch', config.membership_epoch], ['조직', config.organizations.join(', ')], ['서명 신원', `${config.identities}개`], ['제공', config.serving_enabled ? '활성' : '중지됨']].forEach(([label, value]) => { const item = document.createElement('span'); const strong = document.createElement('strong'); strong.textContent = `${label} `; item.append(strong, document.createTextNode(String(value))); meta.append(item); });
+    container.append(meta);
+  }
+  const list = el('operations-event-list');
+  if (list) {
+    list.replaceChildren();
+    const events = data.recent_events ?? [];
+    if (!events.length) { const item = document.createElement('li'); item.className = 'empty-state'; item.textContent = '표시할 원장 이벤트가 없습니다.'; list.append(item); }
+    for (const event of events) {
+      const item = document.createElement('li'); item.className = 'operations-event';
+      const head = document.createElement('span'); head.className = 'operations-event-head'; head.textContent = `블록 ${event.checkpoint?.block_number ?? '—'} · ${formatDate(event.timestamp)}`;
+      const detail = document.createElement('span'); detail.className = 'operations-event-detail'; detail.textContent = `${event.writes}개 쓰기 · ${(event.kinds ?? []).join(', ')}`;
+      item.append(head, detail); list.append(item);
+    }
+  }
 }
 
 function renderDocumentDetail(doc) {
@@ -1508,6 +1575,7 @@ function bindEvents() {
   el('draft-form').addEventListener('input', () => { invalidateDraftPreview(); text(el('draft-status'), '변경한 내용을 비공개 초안으로 저장한 뒤 공유 미리보기를 다시 생성하세요.'); });
   el('draft-policy')?.addEventListener('change', () => { const policy = selectedDraftPolicy(); applyDraftPolicy(policy); invalidateDraftPreview(); text(el('draft-status'), policy ? '선택한 정책의 문서 범위에 맞춰 작성합니다.' : '작성할 문서 범위를 선택하세요.'); });
   el('resolver-form').addEventListener('submit', onResolverSubmit);
+  el('refresh-operations')?.addEventListener('click', () => void loadOperations());
   el('resolve-documents').addEventListener('change', (event) => {
     const selected = currentDocuments().find((doc) => slotKeyFor(doc.payload) === event.target.value);
   if (selected) { state.selectedDocumentKey = slotKeyFor(selected.payload); state.selectedRevisionDigest = null; state.selectedProposalId = null; state.compareRevisionDigest = null; syncResolverFields(selected); renderOverview(); }

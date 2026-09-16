@@ -9,6 +9,7 @@ import type {
   GatewayProposal,
   GatewayStatus,
   GatewaySubmitResult,
+  OutboxAttempt,
 } from "./types.ts";
 
 export interface OfficialGatewayCredentials {
@@ -290,6 +291,11 @@ export class FabricGatewayTransport {
     const results: GatewaySubmitResult[] = [];
     for (const attempt of attempts) results.push(await this.recover(attempt));
     return results;
+  }
+
+  /** 재시작 복구 대상이 되는 미확정 시도 목록. 운영 관측용이며 재제출하지 않는다. */
+  async recoverableAttempts(): Promise<OutboxAttempt[]> {
+    return this.config.outbox.listRecoverable?.() ?? [];
   }
 
   /** Observe at most one outstanding attempt; never create, endorse or submit a proposal. */

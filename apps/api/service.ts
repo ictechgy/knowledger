@@ -346,6 +346,38 @@ export class KnowledgerService {
       ...proposalPage, policies: config.policies, checkpoint };
   }
 
+  /** 운영 관측 스냅샷. 원장이 읽히지 않는 장애 상황에서도 인증된 세션에는 부분 상태를 반환한다. */
+  async operations(actor: Actor) {
+    try { await this.refresh(); } catch { /* 갱신 실패 상태도 관측 대상이다. */ }
+    try { this.actor(actor); }
+    catch (error: any) {
+      // 제공 중지·미초기화 상태에서도 관측은 허용하되, 미등록 신원은 그대로 거부한다.
+      if (!(error instanceof ApiError && (error.code === 'SERVING_FROZEN' || error.code === 'LEDGER_NOT_READY'))) throw error;
+    }
+    const readSafe = <T>(read: () => T): T | null => { try { return read(); } catch { return null; } };
+    const checkpoint = readSafe(() => this.ledger.checkpoint());
+    const config = readSafe(() => this.config());
+    const counts = checkpoint ? readSafe(() => ({
+      documents: this.queryBrowse({ kind: 'revisions', mode: 'latest-per-slot', at: checkpoint, offset: 0, limit: 1 }).total,
+      proposals: this.queryBrowse({ kind: 'proposals', at: checkpoint, offset: 0, limit: 1 }).total,
+      agreements: this.values('agreement').length,
+    })) : null;
+    const events = readSafe(() => this.ledger.events(Math.max(0, (checkpoint?.block_number ?? 0) - 10), 100))
+      ?.slice(-10).reverse()
+      .map(event => ({ checkpoint: event.checkpoint, timestamp: event.timestamp, writes: event.writes.length,
+        kinds: [...new Set(event.writes.map(([key]) => key.split(':')[2]))].sort() }));
+    let fabric: Record<string, unknown> | null = null;
+    try { fabric = await this.ledger.operations?.() ?? null; } catch { fabric = null; }
+    return { view: 'operations', mode: this.ledger.mode, workspace: this.definition.workspace, demo: this.definition.demo,
+      generated_at: new Date().toISOString(), channel_id: this.ledger.channelId,
+      ledger_available: checkpoint !== null, checkpoint,
+      configuration: config ? { config_version: config.config_version, membership_epoch: config.membership_epoch,
+        organizations: [...new Set((config.identities ?? []).map((item: any) => item.org_id))],
+        identities: (config.identities ?? []).length, policies: (config.policies ?? []).length,
+        serving_enabled: config.serving_enabled } : null,
+      counts, recent_events: events ?? [], fabric };
+  }
+
   async revisionView(actor: Actor, digest: string, input: { proposal_limit?: number; proposal_cursor?: string } = {}) {
     onlyFields(input, ['proposal_limit', 'proposal_cursor']);
     await this.refresh(); this.actor(actor);

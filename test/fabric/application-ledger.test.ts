@@ -254,6 +254,24 @@ test('a post-write refresh does not join a stale refresh already in flight', asy
   assert.deepEqual(f.counts(), { tipReads: 3, blockReads: 1 });
 });
 
+test('operations snapshot reports availability, peer tip, and recoverable outbox', async t => {
+  const f = controlledFixture(); t.after(() => f.ledger.close());
+  const operations = await f.ledger.operations();
+  assert.equal(operations.available, false);
+  assert.equal(operations.pending_commands, 0);
+  assert.equal(operations.projected_block, 2);
+  assert.deepEqual(operations.peer_tip, f.oldTip);
+  assert.equal(operations.projection_lag, 0);
+  assert.equal(operations.recoverable_outbox_total, 0);
+  await f.ledger.refresh();
+  const ready = await f.ledger.operations();
+  assert.equal(ready.available, true);
+  f.offline();
+  const unreachable = await f.ledger.operations();
+  assert.equal(unreachable.peer_tip, null);
+  assert.equal(unreachable.peer_tip_error, 'unavailable');
+});
+
 test('command queue rejects excess work with retryable backpressure', async t => {
   const f = controlledFixture({ maxPendingCommands: 1 }); t.after(() => f.ledger.close());
   const executeStarted = deferred<void>(); const releaseExecute = deferred<void>();
