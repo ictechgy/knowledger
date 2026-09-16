@@ -39,6 +39,9 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 - [인증서 유지보수](docs/27-TEST-CERTIFICATES.md): 공개 점검/기존 키 기반90일 갱신 준비·적용,
   전체 사전 검증·원자적 파일 교체·롤백·부분 재개. signer는 요청 전과 반환 전 만료를 검사한다.
   실제 cert3개만 교체, 모든 공개키 및 대상 외130개 파일·genesis 보존. 관련 앱5개와 signer를 재시작했다.
+- 운영 상태 대시보드(`e69a228`): `GET /v1/workspaces/:id/operations`가 검증된 체크포인트,
+  readiness 표본, peer tip 대비 projection 지연, 처리 중 명령, 복구 대기 outbox, 최근 원장
+  이벤트 메타데이터를 반환한다. 장애 중에도 부분 스냅샷을 반환한다. 웹 UI에 운영 상태 탭 추가.
 - 제품 리네임 `knowledger`: 패키지명·`knowledger.config.json` 기본값·`@knowledger/*` 범위·`Knowledger*` 클래스·
   `X-KNOWLEDGER-CSRF`·OIDC 쿠키/client_id·`KNOWLEDGER_SNAPSHOT_*` env·스키마 `$id`·테스트 접두사·문서 표기.
   실행 중인 배포 계약은 `kcl` 그대로 유지한다 — `kcl:` 원장 state 키, `kcl.actor_*` 인증서 속성,
@@ -113,7 +116,8 @@ python3 -B tools/check_docs.py
 1. 공개 준비·게시·첫 릴리스 `v0.1.0` 완료. 이후 원격 CI는 push/PR마다 자동 실행된다.
 2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
    런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
-3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·운영 대시보드·파일럿.
+3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·파일럿.
+   운영 대시보드는 `e69a228`로 구현했다(`GET {workspace}/operations` + 웹 운영 상태 탭).
    대규모 workload 최적화도 별도 목표다. 이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
 4. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
