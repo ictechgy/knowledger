@@ -50,7 +50,7 @@ Markdown 본문은 문서 유형에 종속되지 않는다. 기존 KB나 LLM 위
 
 v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받는다. 합의와 전이 의존성을 검사하고 실제 반환한 문서만 manifest에 적는다. `query`는 공용 fence 거래에 기록하지 않는다. 의존 문서의 본문은 자동으로 반환하지 않는다. 필요한 추가 지식은 별도로 범위를 지정해 해석해야 한다.
 
-초기 검색은 권한이 있는 공유 문서의 문자열 검색이다. embedding/vector DB, 원격 KB 동기화, 외부 모델 호출, 임의 도구 실행은 아직 연결하지 않았다. 화면에는 Markdown 원문을 안전한 텍스트로 표시한다.
+초기 검색은 권한이 있는 공유 문서의 문자열 검색이다. embedding/vector DB와 원격 SaaS별 자동 동기화는 별도 확장 범위다. 로컬 저장소는 [Markdown source 연결](23-KB-SOURCE-CONNECTOR.md), 모델 입력·결과 통제는 [Node 클라이언트](24-KNOWLEDGE-CLIENT.md)를 사용한다. 공급자 callback과 외부 도구 실행 권한은 호출 측이 명시적으로 제공한다. 화면에는 Markdown 원문을 안전한 텍스트로 표시한다.
 
 ## HTTP 인터페이스
 

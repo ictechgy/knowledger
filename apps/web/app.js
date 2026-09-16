@@ -23,6 +23,15 @@ const state = {
   commandPollBusy: false,
   commandPollDelay: 5000,
   commandPollToken: 0,
+  sources: { sources: [] },
+  sourceDetail: null,
+  sourceManifest: null,
+  sourceFiles: new Map(),
+  sourceListVersion: 0,
+  sourceOperationVersion: 0,
+  sourceBusy: false,
+  sourceBusyVersion: null,
+  sourceFolderSelected: false,
   commandPollOffset: 0,
   commandInFlight: new Map(),
   commandUnavailable: new Set(),
@@ -77,13 +86,14 @@ function clearStatus() { const node = el('global-status'); if (node) node.hidden
 
 async function request(path, options = {}) {
   const { sessionGuard, ...fetchOptions } = options;
+  if (sessionGuard && sessionGuard !== state.session) { const error = new Error('이전 계정의 요청 결과를 버렸습니다.'); error.status = 401; error.stale = true; throw error; }
   const headers = new Headers(fetchOptions.headers || {});
   headers.set('Accept', 'application/json');
   if (fetchOptions.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   if (fetchOptions.method && fetchOptions.method !== 'GET' && state.session?.csrf_token) headers.set('X-KCL-CSRF', state.session.csrf_token);
   let response;
   try {
-    response = await fetch(path, { ...fetchOptions, headers, credentials: 'same-origin' });
+    response = await fetch(path, { ...fetchOptions, headers, credentials: 'same-origin', redirect: 'error' });
   } catch {
     throw new Error('서버에 연결할 수 없습니다. 로컬 API가 실행 중인지 확인한 뒤 다시 시도하세요.');
   }
@@ -164,6 +174,7 @@ function renderAuthState(session) {
     state.compareRevisionDigest = null;
     resetComposer();
     clearPrivateDrafts();
+    clearSourceState();
     clearCommands();
     renderOverview();
     const result = el('resolver-result');
@@ -182,6 +193,170 @@ function clearPrivateDrafts() {
   text(el('private-draft-status'), '');
   el('more-drafts').hidden = true;
   el('refresh-drafts').disabled = false;
+}
+
+function clearSourceState() {
+  state.sourceListVersion++;
+  state.sourceOperationVersion++;
+  state.sources = { sources: [] };
+  state.sourceDetail = null;
+  state.sourceManifest = null;
+  state.sourceFiles = new Map();
+  state.sourceBusy = false; state.sourceBusyVersion = null;
+  state.sourceFolderSelected = false;
+  if (el('source-manifest-file')) el('source-manifest-file').value = '';
+  if (el('source-folder')) el('source-folder').value = '';
+  el('source-preview')?.replaceChildren();
+  el('source-list')?.replaceChildren();
+  el('source-detail')?.replaceChildren();
+  text(el('source-status'), '');
+  text(el('source-count'), '—');
+  el('source-import')?.toggleAttribute('disabled', true);
+  if (el('source-manifest-file')) el('source-manifest-file').disabled = false;
+  if (el('source-folder')) el('source-folder').disabled = false;
+}
+
+function sourceStatusLabel(status) { return status === 'present' ? '동기화에서 확인됨' : '동기화에서 누락'; }
+
+function renderSources() {
+  const list = el('source-list');
+  if (!list) return;
+  list.replaceChildren();
+  const sources = state.sources.sources || [];
+  text(el('source-count'), sources.length);
+  if (!sources.length) { const empty = document.createElement('li'); empty.className = 'empty-state'; empty.textContent = '가져온 저장소가 없습니다.'; list.append(empty); return; }
+  sources.forEach((source) => {
+    const item = document.createElement('li'); const button = document.createElement('button'); button.type = 'button'; button.className = 'source-item';
+    const title = document.createElement('strong'); title.textContent = source.source_id;
+    const meta = document.createElement('span'); meta.textContent = `버전 ${source.version} · 현재 ${source.present_count ?? 0} · 없음 ${source.removed_count ?? 0}`;
+    button.append(title, meta); button.addEventListener('click', () => loadSourceDetail(source.source_id)); item.append(button); list.append(item);
+  });
+}
+
+async function loadSources() {
+  if (!state.session?.actor || !apiBase) { renderSources(); return; }
+  const session = state.session; const version = ++state.sourceListVersion;
+  try {
+    const page = await request(`${apiBase}/sources`, { sessionGuard: session });
+    if (session !== state.session || version !== state.sourceListVersion) return;
+    state.sources = page; renderSources();
+  } catch (error) { if (session === state.session && version === state.sourceListVersion) text(el('source-status'), `저장소 목록을 불러오지 못했습니다. ${error.message}`); }
+}
+
+async function loadSourceDetail(sourceId) {
+  const session = state.session; const version = ++state.sourceListVersion;
+  try {
+    const detail = await request(`${apiBase}/sources/${encodeURIComponent(sourceId)}`, { sessionGuard: session });
+    if (session !== state.session || version !== state.sourceListVersion) return;
+    state.sourceDetail = detail; renderSourceDetail();
+  } catch (error) {
+    if (error.status === 404 && session === state.session && version === state.sourceListVersion) { state.sourceDetail = { source_id: sourceId, version: 0, entries: [] }; renderSourceDetail(); return; }
+    if (session === state.session && version === state.sourceListVersion) text(el('source-status'), `저장소 상세를 불러오지 못했습니다. ${error.message}`);
+  }
+}
+
+function renderSourceDetail() {
+  const detail = el('source-detail');
+  if (!detail || !state.sourceDetail) return;
+  detail.replaceChildren();
+  const heading = document.createElement('h3'); heading.textContent = `${state.sourceDetail.source_id} · 버전 ${state.sourceDetail.version}`; detail.append(heading);
+  (state.sourceDetail.entries || []).forEach((entry) => { const row = document.createElement('button'); row.type = 'button'; row.className = 'source-entry'; row.textContent = `${entry.path} · ${entry.title || '제목 없음'} · ${sourceStatusLabel(entry.status)}`; row.addEventListener('click', () => { if (entry.draft_id) openSavedDraft(entry.draft_id); }); detail.append(row); });
+}
+
+function selectedManifestFile() { return el('source-manifest-file')?.files?.[0] || null; }
+
+async function readSourceManifest() {
+  const file = selectedManifestFile();
+  if (!file) { text(el('source-status'), 'manifest JSON 파일을 선택하세요.'); return; }
+  if (file.size > 131072) { text(el('source-status'), 'manifest JSON은 128 KiB 이하여야 합니다.'); return; }
+  const version = ++state.sourceOperationVersion; const session = state.session;
+  state.sourceManifest = null; state.sourceDetail = null; state.sourceFiles = new Map(); renderSourcePreview(); renderSourceDetail(); el('source-import')?.toggleAttribute('disabled', true);
+  try {
+    const manifestJson = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
+    if (version !== state.sourceOperationVersion || session !== state.session) return;
+    const result = await request(`${apiBase}/source-manifests/validate`, { method: 'POST', body: jsonBody({ manifest_json: manifestJson }), sessionGuard: session });
+    if (version !== state.sourceOperationVersion || session !== state.session) return;
+    state.sourceManifest = result.manifest; state.sourceFiles = new Map();
+    renderSourcePreview();
+    renderSelectedSourceFiles();
+    await loadSourceDetail(state.sourceManifest.source_id);
+    if(version===state.sourceOperationVersion&&session===state.session)renderSelectedSourceFiles();
+  } catch (error) { if (version === state.sourceOperationVersion && session === state.session) text(el('source-status'), `manifest를 확인하지 못했습니다. ${error.message}`); }
+}
+
+function renderSourcePreview() {
+  const preview = el('source-preview'); preview.replaceChildren();
+  const manifest = state.sourceManifest; if (!manifest) return;
+  const heading = document.createElement('p'); heading.className = 'form-hint'; heading.textContent = `${manifest.source_id} · ${manifest.files.length}개 파일 · 아래 목록에 있는 파일만 읽습니다.`; preview.append(heading);
+  manifest.files.forEach((entry) => { const row = document.createElement('div'); row.className = 'source-preview-row'; row.textContent = `${entry.path} · ${entry.title || '제목 없음'} · ${entry.policy_id} v${entry.policy_version}`; preview.append(row); });
+  text(el('source-status'), 'manifest가 확인됐습니다. 폴더를 선택한 뒤 비공개 가져오기를 누르세요.');
+}
+
+function selectedSourceFiles() {
+  const files = [...(el('source-folder')?.files || [])];
+  const allowed = new Map((state.sourceManifest?.files || []).map((entry) => [entry.path, entry]));
+  const selected = new Map();
+  files.forEach((file) => { const relative = file.webkitRelativePath || file.name; const parts = relative.split('/'); const path = parts.length > 1 ? parts.slice(1).join('/') : relative; if (allowed.has(path)) selected.set(path, { file, entry: allowed.get(path) }); });
+  return selected;
+}
+
+function renderSelectedSourceFiles() {
+  const selected = selectedSourceFiles(); const manifest = state.sourceManifest;
+  if (!manifest) return;
+  state.sourceFiles = selected;
+  const missing = manifest.files.length - selected.size;
+  text(el('source-selection-status'), manifest.files.length === 0 ? 'manifest에 파일이 없습니다. 선택한 폴더를 비공개로 동기화하면 기존 누락 파일을 정리합니다.' : `${selected.size}/${manifest.files.length}개 파일 선택됨 · 누락 ${missing}개${missing === manifest.files.length ? ' · 모든 파일이 누락되었습니다.' : ''}`);
+  const enabled = !state.sourceBusy && state.sourceFolderSelected && state.sourceDetail?.source_id === manifest.source_id;
+  el('source-import')?.toggleAttribute('disabled', !enabled);
+  text(el('source-import'), manifest.files.length === 0 || missing > 0 ? '비공개 동기화' : '선택 파일을 비공개로 가져오기');
+}
+
+async function importSourceFiles() {
+  const manifest = state.sourceManifest; if (!manifest) return;
+  const selected = selectedSourceFiles(); if (!state.sourceFolderSelected) { text(el('source-status'), '원본 폴더를 선택하세요. 누락 파일만 있어도 비공개 동기화를 실행할 수 있습니다.'); return; }
+  if (state.sourceBusy) return;
+  state.sourceBusy = true; el('source-manifest-file').disabled = true; el('source-folder').disabled = true; el('source-import').disabled = true;
+  const session = state.session; const version = ++state.sourceOperationVersion; state.sourceBusyVersion = version;
+  try {
+    let removedCount = 0;
+    let detail = state.sourceDetail?.source_id === manifest.source_id ? state.sourceDetail : null;
+    if (!detail) throw new Error('저장소의 현재 버전을 확인하지 못했습니다. 다시 확인한 뒤 시도하세요.');
+    const payloads = [];
+    let totalBytes = 0;
+    for (const entry of manifest.files) {
+      const chosen = selected.get(entry.path); if (!chosen) continue;
+      if (version !== state.sourceOperationVersion || session !== state.session) return;
+      const bytes = new Uint8Array(await chosen.file.arrayBuffer());
+      if (version !== state.sourceOperationVersion || session !== state.session) return;
+      if (bytes.byteLength === 0 || bytes.byteLength > 262144) throw new Error(`${entry.path} 파일은 비어 있지 않은 256 KiB 이하 UTF-8 Markdown이어야 합니다.`);
+      totalBytes += bytes.byteLength; if (totalBytes > 16 * 1024 * 1024) throw new Error('선택한 Markdown 파일의 합계가 16 MiB를 초과합니다.');
+      try { const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); if (!content.length || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(content)) throw new Error('Invalid Markdown'); } catch { throw new Error('선택한 파일이 올바른 UTF-8 Markdown이 아닙니다.'); }
+      let binary = ''; for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+      payloads.push({ entry, content_base64: btoa(binary) });
+    }
+    if (version !== state.sourceOperationVersion || session !== state.session) return;
+    const present = new Set((detail.entries || []).filter((entry) => entry.status === 'present').map((entry) => entry.path));
+    const retained = [...present].filter((path) => selected.has(path));
+    if (detail.version > 0 && detail.entries) {
+      const reconciled = await request(`${apiBase}/sources/${encodeURIComponent(manifest.source_id)}/reconcile`, { method: 'POST', body: jsonBody({ operation_id: `source-${crypto.randomUUID()}`, expected_version: detail.version, present_paths: retained }), sessionGuard: session });
+      if (version !== state.sourceOperationVersion || session !== state.session) return;
+      detail = reconciled.source; state.sourceDetail = detail; removedCount += reconciled.removed_count || 0;
+    }
+    for (const payload of payloads) {
+      if (version !== state.sourceOperationVersion || session !== state.session) return;
+      const result = await request(`${apiBase}/sources/${encodeURIComponent(manifest.source_id)}/markdown`, { method: 'POST', body: jsonBody({ operation_id: `source-${crypto.randomUUID()}`, expected_version: detail.version, path: payload.entry.path, policy_id: payload.entry.policy_id, policy_version: payload.entry.policy_version, title: payload.entry.title, content_base64: payload.content_base64 }), sessionGuard: session });
+      if (version !== state.sourceOperationVersion || session !== state.session) return;
+      detail = result.source; state.sourceDetail = detail;
+    }
+    const result = await request(`${apiBase}/sources/${encodeURIComponent(manifest.source_id)}/reconcile`, { method: 'POST', body: jsonBody({ operation_id: `source-${crypto.randomUUID()}`, expected_version: detail.version, present_paths: [...selected.keys()] }), sessionGuard: session });
+    if (version !== state.sourceOperationVersion || session !== state.session) return;
+    state.sourceDetail = result.source; renderSourceDetail(); await loadSources(); await loadPrivateDrafts();
+    if(version===state.sourceOperationVersion&&session===state.session)text(el('source-status'), `비공개 가져오기를 완료했습니다. ${removedCount + (result.removed_count || 0)}개 파일은 원본 없음으로 표시됐습니다.`);
+  } catch (error) {
+    if (version === state.sourceOperationVersion && session === state.session) { text(el('source-status'), `비공개 가져오기를 중단했습니다. ${error.message} 이미 저장된 파일은 유지됩니다. 상태를 다시 확인한 뒤 같은 요청을 재시도하세요.`); await loadSourceDetail(manifest.source_id); }
+  } finally {
+    if (state.sourceBusyVersion === version && session === state.session) { state.sourceBusy = false; state.sourceBusyVersion = null; el('source-manifest-file').disabled = false; el('source-folder').disabled = false; renderSelectedSourceFiles(); }
+  }
 }
 
 function renderPrivateDrafts() {
@@ -1005,7 +1180,8 @@ async function switchPersona(event) {
   if (!selected?.org_id || !selected?.actor_id || (selected.org_id === state.session?.actor?.org_id && selected.actor_id === state.session?.actor?.actor_id)) return;
   event.target.disabled = true;
   resetComposer(); clearPrivateDrafts(); clearCommands(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null;
-  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); await loadCommands(); }
+  clearSourceState();
+  try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); await loadCommands(); await loadSources(); }
 }
 
 function resetComposer() {
@@ -1049,6 +1225,9 @@ function bindEvents() {
   el('more-drafts').addEventListener('click', () => loadPrivateDrafts(true));
   el('refresh-commands')?.addEventListener('click', () => loadCommands());
   el('more-commands')?.addEventListener('click', () => loadCommands(true));
+  el('source-manifest-file')?.addEventListener('change', () => { void readSourceManifest(); });
+  el('source-folder')?.addEventListener('change', () => { state.sourceOperationVersion++; state.sourceFolderSelected = true; renderSelectedSourceFiles(); });
+  el('source-import')?.addEventListener('click', () => { void importSourceFiles(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (state.commandPollTimer) window.clearTimeout(state.commandPollTimer); state.commandPollTimer = null; }
     else scheduleCommandPoll();
@@ -1062,6 +1241,7 @@ function bindEvents() {
       state.session = null;
       state.overview = null;
       clearCommands();
+      clearSourceState();
       renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
       showStatus('로그아웃했습니다.', 'success');
     } catch (error) { showStatus(`로그아웃 실패: ${error.message}`, 'error'); }
@@ -1090,6 +1270,7 @@ async function init() {
     setWorkspace(outstandingReviews().length ? 'review' : 'documents');
     await loadPrivateDrafts();
     await loadCommands();
+    await loadSources();
   } catch (error) { showStatus(error.message, 'error'); const detail = el('document-detail-content'); detail.replaceChildren(); const message = document.createElement('p'); message.className = 'empty-state'; message.textContent = 'API에서 워크스페이스를 읽지 못했습니다. 서버 상태를 확인하고 새로고침하세요.'; detail.append(message); }
 }
 

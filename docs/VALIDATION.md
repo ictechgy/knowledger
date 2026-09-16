@@ -1,5 +1,31 @@
 # 검증 기록
 
+## Markdown KB 연결과 지식 클라이언트 — 2026-09-16
+
+- `npm run check`: **227 passed /0 failed /0 skipped**, `check:types`·`demo`·`demo:kb` 통과.
+- 외부 패키지 없는 새 source copy: **192 passed /0 failed /35 optional skipped**.
+  마지막 SDK의 strict nested manifest 검사12개도 해당 copy에서 별도로 통과했다.
+- `npm run test:browser`: **Chromium9개 통과**. 기존7개에 저장소 allowlist/반복/변경 가져오기,
+  비공개 상태 격리, 잘못된 파일과 계정 전환 중 업로드 차단을 추가했다.
+- 파일 reader는 symlink/hardlink/FIFO/숨김·상위 경로/256KiB·16MiB 한도/UTF-8·BOM·CRLF,
+  삭제된 하위 폴더와 읽는 도중 inode 교체를 검사한다. allowlist 밖 파일을 읽지 않는 브라우저 검사도 통과했다.
+- source API는 global version CAS, operation 재시도, actor 격리, private path/hash 비공개,
+  receipt 저장 실패 시 draft/state rollback, URL-encoded source ID와 동시 쓰기를 확인했다.
+  256KiB 파일64개(16MiB) 뒤 추가 import가 거절되고 기존 state·초안64개가 보존되는 것도 확인했다.
+- SDK는 full revision·strict fence/manifest binding, 별도 개발 mode opt-in, timeout/abort,
+  늦은 header callback의 전송 차단, 잘못된/만료된 증거 거부를 확인했다.
+- `demo:kb`는 합성 원본을 가져와 **미승인 withheld→가상 담당자 승인 후 provided→생성 중 철회 withheld**를
+  실제 로컬 HTTP 경로로 실행한다. model은 로컬 callback stub이며 외부 모델 요청은 없었다.
+- 실제 `configured:smoke`: private source import·재시도·동일 파일 재사용,
+  VALID 게시192·승인194, SDK의 정확한 개정 검증, release authorization 단계의 철회 후 output 차단,
+  v3 복원 뒤 source와 draft 보존을 확인했다. `.data/configured-smoke-zv1THX/evidence.json`.
+- 기존6개 앱을 새 코드로 재기동했고4317 health200/block1, Fabric 앱들 health200/block206 확인.
+  기존 데이터·원장·인증서는 보존했다. 원격 push와 CI 실행은 하지 않았다.
+
+이번 근거 로그는 `.artifacts/kb-integration/`에 있다. SDK는 신뢰하는 KCL 응답을 검증하며
+별도의 Fabric quorum proof를 검증하지 않는다. 실제 회사의 source/SSO·모델 공급자·egress 운영 설정은
+이번 합성 데이터/개발 IdP·local callback 검증과 구분한다.
+
 ## 요청 추적·개정 비교·자동화 검사 — 2026-09-16
 
 - `npm run check`: **197 passed /0 failed /0 skipped**. `check:types`, `demo` 통과.

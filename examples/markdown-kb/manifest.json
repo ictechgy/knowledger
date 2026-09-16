@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source_id": "repository-guidelines",
+  "files": [
+    {
+      "path": "guides/shared-guideline.md",
+      "policy_id": "policy-shared-guideline",
+      "policy_version": 1,
+      "title": "공동 지식 작성 가이드"
+    }
+  ]
+}

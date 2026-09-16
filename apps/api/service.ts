@@ -6,6 +6,9 @@ import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
+import { sourceId, sourceMapping, validateSourceManifest } from '../../packages/connectors/source-contract.ts';
+import { SourceStore, SourceStoreError } from '../../packages/connectors/source-store.ts';
+import { parseJsonStrict } from './json.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 
 const P = 'kcl:v1:';
@@ -142,8 +145,8 @@ export class KclService {
     } catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
   }
 
-  private privateDraftMetadata(stored: any): { import?: any; source_draft_id?: string } {
-    const metadata: { import?: any; source_draft_id?: string } = {};
+  private privateDraftMetadata(stored: any): { import?: any; source_draft_id?: string; source?: any } {
+    const metadata: { import?: any; source_draft_id?: string; source?: any } = {};
     if (stored.import !== undefined) {
       const value = stored.import;
       try {
@@ -154,6 +157,13 @@ export class KclService {
           || value.sha256 !== createHash('sha256').update(body, 'utf8').digest('hex')) throw new Error('import bytes mismatch');
       } catch { throw new ApiError('PRIVATE_DRAFT_CORRUPT', '비공개 초안을 읽을 수 없습니다. 관리자 확인이 필요합니다.', 503, true); }
       metadata.import = { kind: value.kind, filename: value.filename, byte_length: value.byte_length, sha256: value.sha256 };
+    }
+    if (stored.source !== undefined) {
+      try {
+        const value=stored.source;sourceId(value.source_id);
+        const mapping=sourceMapping({path:value.path,policy_id:value.policy_id,policy_version:value.policy_version,title:stored.revision.payload.title});
+        metadata.source={source_id:value.source_id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version};
+      } catch {throw new ApiError('PRIVATE_DRAFT_CORRUPT','비공개 원본 연결을 확인할 수 없습니다.',503,true);}
     }
     if (stored.source_draft_id !== undefined) {
       try { metadata.source_draft_id = identifier(stored.source_draft_id); }
@@ -284,6 +294,51 @@ export class KclService {
     });
     this.commandQueue = run.catch(() => undefined);
     return run;
+  }
+
+  async validateSourceManifest(actor:Actor,input:any) {
+    await this.refresh();this.actor(actor);onlyFields(input,['manifest_json']);
+    if(typeof input.manifest_json!=='string'||Buffer.byteLength(input.manifest_json)>128*1024)throw new ApiError('INVALID_SOURCE','원본 manifest는 128 KiB 이하 JSON이어야 합니다.');
+    let value;try{value=parseJsonStrict(input.manifest_json);}catch{throw new ApiError('INVALID_SOURCE','중복 필드 없는 올바른 원본 manifest가 필요합니다.');}
+    const manifest=validateSourceManifest(value);
+    for(const file of manifest.files)this.policy(file.policy_id,file.policy_version);
+    return {manifest};
+  }
+  async listSources(actor:Actor,limit=20,cursor?:string) {
+    await this.refresh();this.actor(actor);return new SourceStore(this.vault).list(actor,limit,cursor);
+  }
+  async getSource(actor:Actor,id:string) {
+    await this.refresh();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
+    if(!source)throw new SourceStoreError('NOT_FOUND',404);return source;
+  }
+  private sourceWrite<T>(actor:Actor,operation:()=>T):Promise<T> {
+    const run=this.commandQueue.then(async()=>{await this.refresh();this.actor(actor);return operation();});
+    this.commandQueue=run.catch(()=>undefined);return run;
+  }
+  importSourceMarkdown(actor:Actor,id:string,input:any) {
+    onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64']);
+    return this.sourceWrite(actor,()=>{
+      const mapping=sourceMapping({path:input.path,policy_id:input.policy_id,policy_version:input.policy_version,title:input.title});
+      const policy=this.policy(mapping.policy_id,mapping.policy_version);
+      return new SourceStore(this.vault).importMarkdown(actor,id,input,(_mapping,content)=>{
+        const candidates=this.values('revision').filter(revision=>sameSlot(revision.payload,policy)).map(revision=>({revision,at:this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest))}));
+        candidates.sort((a,b)=>a.at.block_number-b.at.block_number||a.at.transaction_index-b.at.transaction_index);
+        const base=candidates.at(-1)?.revision;
+        const revision=this.buildDraftRevision(actor,{...slotFields(policy),title:mapping.title,...(base?{base_revision_digest:base.revision_digest}:{})},content,'approved_import');
+        return {draft_id:newId('draft'),revision};
+      });
+    });
+  }
+  reconcileSource(actor:Actor,id:string,input:any) {
+    onlyFields(input,['operation_id','expected_version','present_paths']);
+    return this.sourceWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input));
+  }
+  async getRevision(actor:Actor,digest:string) {
+    if(!/^sha256:[a-f0-9]{64}$/.test(digest))throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');
+    await this.refresh();this.actor(actor);
+    const revision=this.ledger.read(domain.keyFor.revision(digest));
+    if(!revision)throw new ApiError('NOT_FOUND','개정본을 찾을 수 없거나 접근할 수 없습니다.',404);
+    return domain.validateRevision(revision);
   }
 
   async preview(actor: Actor, input: any) {

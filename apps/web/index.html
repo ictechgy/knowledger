@@ -119,6 +119,18 @@
               <ul id="private-draft-list" class="private-draft-list"></ul>
               <button id="more-drafts" class="outline-button full-width" type="button" hidden>초안 더 보기</button>
             </section>
+            <section class="source-library" aria-labelledby="source-library-title">
+              <div class="panel-heading"><div><p class="section-kicker">PRIVATE SOURCES</p><h2 id="source-library-title">저장소 가져오기</h2></div><span id="source-count" class="count-pill">—</span></div>
+              <p class="form-hint">manifest에 지정된 파일만 읽어 비공개 초안으로 저장합니다. 자동 게시나 원장 기록은 없습니다.</p>
+              <label>manifest JSON<input id="source-manifest-file" type="file" accept="application/json,.json"></label>
+              <label>원본 폴더<input id="source-folder" type="file" webkitdirectory multiple></label>
+              <div id="source-preview" class="source-preview"></div>
+              <p id="source-selection-status" class="form-hint">manifest와 폴더를 선택하세요.</p>
+              <button id="source-import" class="secondary-button full-width" type="button" disabled>선택 파일을 비공개로 가져오기</button>
+              <p id="source-status" class="form-hint" role="status"></p>
+              <ul id="source-list" class="source-list"><li class="empty-state">저장소를 불러오는 중…</li></ul>
+              <div id="source-detail" class="source-detail"></div>
+            </section>
           </aside>
 
           <div class="detail-column">

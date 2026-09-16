@@ -15,6 +15,8 @@ import type { ProjectConfiguration } from '../packages/config/types.ts';
 import { configuredOutboxFile } from '../apps/api/configured-fabric-runtime.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
 import { OidcTestBrowser } from './oidc-test-browser.ts';
+import { KclClient } from '../packages/client/knowledge-client.ts';
+import { guardedGeneration } from '../packages/client/guarded-generation.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 mkdirSync(join(root,'.data'),{recursive:true});
@@ -62,7 +64,12 @@ try {
   phase='publication and agreement';
   const overview=await get('/overview');const candidates=overview.documents.filter((doc:any)=>doc.payload.document_id==='doc-sales-order-definition-001');
   const base=candidates.find((doc:any)=>doc.eligible)??candidates.at(-1);assert.ok(base);
-  const draft=await post('/drafts',{base_revision_digest:base.revision_digest,title:`Configured runtime ${run}`,body_markdown:`# Configured shared knowledge ${run}`});
+  const sourceInput={operation_id:`source-import-${run}`,expected_version:0,path:`guides/private-source-${run}.md`,policy_id:'policy-sales-v1',policy_version:1,title:`Configured runtime ${run}`,content_base64:Buffer.from(`# Configured shared knowledge ${run}`).toString('base64')};
+  const imported=await post('/sources/configured-kb/markdown',sourceInput);
+  const draft=await get(`/drafts/${imported.draft_id}`);
+  assert.equal((await post('/sources/configured-kb/markdown',sourceInput)).draft_id,imported.draft_id);
+  const unchanged=await post('/sources/configured-kb/markdown',{...sourceInput,operation_id:`source-unchanged-${run}`,expected_version:imported.source.version});assert.equal(unchanged.status,'unchanged');
+  evidence.source_private_import=true;
   const preview=await post('/publication-previews',{draft_id:draft.draft_id});
   const publish=await post('/revisions',{preview_id:preview.preview_id,confirm_shared:true,command_id:`config-publish-${run}`});
   assert.equal(publish.status,'committed');evidence.publication_checkpoint=publish.checkpoint;
@@ -74,7 +81,17 @@ try {
   const active=await post(`/agreement-proposals/${proposal.result.proposal_id}/activate`,{expected_active_agreement_id:candidates.find((doc:any)=>doc.eligible)?.agreement.agreement_id??null,command_id:`config-activate-${run}`});
   const scope={document_ids:[base.payload.document_id],context_id:base.payload.context_id,scope_id:base.payload.scope_id,usage_scope:base.payload.usage_scope};
   assert.equal((await post('/resolve',scope)).status,'provided');
-  await post(`/agreements/${active.result.agreement_id}/withdraw`,{reason:'Configured runtime verification completed',command_id:`config-withdraw-${run}`});
+  phase='SDK and guarded model release';
+  const client=new KclClient({baseUrl:origin,workspaceId:config.workspace.id,fetch:async(input,init)=>browser.request(String(input),init),headers:()=>({Origin:origin,'X-KCL-CSRF':csrf})});
+  const selection={...scope,document_ids:[base.payload.document_id] as [string]};
+  const validated=await client.resolve(selection);assert.equal(validated.status,'provided');assert.equal(JSON.stringify(validated).includes('private-source-'),false);
+  const generated=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async()=>true,generate:async()=>({draft:'local stub output'})});assert.equal(generated.status,'provided');
+  let generatedCalls=0;
+  const withheld=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async({phase})=>{
+    if(phase==='release')await post(`/agreements/${active.result.agreement_id}/withdraw`,{reason:'Configured runtime verification completed',command_id:`config-withdraw-${run}`});return true;
+  },generate:async()=>{generatedCalls++;return 'must be withheld';}});
+  assert.equal(generatedCalls,1);assert.equal(withheld.status,'withheld');assert.equal('output' in withheld,false);
+  evidence.sdk_exact_revision=true;evidence.release_authorization_withdrawal_withheld=true;
   assert.equal((await post('/resolve',scope)).status,'withheld');
   issuer.setAccountEnabled('configured-reviewer',false);assert.equal((await browser.request(`${origin}/v1/workspaces/configured-knowledge/overview`)).status,401);issuer.setAccountEnabled('configured-reviewer',true);
   const foreignBrowser=new OidcTestBrowser([origin,issuer.issuer]);assert.equal((await foreignBrowser.login(origin,'unbound-reviewer')).status,403);
@@ -85,9 +102,10 @@ try {
   restoreRuntimeSnapshot({snapshotDir,dataDir:restoredDir});
   app=await createConfiguredApp(config,{dataDir:restoredDir,port,organization:actor.org_id});await app.listen(port);await login();
   assert.equal((await get('/commands')).commands.some((item:any)=>item.command_id===`config-publish-${run}`&&item.status==='committed'),true);
+  assert.equal((await get('/sources/configured-kb')).entries[0].draft_id,imported.draft_id);
   assert.equal((await get('/drafts')).total,1);assert.equal((await post('/resolve',scope)).status,'withheld');
   assert.ok(readdirSync(restoredDir).includes(configuredOutboxFile(actor.org_id,actor.actor_id)));
-  evidence.checks=['private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
+  evidence.checks=['private-source-sync','SDK-exact-revision','generation-release-revalidation','private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
   writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});console.log(`Configured Fabric smoke passed. Evidence: ${join(directory,'evidence.json')}`);
 } catch(error) {console.error(`Configured Fabric smoke failed during ${phase}: ${error instanceof Error?error.message:'unknown failure'}`);process.exitCode=1;}
 finally {await app?.close();await issuer?.close();if(signer&&signer.exitCode===null){const closed=new Promise<void>(resolve=>signer!.once('exit',()=>resolve()));signer.kill('SIGTERM');await closed;}}

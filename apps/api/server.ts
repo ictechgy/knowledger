@@ -24,6 +24,10 @@ const MAX_BODY = 768 * 1024;
 const token = () => randomBytes(32).toString('hex');
 const equal = (a: string, b: string) => a.length > 0 && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
+function decodeResourceId(value:string):string {
+  try{return decodeURIComponent(value);}catch{throw new ApiError('INVALID_INPUT','올바른 경로 식별자가 필요합니다.');}
+}
+
 export interface AppOptions {
   dataDir: string; definition: ApplicationDefinition; ledger?: ApplicationLedger; personas?: Persona[];
   authentication?: ApplicationAuthentication; organization?: RuntimeScopeOrganization;
@@ -213,6 +217,7 @@ export async function createApp(options: AppOptions) {
         }
         const root = workspaceRoot;
         const routes: Record<string, () => Promise<any>> = {
+          [`${root}/source-manifests/validate`]: () => service.validateSourceManifest(actor,input),
           [`${root}/drafts`]: () => service.draft(actor, input),
           [`${root}/draft-imports/markdown`]: () => service.importMarkdown(actor, input),
           [`${root}/publication-previews`]: () => service.preview(actor, input),
@@ -223,6 +228,8 @@ export async function createApp(options: AppOptions) {
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
+        const sourceMatch=/^\/sources\/([^/]+)\/(markdown|reconcile)$/.exec(resourcePath);
+        if(sourceMatch){respond(await run(()=>sourceMatch[2]==='markdown'?service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input):service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input)));return;}
         const retryMatch = /^\/commands\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/retry$/.exec(resourcePath);
         if (retryMatch) { respond(await run(()=>service.retryCommand(actor,retryMatch[1],input))); return; }
         let draftMatch = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(resourcePath);
@@ -235,6 +242,15 @@ export async function createApp(options: AppOptions) {
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if(path===`${workspaceRoot}/sources`){
+          const keys=[...url.searchParams.keys()];const raw=url.searchParams.get('limit');const limit=raw===null?20:/^\d+$/.test(raw)?Number(raw):NaN;const cursor=url.searchParams.get('cursor')??undefined;
+          if(keys.some(key=>!['limit','cursor'].includes(key))||new Set(keys).size!==keys.length||!Number.isSafeInteger(limit)||limit<1||limit>50||(cursor!==undefined&&!/^[A-Za-z][A-Za-z0-9._:-]{2,63}$/.test(cursor)))throw new ApiError('INVALID_QUERY','올바른 원본 목록 조건이 필요합니다.');
+          json(res,200,await run(()=>service.listSources(actor,limit,cursor)));return;
+        }
+        const sourceMatch=/^\/sources\/([^/]+)$/.exec(resourcePath);
+        if(sourceMatch){json(res,200,await run(()=>service.getSource(actor,decodeResourceId(sourceMatch[1]))));return;}
+        const revisionMatch=/^\/revisions\/([^/]+)$/.exec(resourcePath);
+        if(revisionMatch){let digest;try{digest=decodeURIComponent(revisionMatch[1]);}catch{throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');}json(res,200,await run(()=>service.getRevision(actor,digest)));return;}
         if (path === `${workspaceRoot}/commands`) {
           const keys=[...url.searchParams.keys()];
           if(keys.some(key=>!['limit','cursor'].includes(key))||new Set(keys).size!==keys.length) throw new ApiError('INVALID_QUERY','올바른 요청 목록 조건이 필요합니다.');

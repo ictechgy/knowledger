@@ -36,7 +36,9 @@
     "configured:smoke": "node tools/configured-smoke.ts",
     "test:browser": "npm --prefix packages/browser-tests test --",
     "test:performance": "node tools/performance-smoke.ts",
-    "test:resilience": "node tools/resilience-smoke.ts"
+    "test:resilience": "node tools/resilience-smoke.ts",
+    "kb:sync": "node tools/kb-sync.ts",
+    "demo:kb": "node tools/kb-demo.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.4",

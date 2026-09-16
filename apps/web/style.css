@@ -209,6 +209,17 @@ input::placeholder, textarea::placeholder { color: #596475; }
 .private-draft-list button:hover { border-color: var(--teal); }
 .private-draft-list strong { font-size: .77rem; overflow-wrap: anywhere; }
 .private-draft-list span { color: var(--muted); font-size: .67rem; overflow-wrap: anywhere; }
+.source-library { display: grid; gap: .65rem; margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+.source-library h2 { font-size: .95rem; }
+.source-preview { display: grid; gap: .35rem; max-height: 14rem; overflow: auto; padding: .55rem; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.018); }
+.source-preview-row, .source-entry { color: var(--muted); font-size: .68rem; overflow-wrap: anywhere; }
+.source-list { display: grid; gap: .45rem; margin: .35rem 0 0; padding: 0; list-style: none; }
+.source-item { display: grid; gap: .2rem; width: 100%; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); text-align: left; background: var(--surface); }
+.source-item:hover, .source-entry:hover { border-color: var(--teal); }
+.source-item span { color: var(--muted); font-size: .65rem; }
+.source-detail { display: grid; gap: .35rem; }
+.source-detail h3 { margin: .5rem 0 0; font-size: .78rem; }
+.source-entry { width: 100%; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: 6px; text-align: left; background: rgba(255,255,255,.02); }
 .form-row { display: grid; gap: .75rem; }
 .two-col { grid-template-columns: 1.5fr 1fr; }
 .resolver-fields { grid-template-columns: repeat(3, 1fr); }

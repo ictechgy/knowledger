@@ -14,6 +14,7 @@ const SUMMARY_FIELDS = {
 const SUMMARY_COLUMNS = Object.entries(SUMMARY_FIELDS).map(([name, path]) =>
   `CASE WHEN json_valid(value_json) THEN json_extract(value_json, '${path}') END AS ${name}`).join(', ');
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
+type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-operation';
 
 /** Local-only records. This database is never consumed by the shared ledger projector. */
 export class PrivateStore {
@@ -34,12 +35,30 @@ export class PrivateStore {
         CREATE INDEX IF NOT EXISTS private_command_actor_order ON private_records(org_id, actor_id, kind);`);
     } catch (error) { this.db.close(); throw error; }
   }
-  put(kind: 'draft' | 'preview' | 'run' | 'command', id: string, actor: Actor, value: any): void {
+  put(kind: PrivateKind, id: string, actor: Actor, value: any): void {
     this.db.prepare('INSERT INTO private_records VALUES (?, ?, ?, ?, ?)').run(kind, id, actor.org_id, actor.actor_id, JSON.stringify(value));
   }
-  get(kind: 'draft' | 'preview' | 'run' | 'command', id: string, actor: Actor): any | undefined {
+  get(kind: PrivateKind, id: string, actor: Actor): any | undefined {
     const row = this.db.prepare('SELECT value_json FROM private_records WHERE kind = ? AND record_id = ? AND org_id = ? AND actor_id = ?').get(kind, id, actor.org_id, actor.actor_id) as any;
     return row ? JSON.parse(row.value_json) : undefined;
+  }
+  atomic<T>(operation:()=>T):T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try { const result=operation(); this.db.exec('COMMIT'); return result; }
+    catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
+  saveSource(id:string,actor:Actor,value:any):void {
+    this.db.prepare(`INSERT INTO private_records VALUES ('source',?,?,?,?)
+      ON CONFLICT(kind,record_id,org_id,actor_id) DO UPDATE SET value_json=excluded.value_json`)
+      .run(id,actor.org_id,actor.actor_id,JSON.stringify(value));
+  }
+  sourcePage(actor:Actor,limit:number,cursor?:string):{values:any[];nextCursor:string|null}|undefined {
+    if(!Number.isSafeInteger(limit)||limit<1||limit>50)throw new Error('Invalid source page size');
+    const position=cursor?this.db.prepare("SELECT rowid FROM private_records WHERE kind='source' AND record_id=? AND org_id=? AND actor_id=?").get(cursor,actor.org_id,actor.actor_id) as {rowid:number}|undefined:undefined;
+    if(cursor&&!position)return undefined;
+    const rows=this.db.prepare(`SELECT record_id,value_json FROM private_records WHERE kind='source' AND org_id=? AND actor_id=? ${position?'AND rowid < ?':''} ORDER BY rowid DESC LIMIT ?`)
+      .all(...(position?[actor.org_id,actor.actor_id,position.rowid,limit+1]:[actor.org_id,actor.actor_id,limit+1])) as {record_id:string;value_json:string}[];
+    return {values:rows.slice(0,limit).map(row=>JSON.parse(row.value_json)),nextCursor:rows.length>limit?rows[limit-1].record_id:null};
   }
   updateCommand(id: string, actor: Actor, value: any): void {
     const result = this.db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'command' AND record_id = ? AND org_id = ? AND actor_id = ?")

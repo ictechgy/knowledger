@@ -117,3 +117,41 @@ test('lost publication response is reconciled from command history without anoth
   await expect(page.locator('#command-list')).toContainText('커밋 확인됨');
   await expect(page.locator('#document-title')).toHaveText('Lost receipt');expect(posts).toBe(1);
 });
+
+test('repository source imports only allowlisted files and resumes changed private drafts',async({page,workspace})=>{
+  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'kcl-source-browser-'));
+  const manifest={version:1,source_id:'kb-browser',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};
+  const first='\uFEFF# KB guide\r\n\r\nOriginal bytes.\r\n';
+  writeFileSync(join(root,'guide.md'),first);writeFileSync(join(root,'not-allowed.md'),'PRIVATE_EXCLUDED_SOURCE');
+  try {
+    await page.addInitScript(()=>{const read=File.prototype.arrayBuffer;window.sourceReads=[];File.prototype.arrayBuffer=function(){window.sourceReads.push(this.name);return read.call(this);};});
+    await open(page,workspace);
+    await page.locator('#source-manifest-file').setInputFiles({name:'source.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(manifest))});
+    await expect(page.locator('#source-preview')).toContainText('guide.md');await page.locator('#source-folder').setInputFiles(root);
+    await page.locator('#source-import').click();await expect(page.locator('#source-status')).toContainText('완료');
+    await expect(page.locator('#private-draft-count')).toHaveText('1');await expect(page.locator('#metric-documents')).toHaveText('0');
+    expect(await page.evaluate(()=>window.sourceReads.includes('not-allowed.md'))).toBe(false);
+    await page.locator('#source-import').click();await expect(page.locator('#source-status')).toContainText('완료');await expect(page.locator('#private-draft-count')).toHaveText('1');
+    writeFileSync(join(root,'guide.md'),'# Changed KB guide');await page.locator('#source-folder').setInputFiles(root);await page.locator('#source-import').click();
+    await expect(page.locator('#private-draft-count')).toHaveText('2');await page.locator('#source-detail .source-entry').click();await expect(page.locator('#draft-body')).toHaveValue('# Changed KB guide');
+    const events=JSON.stringify(workspace.app.service.ledger.events(0,1000));expect(events).not.toContain('KB guide');expect(events).not.toContain('PRIVATE_EXCLUDED_SOURCE');
+    await switchActor(page,'BetaMSP');await expect(page.locator('#source-list')).not.toContainText('kb-browser');await expect(page.locator('#source-preview')).toBeEmpty();
+  } finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('source file validation and actor changes stop uploads before any source mutation',async({page,workspace})=>{
+  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'kcl-source-abort-'));
+  const manifest={version:1,source_id:'kb-no-upload',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};
+  writeFileSync(join(root,'guide.md'),Buffer.from([0x41,0x01,0x42]));let uploads=0;
+  page.on('request',request=>{if(/\/sources\/.*\/(markdown|reconcile)$/.test(new URL(request.url()).pathname))uploads++;});
+  try {
+    await open(page,workspace);await page.locator('#source-manifest-file').setInputFiles({name:'source.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(manifest))});
+    await expect(page.locator('#source-preview')).toContainText('guide.md');await page.locator('#source-folder').setInputFiles(root);await page.locator('#source-import').click();
+    await expect(page.locator('#source-status')).toContainText('중단');expect(uploads).toBe(0);
+    writeFileSync(join(root,'guide.md'),'# Private source');await page.locator('#source-folder').setInputFiles(root);
+    await page.evaluate(()=>{const read=File.prototype.arrayBuffer;window.sourceReading=false;File.prototype.arrayBuffer=async function(){if(this.name==='guide.md'){window.sourceReading=true;await new Promise(resolve=>window.releaseSourceRead=resolve);}return read.call(this);};});
+    await page.locator('#source-import').click();await expect.poll(()=>page.evaluate(()=>window.sourceReading)).toBe(true);
+    await switchActor(page,'BetaMSP');await page.evaluate(()=>window.releaseSourceRead());
+    await expect(page.locator('#source-preview')).toBeEmpty();await expect(page.locator('#source-list')).not.toContainText('kb-no-upload');expect(uploads).toBe(0);
+  } finally{rmSync(root,{recursive:true,force:true});}
+});

@@ -88,7 +88,7 @@ flowchart LR
 
 ## 프로젝트 상태
 
-API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로젝트 설정의 genesis에서 고정한다. [Fabric 웹 테스트 모드](docs/12-FABRIC-WEB.md)는 실제 원장과 영속 projection에 연결되며, [개발용 로그인](docs/13-DEVELOPMENT-LOGIN.md)은 OIDC 계정·별도 서명 서비스·권한 회수를 검증한다. [Markdown 가져오기](docs/14-MARKDOWN-IMPORT.md)로 로컬 KB 문서를 비공개 초안부터 검토할 수 있다. 실제 회사 SSO/KMS·조직별 운영, 외부 모델·벡터 DB는 후속 단계다. [검증 기록](docs/VALIDATION.md)에 실제 실행 근거를 구분했다.
+API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로젝트 설정의 genesis에서 고정한다. [Fabric 웹 테스트 모드](docs/12-FABRIC-WEB.md)는 실제 원장과 영속 projection에 연결되며, [개발용 로그인](docs/13-DEVELOPMENT-LOGIN.md)은 OIDC 계정·별도 서명 서비스·권한 회수를 검증한다. [Markdown 가져오기](docs/14-MARKDOWN-IMPORT.md)로 로컬 KB 문서를 비공개 초안부터 검토할 수 있다. 실제 회사 SSO/KMS·조직별 운영, 모델 공급자별 transport와 벡터 검색 인덱스는 별도 배포·확장 범위다. [검증 기록](docs/VALIDATION.md)에 실제 실행 근거를 구분했다.
 
 [내 비공개 초안](docs/15-PRIVATE-DRAFTS.md)에서 검토를 재개하고, [런타임 DB 백업·복원](docs/16-RUNTIME-BACKUP.md)으로 초안·원장 view·명령 기록을 새 데이터 폴더에 복구할 수 있다.
 
@@ -97,5 +97,19 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로�
 [내 요청](docs/20-REQUEST-TRACKING.md)에서 미확정 거래를 이어서 확인하고 원래 명령으로 재시도한다.
 [개정본 비교·브라우저 검사](docs/21-BROWSER-AND-REVISION-TESTS.md)와
 [성능·장애 실험](docs/22-AUTOMATED-EXPERIMENTS.md)을 로컬과 CI에서 반복 실행할 수 있다.
+
+## KB·모델 연결
+
+[Markdown 저장소 연결](docs/23-KB-SOURCE-CONNECTOR.md)은 manifest에 지정한 파일만 비공개 초안으로 동기화한다.
+[지식 클라이언트](docs/24-KNOWLEDGE-CLIENT.md)는 정확한 개정본과 합의 상태를 확인하고,
+모델 생성 전과 결과 반환 전에 권한·최신성을 다시 검사한다.
+
+```sh
+npm run demo:kb
+npm run kb:sync -- --server http://127.0.0.1:4317 --workspace knowledge --org OrgOneMSP --actor maintainer --root examples/markdown-kb --manifest examples/markdown-kb/manifest.json
+```
+
+`demo:kb`는 별도 임시 로컬 환경에서 허구의 담당자 승인과 모델 callback을 사용하는 실행 예제다.
+`kb:sync`는 실행 중인 로컬 개발 앱에 비공개 초안을 만든다. OIDC 환경에서는 로그인한 웹 화면의 저장소 가져오기와 인증 transport를 주입한 SDK를 사용한다.
 
 [MIT 라이선스](LICENSE)로 제공한다. [기여 가이드](CONTRIBUTING.md)와 [보안 안내](SECURITY.md)를 참고한다. 예제의 이름과 ID는 모두 가상이며 실제 인증정보가 없다.

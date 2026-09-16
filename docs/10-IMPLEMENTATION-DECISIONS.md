@@ -113,3 +113,22 @@ reverse proxy 뒤에서도 listener는 loopback이며, 전달된 Host/Origin을 
 묶는다. 표시 라벨과 연결 참조의 교체는 별도로 허용한다. 새 configured snapshot은 version3이며
 기존 예제의 version1·2를 유지한다. 범용 2·4조직 로컬/API·패키징 검사와 기존 3조직 실제 Fabric
 검증을 구분한다. 지식 승인 프로토콜과 인프라 합의 선택에는 변경이 없다.
+
+### KB source와 generation 경계 — 2026-09-16
+
+첫 KB adapter는 명시적인 파일 manifest를 받는 로컬 Markdown 저장소다. 웹 폴더 선택과
+Node CLI는 같은 source API를 사용한다. 파일 경로·해시·원본 연결은 actor별 private record에만 두고,
+업데이트는 새 초안으로 만든다. source의 version 비교와 operation receipt를 SQLite transaction에
+묶어 동시 쓰기·재시작 재시도를 보존한다. 원본 누락 표시는 공유 합의를 자동 철회하지 않는다.
+
+한 source의 present100개/16MiB, 파일당256KiB를 제한한다. 전체 snapshot을 검증한 뒤
+누락 원본을 먼저 표시하고 순차로 가져온다. 각 요청은 원자적이며 전체 batch의 일괄 rollback은
+제공하지 않는다. 실패하면 멈추고 최신 source version으로 재개한다.
+
+지식 SDK는 Node24의 인증 transport 주입 방식을 선택했다. 자격증명을 탐색하거나 모델 업체를
+선택하지 않는다. `GET /revisions/{digest}`로 본문을 다시 검증하고 strict manifest의 동일 binding을
+유지한다. 새로운 재검증마다 run ID가 바뀌는 기존 서버 계약을 따른다.
+
+모델 callback은 명시적인 generate/release 권한 검사와 fresh revalidation 사이에서 초안만 만든다.
+결과 반환 직전 철회·권한 변경·실패가 발견되면 output을 내보내지 않는다. 이미 모델에 보낸 본문 회수,
+callback의 외부 부작용 원자적 취소, 독립 Fabric quorum 검증을 보증하는 라이브러리는 아니다.
