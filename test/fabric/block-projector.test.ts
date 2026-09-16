@@ -242,10 +242,10 @@ test("matches the official ASN.1 DER BlockHeaderHash golden", { skip: !fabricPro
   }
 });
 
-test("rejects lifecycle transactions carrying a hidden KCL namespace", { skip: !fabricProtosAvailable }, () => {
+test("rejects lifecycle transactions carrying a hidden Knowledger namespace", { skip: !fabricProtosAvailable }, () => {
   const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
   const hidden = transaction({ txId: "tx-hidden-lifecycle", chaincodeName: "_lifecycle", namespace: "kcl", writes: [{ key: keyFor.eligibilityEpoch(), value: 7 }] });
-  assert.throws(() => projector.applyBlock(block(0, [hidden])), /Lifecycle.*KCL/);
+  assert.throws(() => projector.applyBlock(block(0, [hidden])), /Lifecycle.*Knowledger/);
   assert.equal(projector.checkpoint(), null);
 });
 
@@ -273,9 +273,9 @@ test("allows lifecycle transactions and read-only non-target namespaces while re
   const lifecycle = transaction({ txId: "tx-lifecycle", chaincodeName: "_lifecycle", namespace: "_lifecycle", writes: [{ key: "lifecycle-key", value: { ignored: true } }] });
   projector.applyBlock(block(0, [lifecycle]));
   assert.equal(projector.read("lifecycle-key"), undefined);
-  const readOnly = transaction({ txId: "tx-kcl-lifecycle-read", namespace: "_lifecycle", writes: [] });
+  const readOnly = transaction({ txId: "tx-knowledger-lifecycle-read", namespace: "_lifecycle", writes: [] });
   projector.applyBlock(block(1, [readOnly], Buffer.from(projector.checkpoint()!.block_hash, "hex")));
-  const hidden = transaction({ txId: "tx-kcl-lifecycle-write", namespace: "_lifecycle", writes: [{ key: "hidden", value: { ignored: true } }] });
+  const hidden = transaction({ txId: "tx-knowledger-lifecycle-write", namespace: "_lifecycle", writes: [{ key: "hidden", value: { ignored: true } }] });
   assert.throws(() => projector.applyBlock(block(2, [hidden], Buffer.from(projector.checkpoint()!.block_hash, "hex"))), /Non-target namespace writes/);
   assert.equal(projector.checkpoint()?.block_number, 1);
 });

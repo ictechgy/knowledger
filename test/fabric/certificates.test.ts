@@ -30,7 +30,7 @@ function key(path: string): void {
   write(path, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' }));
 }
 function fixture(t: TestContext, caDays = 365) {
-  const root = fs.mkdtempSync('/tmp/kcl-cert-test-');
+  const root = fs.mkdtempSync('/tmp/knowledger-cert-test-');
   t.after(() => fs.rmSync(root, { recursive: true }));
   const { common, msp } = requireFabric('@hyperledger/fabric-protos');
   const application = new common.ConfigGroup();

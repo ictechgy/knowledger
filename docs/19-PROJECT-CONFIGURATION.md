@@ -1,6 +1,6 @@
 # 프로젝트 설정과 범용 실행
 
-KCL은 특정 산업, 부서, 업무 상태를 필수로 요구하지 않는다. 프로젝트 설정이 workspace, 조직, 업무 맥락, usage scope, 승인 역할과 연결 방식을 정한다. `examples/order-workflow`는 배송·주문 같은 업무 흐름을 보여 주는 선택형 예제다.
+Knowledger은 특정 산업, 부서, 업무 상태를 필수로 요구하지 않는다. 프로젝트 설정이 workspace, 조직, 업무 맥락, usage scope, 승인 역할과 연결 방식을 정한다. `examples/order-workflow`는 배송·주문 같은 업무 흐름을 보여 주는 선택형 예제다.
 
 ## 시작하기
 
@@ -8,18 +8,18 @@ Node.js 24 이상에서 새 설정을 만든다.
 
 ```sh
 npm run config:init
-npm start -- --config kcl.config.json
+npm start -- --config knowledger.config.json
 ```
 
-`config:init`의 기본 결과는 `kcl.config.json`에 두 개의 예시 조직과 초기 문서 본문이 없는 범용 workspace를 만든다. 조직과 workspace는 반복·선택 옵션으로 정한다.
+`config:init`의 기본 결과는 `knowledger.config.json`에 두 개의 예시 조직과 초기 문서 본문이 없는 범용 workspace를 만든다. 조직과 workspace는 반복·선택 옵션으로 정한다.
 
 ```sh
 npm run config:init -- \
   --organization ExampleOneMSP \
   --organization ExampleTwoMSP \
   --workspace knowledge \
-  --output kcl.config.json
-npm start -- --config kcl.config.json --data .data/knowledge --port 4317
+  --output knowledger.config.json
+npm start -- --config knowledger.config.json --data .data/knowledge --port 4317
 ```
 
 `--output` 파일은 이미 있으면 덮어쓰지 않는다. 생성된 조직 라벨, identity, genesis policy와 연결 참조를 검토한 뒤 실행한다. 기존 데이터 폴더의 authority와 다른 설정을 자동으로 채택하거나 덮어쓰지 않는다.
@@ -95,7 +95,7 @@ local-simulation은 선택한 설정의 단일 개발 프로세스로 실행하�
 ```sh
 node infra/fabric/signing-service.ts \
   --config /secure/config/signing-keys.json \
-  --socket /run/kcl/example-owner.sock
+  --socket /run/knowledger/example-owner.sock
 ```
 
 signer 설정은 앱 프로젝트 JSON에 inline private key를 넣지 않는다. Unix socket은 절대 경로와 제한된 파일 권한을 사용한다. 이 개발 프로세스 분리는 HSM, cloud KMS, 독립 OS 계정 또는 조직 간 운영 격리를 제공하지 않는다.
@@ -106,7 +106,7 @@ signer 설정은 앱 프로젝트 JSON에 inline private key를 넣지 않는다
 
 ```sh
 node infra/fabric/build.mjs \
-  --config kcl.config.json \
+  --config knowledger.config.json \
   --output .artifacts/chaincode
 ```
 

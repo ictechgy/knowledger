@@ -11,7 +11,7 @@ import type { Actor, Checkpoint, LedgerEvent } from '../packages/storage/local-l
 import type { ApplicationLedger, CommittedReceipt, PendingReceipt } from '../packages/storage/ledger-port.ts';
 import type { DomainCommand } from '../packages/domain/index.ts';
 import { PrivateStore } from '../packages/storage/private-store.ts';
-import { KclService } from '../apps/api/service.ts';
+import { KnowledgerService } from '../apps/api/service.ts';
 import { createApp } from '../apps/api/server.ts';
 import { actorIdentity, CHANNEL_ID, demoFixtures, PERSONAS, BOOTSTRAP_ACTOR, demoDefinition } from '../examples/order-workflow/config.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
@@ -115,7 +115,7 @@ export async function runResilienceSmoke(options: ResilienceSmokeOptions): Promi
     const reopenStarted = performance.now();
     ledger = new LocalLedger(join(dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
     vault = new PrivateStore(join(dataDir, 'private-local.sqlite'));
-    let service = new KclService(ledger, vault, demoDefinition());
+    let service = new KnowledgerService(ledger, vault, demoDefinition());
     await service.initialize();
     const eventsBeforeRetry = ledger.events(0, 1000).length;
     const retry = await service.publish(actor(), { preview_id: started.ready.preview_id, confirm_shared: true, command_id: started.ready.command_id });
@@ -134,7 +134,7 @@ export async function runResilienceSmoke(options: ResilienceSmokeOptions): Promi
     const snapshotMs = performance.now() - snapshotStarted;
     const restoredLedger = new LocalLedger(join(restoredDir, 'shared-ledger.sqlite'), CHANNEL_ID);
     const restoredVault = new PrivateStore(join(restoredDir, 'private-local.sqlite'));
-    service = new KclService(restoredLedger, restoredVault, demoDefinition());
+    service = new KnowledgerService(restoredLedger, restoredVault, demoDefinition());
     await service.initialize();
     const restoredEvents = restoredLedger.events(0, 1000).length;
     const restoredOverview = await service.overview(actor());

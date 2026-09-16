@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "kcl/approval-decision",
-  "title": "KCL ApprovalDecision",
+  "$id": "knowledger/approval-decision",
+  "title": "Knowledger ApprovalDecision",
   "type": "object",
   "additionalProperties": false,
   "required": [

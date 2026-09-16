@@ -316,7 +316,7 @@ function createOwnedDirectory(path: string, label: string): void {
 function stagingPath(destination: string, label: string): OwnedStaging {
   const parent = dirname(destination);
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const candidate = join(parent, `.${basename(destination)}.kcl-staging-${process.pid}-${Date.now()}-${attempt}`);
+    const candidate = join(parent, `.${basename(destination)}.knowledger-staging-${process.pid}-${Date.now()}-${attempt}`);
     if (!existsSync(candidate)) {
       createOwnedDirectory(candidate, label);
       const stat = lstatSync(candidate);
@@ -329,7 +329,7 @@ function stagingPath(destination: string, label: string): OwnedStaging {
 function cleanOwnedStaging(staging: OwnedStaging, entries: Map<string, OwnedEntry>): void {
   try {
     const stat = lstatSync(staging.path);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== staging.dev || stat.ino !== staging.ino || !basename(staging.path).includes('.kcl-staging-')) return;
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== staging.dev || stat.ino !== staging.ino || !basename(staging.path).includes('.knowledger-staging-')) return;
     for (const [name, identity] of entries) {
       const path = join(staging.path, name);
       try {

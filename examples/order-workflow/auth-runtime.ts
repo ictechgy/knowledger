@@ -17,7 +17,7 @@ export async function createDevelopmentAuthRuntime(options: { dataDir: string; o
     if (!persona) throw new Error('Development organization has no human signing persona');
     return [selected.subject, actorIdentity(persona)] as const;
   }));
-  const authentication = await OidcAuthentication.create({ issuer: options.issuer, clientId: 'kcl-development-client', redirectUri: `${options.origin}/auth/callback`, development: true,
+  const authentication = await OidcAuthentication.create({ issuer: options.issuer, clientId: 'knowledger-development-client', redirectUri: `${options.origin}/auth/callback`, development: true,
     authorizationVersionClaim: 'account_version',
     resolveActor: (issuer, subject) => new URL(issuer).href === new URL(options.issuer).href ? subjects.get(subject) : undefined,
   });

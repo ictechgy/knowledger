@@ -15,7 +15,7 @@ import {
 import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
 
 function fixture(): string {
-  return mkdtempSync(join(tmpdir(), 'kcl-runtime-scope-'));
+  return mkdtempSync(join(tmpdir(), 'knowledger-runtime-scope-'));
 }
 
 function outboxName(index = 0): string {

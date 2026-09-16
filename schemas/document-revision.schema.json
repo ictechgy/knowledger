@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "kcl/document-revision",
-  "title": "KCL immutable DocumentRevision wrapper",
+  "$id": "knowledger/document-revision",
+  "title": "Knowledger immutable DocumentRevision wrapper",
   "type": "object",
   "additionalProperties": false,
   "required": [

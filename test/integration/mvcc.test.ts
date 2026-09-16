@@ -4,7 +4,7 @@ import { execute, keyFor, digestPayload } from '../../packages/domain/index.ts';
 import type { Actor, DomainCommand, TxContext } from '../../packages/domain/index.ts';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { KclService } from '../../apps/api/service.ts';
+import { KnowledgerService } from '../../apps/api/service.ts';
 import { demoFixtures, actorIdentity, PERSONAS, slotFields } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 import { demoDefinition } from '../../examples/order-workflow/config.ts';
@@ -58,7 +58,7 @@ function decision(actor: Actor, kind: 'approve' | 'object', proposalId = proposa
 async function ready() {
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
-  const service = new KclService(ledger, vault, demoDefinition());
+  const service = new KnowledgerService(ledger, vault, demoDefinition());
   await service.initialize();
   await seedDemo(service);
   const state = new VersionedState(ledger.entries('kcl:'));

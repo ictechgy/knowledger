@@ -1,9 +1,9 @@
 import { validateRefreshedManifest } from './knowledge-client.ts';
-import type { ResolveSelection, ValidatedResolveResponse, KclClient } from './knowledge-client.ts';
+import type { ResolveSelection, ValidatedResolveResponse, KnowledgerClient } from './knowledge-client.ts';
 
 export interface GenerationAuthorizationContext { phase:'generate'|'release'; manifest:any; adapterId:string }
 export interface GuardedGenerationOptions<T> {
-  client:Pick<KclClient,'resolve'|'revalidate'>;
+  client:Pick<KnowledgerClient,'resolve'|'revalidate'>;
   selection:ResolveSelection;
   allowDevelopment?:boolean;
   authorize:(context:GenerationAuthorizationContext)=>Promise<boolean>;

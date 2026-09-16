@@ -1,4 +1,4 @@
-# Knowledge Consensus Ledger — 지식 합의 원장
+# Knowledger — 지식 합의 원장
 
 **v0.1 개발 알파 · MIT · Node.js 24+**
 
@@ -12,14 +12,14 @@
 
 ```sh
 npm run config:init
-npm start -- --config kcl.config.json
+npm start -- --config knowledger.config.json
 ```
 
 기본 템플릿은 두 개의 예시 조직과 비어 있는 초기 문서 공간을 만든다. 조직·workspace·출력 경로는 반복 옵션으로 바꿀 수 있다.
 
 ```sh
-npm run config:init -- --organization ExampleOneMSP --organization ExampleTwoMSP --workspace knowledge --output kcl.config.json
-npm start -- --config kcl.config.json --data .data/knowledge --port 4317
+npm run config:init -- --organization ExampleOneMSP --organization ExampleTwoMSP --workspace knowledge --output knowledger.config.json
+npm start -- --config knowledger.config.json --data .data/knowledge --port 4317
 npm run demo:web   # 선택형 order-workflow UI 예제
 npm run demo:fabric # 선택형 3조직 Fabric 예제
 npm run demo:login  # 선택형 개발 OIDC 로그인 예제

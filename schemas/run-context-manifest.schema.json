@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "kcl/run-context-manifest",
-  "title": "KCL RunContextManifest",
+  "$id": "knowledger/run-context-manifest",
+  "title": "Knowledger RunContextManifest",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -35,7 +35,7 @@ npm run start:login -- --port 4330 --issuer-port 4331 --data .data/login-other
 ```mermaid
 flowchart LR
     Browser[브라우저] -->|로그인| IdP[개발 OIDC 서버]
-    Browser -->|세션 쿠키| API[로그인된 KCL API]
+    Browser -->|세션 쿠키| API[로그인된 Knowledger API]
     API -->|현재 계정 확인| IdP
     API -->|SHA-256 digest / Unix socket| Signer[별도 서명 프로세스]
     Signer --> Keys[승인된 Fabric 테스트 키]

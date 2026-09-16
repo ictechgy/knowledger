@@ -1,19 +1,19 @@
 # Knowledge client와 guarded generation
 
-`packages/client/knowledge-client.ts`는 KCL resolver를 호출하는 Node.js 24 이상에서 사용하는 client다. client가 승인 판정을 계산하지 않는다. 서버가 반환한 fresh fence, exact revision, 사람 승인 목록, policy binding을 검증해 caller가 안전하게 사용할 수 있는 결과로 바꾼다.
+`packages/client/knowledge-client.ts`는 Knowledger resolver를 호출하는 Node.js 24 이상에서 사용하는 client다. client가 승인 판정을 계산하지 않는다. 서버가 반환한 fresh fence, exact revision, 사람 승인 목록, policy binding을 검증해 caller가 안전하게 사용할 수 있는 결과로 바꾼다.
 
 ## Client 만들기
 
 현재 서버는 OIDC 세션 cookie·CSRF·Origin 계약을 사용한다. 아래 helper는 이 계약을 충족하는 인증된 호출 측 구현이다. 기본 동작을 바로 확인하려면 `npm run demo:kb`를 실행한다.
 
 ```ts
-import { KclClient } from "./packages/client/knowledge-client.ts";
+import { KnowledgerClient } from "./packages/client/knowledge-client.ts";
 
-const client = new KclClient({
-  baseUrl: "https://kcl.example.test",
+const client = new KnowledgerClient({
+  baseUrl: "https://knowledger.example.test",
   workspaceId: "knowledge",
-  // 인증을 완료한 호출 측이 현재 KCL session cookie·CSRF·Origin 헤더를 제공한다.
-  headers: async () => getApprovedKclSessionHeaders(),
+  // 인증을 완료한 호출 측이 현재 Knowledger session cookie·CSRF·Origin 헤더를 제공한다.
+  headers: async () => getApprovedKnowledgerSessionHeaders(),
   timeoutMs: 10_000,
 });
 ```
@@ -86,6 +86,6 @@ callback은 결과를 미리 스트리밍하거나 외부 부작용을 실행하
 
 Knowledge client는 모델 provider, vector database, SSO, HSM/KMS를 선택하지 않는다. 실제 모델 호출은 caller가 `generate` callback 안에서 명시적으로 연결한다. 기본 production client는 Fabric과 strict checkpoint를 기대하며, 개발 local-simulation은 `allowDevelopment`를 명시한 테스트·예제에서만 허용한다.
 
-client는 신뢰하는 인증된 KCL 응답의 구조·digest·scope·manifest binding을 검사한다. Fabric quorum proof를 독립 검증하는 클라이언트는 아니며, 실제 승인·dependency·VALID 판정은 서버의 검증된 projection에 의존한다. 원장 consensus가 문서 의미의 진실성이나 모델 출력의 정확성을 보증하지 않는다. 운영 배포에서는 HTTPS, 인증 transport, private source 보관, 모델 egress 정책, callback timeout과 audit 경계를 별도로 구성해야 한다.
+client는 신뢰하는 인증된 Knowledger 응답의 구조·digest·scope·manifest binding을 검사한다. Fabric quorum proof를 독립 검증하는 클라이언트는 아니며, 실제 승인·dependency·VALID 판정은 서버의 검증된 projection에 의존한다. 원장 consensus가 문서 의미의 진실성이나 모델 출력의 정확성을 보증하지 않는다. 운영 배포에서는 HTTPS, 인증 transport, private source 보관, 모델 egress 정책, callback timeout과 audit 경계를 별도로 구성해야 한다.
 
-관련 구현은 [KclClient](../packages/client/knowledge-client.ts), [guarded generation](../packages/client/guarded-generation.ts), [resolver API](06-API.md), [RAG 경계](05-RAG.md)를 참조한다.
+관련 구현은 [KnowledgerClient](../packages/client/knowledge-client.ts), [guarded generation](../packages/client/guarded-generation.ts), [resolver API](06-API.md), [RAG 경계](05-RAG.md)를 참조한다.

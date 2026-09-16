@@ -60,7 +60,7 @@ async function stop(): Promise<void> {
 try {
   ensureRuntimeScope(dataDir, organization);
   // Short, owner-only Unix socket path; no private key is copied here.
-  socketDirectory = mkdtempSync('/tmp/kcl-signing-');
+  socketDirectory = mkdtempSync('/tmp/knowledger-signing-');
   const socketPath = join(socketDirectory, 'sign.sock');
   signer = spawn(process.execPath, ['infra/fabric/signing-service.ts', '--socket', socketPath, '--demo', ...(organization ? ['--key-id', organization.key_id] : [])], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] });
   signer.stderr?.on('data', () => { /* Do not relay arbitrary crypto/library diagnostics. */ });
@@ -74,7 +74,7 @@ try {
   const runtime = await createDevelopmentAuthRuntime({ dataDir, origin: `http://127.0.0.1:${port}`, issuer: issuer.issuer, socketPath, organization });
   app = await createApp({ dataDir, ...runtime });
   const address = await app.listen(port);
-  console.log(`KCL development login: ${address}`);
+  console.log(`Knowledger development login: ${address}`);
   if (organization) console.log(`Organization scope: ${organization.org_id}`);
   console.log('Local OIDC accounts · separate signing process · actual Fabric ledger');
   signer.once('exit', () => { if (!stopping) { console.error('Signing service stopped; shutting down the development profile.'); process.exitCode = 1; void stop(); } });

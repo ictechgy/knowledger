@@ -5,7 +5,7 @@ import { validateProjectConfiguration } from '../packages/config/project.ts';
 
 try {
   const args=process.argv.slice(2);const organizations:string[]=[];
-  let output='kcl.config.json';let workspace='knowledge';const seen=new Set<string>();
+  let output='knowledger.config.json';let workspace='knowledge';const seen=new Set<string>();
   for(let index=0;index<args.length;index+=2){
     const key=args[index],value=args[index+1];
     if(!['--output','--workspace','--organization'].includes(key)||!value||value.startsWith('--')||(key!=='--organization'&&seen.has(key))) throw new Error('Invalid arguments');

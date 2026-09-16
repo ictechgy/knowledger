@@ -14,7 +14,7 @@ function base64(value: Uint8Array | string): string {
 }
 
 async function fixture(t: any) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-markdown-import-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-markdown-import-test-'));
   const app = await createApp({ dataDir: directory });
   const url = await app.listen(0);
   let closed = false;
@@ -28,7 +28,7 @@ async function fixture(t: any) {
   await refreshSession();
   const post = async (path: string, input: any, expected = 200) => {
     const response = await fetch(`${url}${path}`, {
-      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify(input),
+      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify(input),
     });
     const value = await response.json() as any;
     assert.equal(response.status, expected, `${path}: ${value.code ?? value.status}`);
@@ -102,7 +102,7 @@ test('Markdown import is idempotent across restart and conflicts on changed inpu
     const initial = await fetch(`${url}/api/session`);
     const cookie = initial.headers.get('set-cookie')!.split(';')[0];
     const session = await initial.json() as any;
-    const response = await fetch(`${url}${route}`, { method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify(input) });
+    const response = await fetch(`${url}${route}`, { method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify(input) });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), first);
     assert.equal(reopened.service.ledger.events(0, 1000).length, eventsBefore);

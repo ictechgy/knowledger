@@ -14,7 +14,7 @@ coverage/
 __pycache__/
 .DS_Store
 
-/kcl.config.json
+/knowledger.config.json
 
 playwright-report/
 test-results/

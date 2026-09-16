@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { validateRevision, validatePolicy, validateDecision } from '../../packages/domain/index.ts';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { KclService } from '../../apps/api/service.ts';
+import { KnowledgerService } from '../../apps/api/service.ts';
 import { PERSONAS, actorIdentity } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 import { demoDefinition } from '../../examples/order-workflow/config.ts';
@@ -25,7 +25,7 @@ test('generated run manifests conform to the baseline restricted design schema c
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
   try {
-    const service = new KclService(ledger, vault, demoDefinition());
+    const service = new KnowledgerService(ledger, vault, demoDefinition());
     await service.initialize();
     await seedDemo(service);
     const result = await service.resolve(actorIdentity(PERSONAS[0]), { document_ids: ['doc-sales-order-definition-001'], context_id: 'context-sales', scope_id: 'scope-order-2026-001', usage_scope: 'domain-definition/v1' });

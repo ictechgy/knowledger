@@ -70,7 +70,7 @@ async function get(path: string) {
 
 async function post(path: string, input: unknown, expected = 200): Promise<any> {
   for (let attempt = 0; attempt < 10; attempt++) {
-    const response = await fetch(`${url}${path.startsWith('/api/') ? path : '/v1/workspaces/demo' + path}`, { method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': csrf }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(`${url}${path.startsWith('/api/') ? path : '/v1/workspaces/demo' + path}`, { method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': csrf }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000) });
     const value = await response.json() as any;
     if (response.status === 202 && expected === 200) { await delay(300); continue; }
     assert.equal(response.status, expected, `${path}: ${value.code ?? value.status}`);

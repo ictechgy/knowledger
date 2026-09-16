@@ -131,7 +131,7 @@ def prepare():
             "ports": [f"127.0.0.1:{port}:7051"],
             "volumes": [f"{base}/msp:/etc/hyperledger/fabric/msp:ro", f"{base}/tls:/etc/hyperledger/fabric/tls:ro",
                         "/var/run/docker.sock:/host/var/run/docker.sock", f"{volume}:/var/hyperledger/production"]}
-    write_json(STATE / "configtx.yaml", {"Profiles": {"KclSmoke": profile}})
+    write_json(STATE / "configtx.yaml", {"Profiles": {"KnowledgerSmoke": profile}})
     write_json(STATE / "compose.json", {"services": services, "volumes": volumes, "networks": {"default": {"name": "kcl-fabric-smoke"}}})
     write_json(STATE / "versions.json", {"fabric": "2.5.16", "shim": "2.5.8", "gateway": "1.12.1", "images": IMAGES})
     print("Prepared public configuration: 3 peers, 3 Raft orderers, loopback ports 17050–19053. No identities generated.", flush=True)
@@ -143,7 +143,7 @@ def generate_identities():
         raise RuntimeError("Test identity directory already exists; use deploy to resume. Identities will not be replaced.")
     run([TOOLS / "bin/cryptogen", "generate", "--config", STATE / "crypto-config.yaml", "--output", crypto])
     issue_client_certificates()
-    print("Generated disposable test MSPs with certified KCL human actor attributes.", flush=True)
+    print("Generated disposable test MSPs with certified Knowledger human actor attributes.", flush=True)
 
 
 def issue_client_certificates():
@@ -200,7 +200,7 @@ def deploy(upgrade=False):
     check_tools()
     block = STATE / "channel.block"
     if not block.exists():
-        run([TOOLS / "bin/configtxgen", "-configPath", STATE, "-profile", "KclSmoke", "-channelID", CHANNEL, "-outputBlock", block])
+        run([TOOLS / "bin/configtxgen", "-configPath", STATE, "-profile", "KnowledgerSmoke", "-channelID", CHANNEL, "-outputBlock", block])
     compose("up", "-d")
     for i in range(3):
         tls = STATE / f"crypto/ordererOrganizations/kcl.test/orderers/orderer{i}.kcl.test/tls"
@@ -241,9 +241,9 @@ def deploy(upgrade=False):
     # test package bytes. Logical version/genesis/Init state stay at v0.1.0.
     expected_policy = "EiAvQ2hhbm5lbC9BcHBsaWNhdGlvbi9FbmRvcnNlbWVudA=="
     if existing and (existing["version"] != "0.1.0" or not existing.get("init_required") or existing.get("endorsement_plugin") != "escc" or existing.get("validation_plugin") != "vscc" or existing.get("validation_parameter") != expected_policy or existing.get("collections") != {}):
-        raise RuntimeError("An incompatible KCL definition is already committed; review it before changing lifecycle state")
+        raise RuntimeError("An incompatible Knowledger definition is already committed; review it before changing lifecycle state")
     if upgrade and not existing:
-        raise RuntimeError("Deploy KCL before upgrading its package")
+        raise RuntimeError("Deploy Knowledger before upgrading its package")
     sequence = existing["sequence"] + (1 if upgrade else 0) if existing else 1
     definition = ["--channelID", CHANNEL, "--name", "kcl", "--version", "0.1.0", "--sequence", str(sequence), "--init-required"]
     for org in ORGS:

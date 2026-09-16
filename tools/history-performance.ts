@@ -7,7 +7,7 @@ import { createConfiguredApp } from '../apps/api/configured-runtime.ts';
 import { createProjectTemplate } from '../packages/config/template.ts';
 
 // Fixed synthetic workload, isolated from every existing workspace and network.
-const directory = mkdtempSync(join(tmpdir(), 'kcl-history-performance-'));
+const directory = mkdtempSync(join(tmpdir(), 'knowledger-history-performance-'));
 const config = createProjectTemplate(); const actor = config.bootstrap_actor;
 const policy = config.genesis.policies[0];
 let app: Awaited<ReturnType<typeof createConfiguredApp>> | undefined;

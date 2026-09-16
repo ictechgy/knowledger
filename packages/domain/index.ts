@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /**
- * The KCL domain port deliberately depends on only a tiny transaction context.
+ * The Knowledger domain port deliberately depends on only a tiny transaction context.
  * A Fabric adapter and the local adapter both provide the same read/write
  * semantics.  The adapter is responsible for rolling back all writes when an
  * invocation throws and for applying MVCC/CAS at commit time.
@@ -281,7 +281,7 @@ function assertKeys(value: Record<string, unknown>, required: string[], optional
 }
 
 function assertId(value: unknown, label: string): asserts value is string {
-  if (typeof value !== "string" || !ID_RE.test(value)) fail("INVALID_INPUT", `${label} is not a valid KCL id`);
+  if (typeof value !== "string" || !ID_RE.test(value)) fail("INVALID_INPUT", `${label} is not a valid Knowledger id`);
 }
 
 function assertDigest(value: unknown, label: string): asserts value is string {
@@ -334,7 +334,7 @@ function cloneCanonical<T>(value: T): T {
 function canonicalNumber(value: number): string {
   if (!Number.isFinite(value) || !Number.isSafeInteger(value) && !Number.isSafeInteger(Math.trunc(value))) {
     // RFC 8785 permits non-integer IEEE-754 values, but all values used by
-    // KCL must be exactly representable and finite.  The second clause keeps
+    // Knowledger must be exactly representable and finite.  The second clause keeps
     // ordinary fractional IEEE-754 values while rejecting unsafe integer-like
     // values such as 9007199254740992.
     if (!Number.isFinite(value)) fail("INVALID_INPUT", "non-finite numbers are not valid JSON");
@@ -361,7 +361,7 @@ function assertDataDescriptor(value: object, property: string, allowNonEnumerabl
 }
 
 /**
- * RFC 8785 JSON Canonicalization Scheme for the JSON subset accepted by KCL.
+ * RFC 8785 JSON Canonicalization Scheme for the JSON subset accepted by Knowledger.
  * Node's JSON number serializer is ECMAScript-compatible with JCS; sorting
  * object keys with the default JS comparator gives UTF-16 code-unit order.
  * Cycles, accessors, custom properties, and excessive nesting are rejected

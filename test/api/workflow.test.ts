@@ -13,7 +13,7 @@ let sequence = 0;
 const commandId = () => `command-test-${++sequence}`;
 
 async function fixture(t: any) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-api-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-api-test-'));
   const app = await createApp({ dataDir: directory });
   const url = await app.listen(0);
   const initial = await fetch(`${url}/api/session`);
@@ -21,7 +21,7 @@ async function fixture(t: any) {
   let session = await initial.json() as any;
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const post = async (path: string, input: any, expected = 200) => {
-    const response = await fetch(`${url}${path.startsWith('/api/') ? path : '/v1/workspaces/demo' + path}`, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token, Origin: url }, body: JSON.stringify(input) });
+    const response = await fetch(`${url}${path.startsWith('/api/') ? path : '/v1/workspaces/demo' + path}`, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token, Origin: url }, body: JSON.stringify(input) });
     const value = await response.json() as any;
     assert.equal(response.status, expected, `request ${path} returned ${value.code ?? value.status}`);
     if (path === '/api/session' && response.ok) session = value;
@@ -129,16 +129,16 @@ test('agent personas cannot approve and cross-origin / no-CSRF mutations are blo
   const route = `${api.url}/v1/workspaces/demo/drafts`;
   const noCsrf = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(noCsrf.status, 403);
-  const malformedCsrf = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json', 'X-KCL-CSRF': 'x'.repeat(64) }, body: '{}' });
+  const malformedCsrf = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': 'x'.repeat(64) }, body: '{}' });
   assert.equal(malformedCsrf.status, 403);
-  const otherOrigin = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session().csrf_token, Origin: 'https://unrelated.example' }, body: '{}' });
+  const otherOrigin = await fetch(route, { method: 'POST', headers: { Cookie: api.cookie(), 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session().csrf_token, Origin: 'https://unrelated.example' }, body: '{}' });
   assert.equal(otherOrigin.status, 403);
   const noSession = await fetch(`${api.url}/v1/workspaces/demo/overview`);
   assert.equal(noSession.status, 401);
 });
 
 test('reopening the ledger replays committed views without reseeding duplicate effects', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-restart-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-restart-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   let app = await createApp({ dataDir: directory });
   const before = await app.service.overview(actorIdentity(PERSONAS[1]));

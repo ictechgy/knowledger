@@ -15,7 +15,7 @@ test("configured runtime rejects a non-Fabric configuration before loading crede
     genesis: { channel_id: "workspace" },
   } as never;
   await assert.rejects(() => createConfiguredFabricRuntime(configuration, {
-    dataDir: "/tmp/kcl-configured-runtime-test",
+    dataDir: "/tmp/knowledger-configured-runtime-test",
     organization: "OrgA",
     authorizeActor: async () => undefined,
   }), /Fabric ledger configuration is required/);

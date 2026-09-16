@@ -5,8 +5,8 @@ import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
 
 const MAX_FORM_BYTES = 16 * 1024;
-const CSRF_COOKIE = 'kcl_development_interaction_csrf';
-const DEFAULT_CLIENT_ID = 'kcl-development-client';
+const CSRF_COOKIE = 'knowledger_development_interaction_csrf';
+const DEFAULT_CLIENT_ID = 'knowledger-development-client';
 const CSRF_TTL_MS = 5 * 60_000;
 const MAX_CSRF_INTERACTIONS = 256;
 
@@ -246,7 +246,7 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
   const cookieKey = randomBytes(32).toString('base64url');
   const provider = new Provider(issuer, {
     jwks: { keys: [privateJwk] },
-    cookies: { keys: [cookieKey], names: { session: `kcl_idp_session_${cookieNamespace}`, interaction: `kcl_idp_interaction_${cookieNamespace}`, resume: `kcl_idp_resume_${cookieNamespace}` } },
+    cookies: { keys: [cookieKey], names: { session: `knowledger_idp_session_${cookieNamespace}`, interaction: `knowledger_idp_interaction_${cookieNamespace}`, resume: `knowledger_idp_resume_${cookieNamespace}` } },
     clients: [{
       client_id: clientId,
       redirect_uris: [options.redirectUri],

@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { loadMarkdownSourceManifest, readMarkdownSource } from '../../packages/connectors/filesystem-markdown.ts';
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-filesystem-source-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-filesystem-source-test-'));
   const source = join(root, 'source');
   mkdirSync(join(source, 'docs'), { recursive: true });
   const content = Buffer.from('\uFEFF# 계약\r\n\r\n원문\r\n', 'utf8');
@@ -73,7 +73,7 @@ test('does not read manifest references, rejects malformed JSON and bounded aggr
 });
 
 test('enforces the aggregate source byte limit after per-file bounds', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-filesystem-source-total-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-filesystem-source-total-test-'));
   const source = join(root, 'source');
   mkdirSync(source, { recursive: true });
   const files = Array.from({ length: 65 }, (_, index) => {

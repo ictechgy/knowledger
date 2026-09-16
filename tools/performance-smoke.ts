@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writ
 import { isAbsolute, join, resolve } from 'node:path';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../packages/storage/private-store.ts';
-import { KclService } from '../apps/api/service.ts';
+import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
@@ -94,7 +94,7 @@ function validateOptions(options: PerformanceSmokeOptions): Required<Performance
 }
 
 /** Measure the complete paginated traversal, including every returned summary. */
-async function browseAll(service: KclService, searching = false): Promise<any[]> {
+async function browseAll(service: KnowledgerService, searching = false): Promise<any[]> {
   const rows: any[] = []; let cursor: string | undefined;
   do {
     const page = searching ? await service.search(actor, { query: marker, limit: 50, cursor }) : await service.overview(actor, { limit: 50, cursor });
@@ -114,7 +114,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
   let ledger = new LocalLedger(ledgerPath, CHANNEL_ID);
   let vault = new PrivateStore(vaultPath);
   const definition = demoDefinition();
-  let service = new KclService(ledger, vault, definition);
+  let service = new KnowledgerService(ledger, vault, definition);
   const publishTimes: number[] = [];
   const searchTimes: number[] = [];
   const overviewTimes: number[] = [];
@@ -157,7 +157,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     const replayStarted = performance.now();
     ledger = new LocalLedger(ledgerPath, CHANNEL_ID);
     vault = new PrivateStore(vaultPath);
-    service = new KclService(ledger, vault, definition);
+    service = new KnowledgerService(ledger, vault, definition);
     await service.initialize();
     const replayRestartMs = performance.now() - replayStarted;
     const replayOverview = await browseAll(service);

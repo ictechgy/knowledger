@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createProjectTemplate } from '../../packages/config/template.ts';
 
-function workspaceConfig(channelId = 'kcl-package-test', orgCount = 2) {
+function workspaceConfig(channelId = 'knowledger-package-test', orgCount = 2) {
   const config = createProjectTemplate(Array.from({length:orgCount},(_,index)=>`Org${index+1}MSP`),'package-test');
   config.ledger.channel_id=channelId;config.genesis.channel_id=channelId;
   for(const policy of config.genesis.policies)policy.channel_id=channelId;
@@ -15,7 +15,7 @@ function workspaceConfig(channelId = 'kcl-package-test', orgCount = 2) {
 }
 
 async function buildPackage(t, args, config) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-build-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-build-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const output = join(directory, 'with spaces', 'chaincode');
   const configPath = join(directory, 'workspace.json');
@@ -56,16 +56,16 @@ test('explicit demo mode retains the fixture genesis and founder descriptor', as
 });
 
 test('generic packaging preserves an alternate four-organization membership', async t => {
-  const { output } = await buildPackage(t, (configPath, outputPath) => ['--config', configPath, '--output', outputPath], workspaceConfig('kcl-four-org', 4));
+  const { output } = await buildPackage(t, (configPath, outputPath) => ['--config', configPath, '--output', outputPath], workspaceConfig('knowledger-four-org', 4));
   const genesis = JSON.parse(readFileSync(join(output, 'genesis.json'), 'utf8'));
   assert.equal(genesis.identities.length, 4);
   assert.deepEqual(genesis.identities.map((identity) => identity.org_id), ['Org1MSP', 'Org2MSP', 'Org3MSP', 'Org4MSP']);
 });
 
 test('build rejects a mismatched ledger channel or unregistered founder before writing a package', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-build-invalid-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-build-invalid-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = workspaceConfig('kcl-config-channel');
+  const config = workspaceConfig('knowledger-config-channel');
   config.ledger.channel_id = 'wrong-channel';
   const configPath = join(directory, 'workspace.json');
   writeFileSync(configPath, JSON.stringify(config));

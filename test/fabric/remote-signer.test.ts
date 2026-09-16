@@ -19,7 +19,7 @@ catch (error) { const e = error as NodeJS.ErrnoException; if (e.code !== 'MODULE
 
 test('running signer rejects a certificate at its expiration boundary', async t => {
   if (!sdkAvailable || spawnSync('openssl', ['version']).status !== 0) { t.skip('Fabric SDK and OpenSSL are required'); return; }
-  const directory = mkdtempSync('/tmp/kcl-signer-expiry-');
+  const directory = mkdtempSync('/tmp/knowledger-signer-expiry-');
   const keyPath = join(directory, 'key.pem');
   const certificatePath = join(directory, 'certificate.pem');
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -45,7 +45,7 @@ function frame(value: unknown): Buffer {
 }
 
 async function mockSigningSocket(handler: (request: Record<string, unknown>) => unknown | Promise<unknown>): Promise<{ path: string; close: () => Promise<void> }> {
-  const directory = mkdtempSync(join(tmpdir(), "kcl-remote-signer-"));
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-remote-signer-"));
   const path = join(directory, "sign.sock");
   const server: Server = createServer(socket => {
     let input = Buffer.alloc(0);
@@ -64,7 +64,7 @@ async function mockSigningSocket(handler: (request: Record<string, unknown>) => 
 }
 
 async function rawResponseSocket(payload: Buffer, trailing = Buffer.alloc(0)): Promise<{ path: string; close: () => Promise<void> }> {
-  const directory = mkdtempSync(join(tmpdir(), "kcl-raw-signer-"));
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-raw-signer-"));
   const path = join(directory, "sign.sock");
   const server: Server = createServer(socket => {
     socket.once("data", () => socket.end(Buffer.concat([frameBytes(payload), trailing])));
@@ -138,7 +138,7 @@ test("remote signer reports timeout and unavailable service without exposing req
     const signer = createRemoteSigner({ socketPath: stalled.path, keyId: "person-sales-owner", certificate: Buffer.from("certificate"), timeoutMs: 20 });
     await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "timeout");
   } finally { await stalled.close(); }
-  const unavailable = createRemoteSigner({ socketPath: join(mkdtempSync(join(tmpdir(), "kcl-remote-unavailable-")), "missing.sock"), keyId: "person-sales-owner", certificate: Buffer.from("certificate"), timeoutMs: 100 });
+  const unavailable = createRemoteSigner({ socketPath: join(mkdtempSync(join(tmpdir(), "knowledger-remote-unavailable-")), "missing.sock"), keyId: "person-sales-owner", certificate: Buffer.from("certificate"), timeoutMs: 100 });
   await assert.rejects(() => unavailable(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "service_unavailable");
 });
 
@@ -164,7 +164,7 @@ test("remote signer rejects duplicate fields, invalid UTF-8, and trailing respon
 test("development signing service signs with only the approved test identities", async t => {
   const certificatePath = join(process.cwd(), ".data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem");
   if (!sdkAvailable || !existsSync(certificatePath)) { t.skip("Fabric SDK and disposable identities are required"); return; }
-  const directory = mkdtempSync(join(tmpdir(), "kcl-signing-service-"));
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-service-"));
   const service = await startDevelopmentSigningService({ socketPath: join(directory, "sign.sock") });
   try {
     const certificate = readFileSync(certificatePath);
@@ -177,7 +177,7 @@ test("development signing service signs with only the approved test identities",
 test('signing service bounds idle connections and closes partial frames', async t => {
   const path = join(process.cwd(), '.data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem');
   if (!sdkAvailable || !existsSync(path)) { t.skip('Fabric SDK and disposable identities are required'); return; }
-  const directory = mkdtempSync('/tmp/kcl-signer-limits-');
+  const directory = mkdtempSync('/tmp/knowledger-signer-limits-');
   const service = await startDevelopmentSigningService({ socketPath: join(directory, 'sign.sock') });
   const sockets: Socket[] = [];
   try {
@@ -211,7 +211,7 @@ test('scoped signer reads only the selected organization identity and refuses ev
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const keyIds: DevelopmentSigningKeyId[] = ['person-sales-owner'];
-  const directory = mkdtempSync('/tmp/kcl-scoped-signer-');
+  const directory = mkdtempSync('/tmp/knowledger-scoped-signer-');
   const service = await startDevelopmentSigningService({ socketPath: join(directory, 'sign.sock'), keyIds });
   try {
     keyIds.push('person-settlement-owner');
@@ -231,7 +231,7 @@ test('scoped signer reads only the selected organization identity and refuses ev
 });
 
 test('signer rejects empty, duplicate and unknown key allowlists before opening the service', async () => {
-  const directory = mkdtempSync('/tmp/kcl-invalid-signer-');
+  const directory = mkdtempSync('/tmp/knowledger-invalid-signer-');
   for (const keyIds of [[], ['person-sales-owner', 'person-sales-owner'], ['unknown-key'], null]) {
     await assert.rejects(async () => {
       const service = await startDevelopmentSigningService({ socketPath: join(directory, 'sign.sock'), keyIds } as any);

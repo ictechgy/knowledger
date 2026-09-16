@@ -7,11 +7,11 @@ import { createDemoApp } from '../../examples/order-workflow/application.ts';
 import { PERSONAS, demoFixtures, actorIdentity } from '../../examples/order-workflow/config.ts';
 
 async function fixture(t:any){
-  const dataDir=mkdtempSync(join(tmpdir(),'kcl-command-test-'));let app=await createDemoApp({dataDir});let origin=await app.listen(0);let cookie='';let csrf='';
+  const dataDir=mkdtempSync(join(tmpdir(),'knowledger-command-test-'));let app=await createDemoApp({dataDir});let origin=await app.listen(0);let cookie='';let csrf='';
   const session=async()=>{const r=await fetch(origin+'/api/session');cookie=r.headers.get('set-cookie')!.split(';')[0];csrf=(await r.json()).csrf_token;};await session();
   t.after(async()=>{await app.close();rmSync(dataDir,{recursive:true,force:true});});
   const get=async(path:string,status=200)=>{const r=await fetch(origin+'/v1/workspaces/demo'+path,{headers:{Cookie:cookie}});const value=await r.json();assert.equal(r.status,status,JSON.stringify(value));return value;};
-  const post=async(path:string,input:any,status=200)=>{const r=await fetch(origin+(path==='/api/session'?path:'/v1/workspaces/demo'+path),{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KCL-CSRF':csrf},body:JSON.stringify(input)});const value=await r.json();assert.equal(r.status,status,JSON.stringify(value));if(path==='/api/session'&&r.ok)csrf=value.csrf_token;return value;};
+  const post=async(path:string,input:any,status=200)=>{const r=await fetch(origin+(path==='/api/session'?path:'/v1/workspaces/demo'+path),{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KNOWLEDGER-CSRF':csrf},body:JSON.stringify(input)});const value=await r.json();assert.equal(r.status,status,JSON.stringify(value));if(path==='/api/session'&&r.ok)csrf=value.csrf_token;return value;};
   return {get,post,app:()=>app,restart:async()=>{await app.close();app=await createDemoApp({dataDir});origin=await app.listen(0);await session();}};
 }
 const proposal='proposal-review-invitation-001';

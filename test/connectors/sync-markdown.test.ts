@@ -14,7 +14,7 @@ import { syncMarkdownSource } from '../../packages/connectors/sync-markdown.ts';
 const execFileAsync = promisify(execFile);
 
 async function fixture(t: any) {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-sync-source-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-sync-source-test-'));
   const source = join(root, 'source');
   const file = join(source, 'guides', 'handbook.md');
   const manifestPath = join(root, 'manifest.json');

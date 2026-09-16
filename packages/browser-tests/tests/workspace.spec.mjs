@@ -6,7 +6,7 @@ import { createConfiguredApp } from '../../../apps/api/configured-runtime.ts';
 import { createProjectTemplate } from '../../../packages/config/template.ts';
 
 const test=base.extend({workspace:async({},use)=>{
-  const dataDir=mkdtempSync(join(tmpdir(),'kcl-browser-'));const config=createProjectTemplate(['AlphaMSP','BetaMSP'],'browser-workspace');
+  const dataDir=mkdtempSync(join(tmpdir(),'knowledger-browser-'));const config=createProjectTemplate(['AlphaMSP','BetaMSP'],'browser-workspace');
   let app,origin;let writes=0;let deferredType=null;let held=null;let execute;
   const start=async(port=0)=>{
     app=await createConfiguredApp(config,{dataDir,port});execute=app.service.ledger.execute.bind(app.service.ledger);
@@ -119,7 +119,7 @@ test('lost publication response is reconciled from command history without anoth
 });
 
 test('repository source imports only allowlisted files and resumes changed private drafts',async({page,workspace})=>{
-  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'kcl-source-browser-'));
+  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'knowledger-source-browser-'));
   const manifest={version:1,source_id:'kb-browser',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};
   const first='\uFEFF# KB guide\r\n\r\nOriginal bytes.\r\n';
   writeFileSync(join(root,'guide.md'),first);writeFileSync(join(root,'not-allowed.md'),'PRIVATE_EXCLUDED_SOURCE');
@@ -140,7 +140,7 @@ test('repository source imports only allowlisted files and resumes changed priva
 });
 
 test('source file validation and actor changes stop uploads before any source mutation',async({page,workspace})=>{
-  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'kcl-source-abort-'));
+  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'knowledger-source-abort-'));
   const manifest={version:1,source_id:'kb-no-upload',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};
   writeFileSync(join(root,'guide.md'),Buffer.from([0x41,0x01,0x42]));let uploads=0;
   page.on('request',request=>{if(/\/sources\/.*\/(markdown|reconcile)$/.test(new URL(request.url()).pathname))uploads++;});
@@ -157,7 +157,7 @@ test('source file validation and actor changes stop uploads before any source mu
 });
 
 test('invalid source manifest selection clears the previous selection',async({page,workspace})=>{
-  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'kcl-manifest-clear-'));writeFileSync(join(root,'guide.md'),'# Guide');
+  const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'knowledger-manifest-clear-'));writeFileSync(join(root,'guide.md'),'# Guide');
   const manifest={version:1,source_id:'kb-manifest-clear',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};
   try {
     await open(page,workspace);

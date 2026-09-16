@@ -1,10 +1,10 @@
 import { createApp } from '../../apps/api/server.ts';
 import type { AppOptions } from '../../apps/api/server.ts';
-import type { KclService } from '../../apps/api/service.ts';
+import type { KnowledgerService } from '../../apps/api/service.ts';
 import { demoDefinition, demoFixtures, actorIdentity, PERSONAS, slotFields } from './config.ts';
 
 /** Fictional approvals are confined to this explicitly selected demonstration. */
-export async function seedDemo(service: KclService): Promise<void> {
+export async function seedDemo(service: KnowledgerService): Promise<void> {
   if (service.ledger.mode !== 'local-simulation') return;
   const fixtures = demoFixtures();
   for (let index = 0; index < fixtures.revisions.length; index++) {

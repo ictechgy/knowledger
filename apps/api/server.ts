@@ -9,7 +9,7 @@ import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 import type { ApplicationAuthentication, AuthenticatedSession } from '../../packages/auth/types.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { ApiError, KclService, onlyFields } from './service.ts';
+import { ApiError, KnowledgerService, onlyFields } from './service.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import type { RuntimeScopeOrganization } from '../../packages/storage/runtime-scope.ts';
@@ -51,7 +51,7 @@ export interface AppOptions {
 export async function createApp(options: AppOptions) {
   let ledger: ApplicationLedger | undefined = options.ledger;
   let vault: PrivateStore | undefined;
-  let service: KclService | undefined;
+  let service: KnowledgerService | undefined;
   const authentication = options.authentication;
   const definition = options.definition;
   const personas = options.personas ?? definition?.personas ?? [];
@@ -76,7 +76,7 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KclService(ledger, vault, definition, personas);
+    service = new KnowledgerService(ledger, vault, definition, personas);
     await service.initialize();
   } catch (error) {
     try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } }
@@ -93,7 +93,7 @@ export async function createApp(options: AppOptions) {
   function localCookieName(): string {
     const address = server.address();
     const port = address && typeof address === 'object' ? address.port : 0;
-    return `kcl_local_${createHash('sha256').update(`${publicOrigin ?? port}|${definition.workspace.id}`).digest('hex').slice(0,16)}`;
+    return `knowledger_local_${createHash('sha256').update(`${publicOrigin ?? port}|${definition.workspace.id}`).digest('hex').slice(0,16)}`;
   }
   function currentSession(req: IncomingMessage): Session | undefined {
     const id = new RegExp(`(?:^|;\\s*)${localCookieName()}=([0-9a-f]{64})(?:;|$)`).exec(req.headers.cookie ?? '')?.[1];
@@ -216,7 +216,7 @@ export async function createApp(options: AppOptions) {
       const run = <T>(operation: () => Promise<T>) => runAuthorized(session, operation, requestStarted);
       if (req.method === 'POST') {
         if (authentication && path === '/api/session') throw new ApiError('ROLE_SWITCH_FORBIDDEN', '로그인 계정의 역할은 브라우저에서 바꿀 수 없습니다.', 403);
-        const csrf = req.headers['x-kcl-csrf'];
+        const csrf = req.headers['x-knowledger-csrf'];
         if (typeof csrf !== 'string' || !equal(csrf, session.csrf)) throw new ApiError('CSRF_REJECTED', '세션을 새로고침한 뒤 다시 시도해 주세요.', 403);
         const input = await body(req);
         if (path === '/api/session') {

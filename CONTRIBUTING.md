@@ -1,6 +1,6 @@
 # Contributing
 
-Knowledge Consensus Ledger is licensed under MIT. Contributions use the same license.
+Knowledger is licensed under MIT. Contributions use the same license.
 
 Discuss changes to the consensus protocol, publication boundary, or authorization model before changing their behavior. Keep document content immutable and treat the schemas and protocol examples as compatibility contracts.
 

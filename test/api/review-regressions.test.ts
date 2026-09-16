@@ -8,7 +8,7 @@ import { createConfiguredApp } from '../../apps/api/configured-runtime.ts';
 import { createProjectTemplate } from '../../packages/config/template.ts';
 
 async function fixture(t: any) {
-  const dataDir = mkdtempSync(join(tmpdir(), 'kcl-review-regression-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-review-regression-'));
   const configuration = createProjectTemplate();
   const app = await createConfiguredApp(configuration, { dataDir, port: 0 });
   t.after(async () => { await app.close(); rmSync(dataDir, { recursive: true, force: true }); });

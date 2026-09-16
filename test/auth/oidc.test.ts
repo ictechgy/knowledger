@@ -35,7 +35,7 @@ async function fixture(t: any) {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const issuer = await startDevelopmentIssuer({ port: 0, redirectUri: `${origin}/auth/callback` });
-  auth = await OidcAuthentication.create({ issuer: issuer.issuer, clientId: 'kcl-development-client', redirectUri: `${origin}/auth/callback`, development: true,
+  auth = await OidcAuthentication.create({ issuer: issuer.issuer, clientId: 'knowledger-development-client', redirectUri: `${origin}/auth/callback`, development: true,
     authorizationVersionClaim: 'account_version', now: () => now, resolveActor: (receivedIssuer, subject) => enabledBinding && receivedIssuer === issuer.issuer && subject === 'dev-sales-owner' ? sales : undefined });
   t.after(async () => { auth.close(); await new Promise<void>(resolve => server.close(() => resolve())); await issuer.close(); });
   return { auth, issuer, origin, browser: new OidcTestBrowser([origin, issuer.issuer]), expire: () => { now += 1_000_000; }, revokeBinding: () => { enabledBinding = false; } };
@@ -69,9 +69,9 @@ test('OIDC logout, expiry, disabled account and changed authorization version re
   const f = await fixture(t);
   await f.browser.login(f.origin, 'dev-sales-owner');
   const session = await (await f.browser.request(`${f.origin}/session`)).json();
-  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: 'https://untrusted.example', 'X-KCL-CSRF': session.csrf } })).status, 403);
-  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: f.origin, 'X-KCL-CSRF': 'wrong' } })).status, 403);
-  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: f.origin, 'X-KCL-CSRF': session.csrf } })).status, 204);
+  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: 'https://untrusted.example', 'X-KNOWLEDGER-CSRF': session.csrf } })).status, 403);
+  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: f.origin, 'X-KNOWLEDGER-CSRF': 'wrong' } })).status, 403);
+  assert.equal((await f.browser.request(`${f.origin}/auth/logout`, { method: 'POST', headers: { Origin: f.origin, 'X-KNOWLEDGER-CSRF': session.csrf } })).status, 204);
   assert.equal((await f.browser.request(`${f.origin}/session`)).status, 401);
   await f.browser.login(f.origin, 'dev-sales-owner');
   f.issuer.setAccountVersion('dev-sales-owner', 2);
@@ -100,7 +100,7 @@ test('two loopback applications keep independent browser sessions and logout bou
   const response = await browser.request(`${first.origin}/session`);
   assert.equal(response.status, 200);
   const session = await response.json();
-  assert.equal((await browser.request(`${first.origin}/auth/logout`, { method: 'POST', headers: { Origin: first.origin, 'X-KCL-CSRF': session.csrf } })).status, 204);
+  assert.equal((await browser.request(`${first.origin}/auth/logout`, { method: 'POST', headers: { Origin: first.origin, 'X-KNOWLEDGER-CSRF': session.csrf } })).status, 204);
   assert.equal((await browser.request(`${first.origin}/session`)).status, 401);
   assert.equal((await browser.request(`${second.origin}/session`)).status, 200);
 });

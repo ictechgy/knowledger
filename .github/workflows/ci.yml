@@ -21,8 +21,8 @@ jobs:
       - run: npm run check
       - run: npm run demo
       - run: npm run demo:kb
-      - run: npm run config:init -- --output /tmp/kcl-ci.json
-      - run: node infra/fabric/build.mjs --config /tmp/kcl-ci.json --output /tmp/kcl-chaincode
+      - run: npm run config:init -- --output /tmp/knowledger-ci.json
+      - run: node infra/fabric/build.mjs --config /tmp/knowledger-ci.json --output /tmp/knowledger-chaincode
   fabric-boundaries:
     runs-on: ubuntu-latest
     steps:

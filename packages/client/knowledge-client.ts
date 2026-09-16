@@ -16,7 +16,7 @@ export interface ResolveSelection {
   query?: string;
 }
 
-export interface KclClientOptions {
+export interface KnowledgerClientOptions {
   baseUrl: string;
   workspaceId: string;
   fetch?: typeof fetch;
@@ -47,25 +47,25 @@ export interface ValidatedResolveResponse extends RawResolveResponse {
   documents: any[];
 }
 
-export class KclClientError extends Error {
+export class KnowledgerClientError extends Error {
   readonly code: string;
   readonly status?: number;
   readonly retryable: boolean;
   constructor(code: string, message: string, status?: number, retryable = false) {
-    super(message); this.name = 'KclClientError'; this.code = code; this.status = status; this.retryable = retryable;
+    super(message); this.name = 'KnowledgerClientError'; this.code = code; this.status = status; this.retryable = retryable;
   }
 }
 
-export class KclPendingError extends KclClientError {
-  constructor() { super('PENDING', '요청이 접수되었지만 VALID 커밋으로 확인되지 않았습니다.', 202, true); this.name = 'KclPendingError'; }
+export class KnowledgerPendingError extends KnowledgerClientError {
+  constructor() { super('PENDING', '요청이 접수되었지만 VALID 커밋으로 확인되지 않았습니다.', 202, true); this.name = 'KnowledgerPendingError'; }
 }
 
-export class KclTimeoutError extends KclClientError {
-  constructor() { super('TIMEOUT', 'KCL 요청 시간이 초과되었습니다.', undefined, true); this.name = 'KclTimeoutError'; }
+export class KnowledgerTimeoutError extends KnowledgerClientError {
+  constructor() { super('TIMEOUT', 'Knowledger 요청 시간이 초과되었습니다.', undefined, true); this.name = 'KnowledgerTimeoutError'; }
 }
 
-function invalid(message = 'KCL 응답 또는 요청이 올바르지 않습니다.'): never {
-  throw new KclClientError('INVALID_CLIENT_DATA', message);
+function invalid(message = 'Knowledger 응답 또는 요청이 올바르지 않습니다.'): never {
+  throw new KnowledgerClientError('INVALID_CLIENT_DATA', message);
 }
 
 function assertId(value: unknown): string {
@@ -93,10 +93,10 @@ function safeCode(value: unknown): string | undefined {
 
 async function readBounded(response: Response, signal?: AbortSignal): Promise<Uint8Array> {
   const length = response.headers.get('content-length');
-  if (length !== null && (!/^\d+$/u.test(length) || Number(length) > MAX_RESPONSE_BYTES)) throw new KclClientError('RESPONSE_TOO_LARGE', 'KCL 응답이 너무 큽니다.', response.status, true);
+  if (length !== null && (!/^\d+$/u.test(length) || Number(length) > MAX_RESPONSE_BYTES)) throw new KnowledgerClientError('RESPONSE_TOO_LARGE', 'Knowledger 응답이 너무 큽니다.', response.status, true);
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_RESPONSE_BYTES) throw new KclClientError('RESPONSE_TOO_LARGE', 'KCL 응답이 너무 큽니다.', response.status, true);
+    if (bytes.byteLength > MAX_RESPONSE_BYTES) throw new KnowledgerClientError('RESPONSE_TOO_LARGE', 'Knowledger 응답이 너무 큽니다.', response.status, true);
     return bytes;
   }
   const reader = response.body.getReader();
@@ -112,7 +112,7 @@ async function readBounded(response: Response, signal?: AbortSignal): Promise<Ui
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new KclClientError('RESPONSE_TOO_LARGE', 'KCL 응답이 너무 큽니다.', response.status, true); }
+      if (size > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new KnowledgerClientError('RESPONSE_TOO_LARGE', 'Knowledger 응답이 너무 큽니다.', response.status, true); }
       chunks.push(next.value);
     }
   } finally { signal?.removeEventListener('abort', cancel); reader.releaseLock(); }
@@ -123,7 +123,7 @@ async function readBounded(response: Response, signal?: AbortSignal): Promise<Ui
 }
 
 function parseResponse(bytes: Uint8Array): any {
-  try { return parseStrictJson(bytes); } catch { throw new KclClientError('INVALID_RESPONSE', 'KCL 응답 형식이 올바르지 않습니다.'); }
+  try { return parseStrictJson(bytes); } catch { throw new KnowledgerClientError('INVALID_RESPONSE', 'Knowledger 응답 형식이 올바르지 않습니다.'); }
 }
 
 function validateSelection(input: ResolveSelection): ResolveSelection {
@@ -202,38 +202,38 @@ export function validateRefreshedManifest(previousValue:unknown,nextValue:unknow
   return next;
 }
 
-export class KclClient {
+export class KnowledgerClient {
   readonly baseUrl: string;
   readonly workspaceId: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly headersProvider?: KclClientOptions['headers'];
+  private readonly headersProvider?: KnowledgerClientOptions['headers'];
   private readonly timeoutMs: number;
 
-  constructor(options: KclClientOptions) {
+  constructor(options: KnowledgerClientOptions) {
     let url: URL;
-    try { url = new URL(options.baseUrl); } catch { throw new KclClientError('INVALID_ORIGIN', 'KCL base URL origin is invalid.'); }
-    if (!['https:', 'http:'].includes(url.protocol) || (url.protocol === 'http:' && !isLoopback(url.hostname)) || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new KclClientError('INVALID_ORIGIN', 'KCL base URL origin is invalid.');
+    try { url = new URL(options.baseUrl); } catch { throw new KnowledgerClientError('INVALID_ORIGIN', 'Knowledger base URL origin is invalid.'); }
+    if (!['https:', 'http:'].includes(url.protocol) || (url.protocol === 'http:' && !isLoopback(url.hostname)) || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new KnowledgerClientError('INVALID_ORIGIN', 'Knowledger base URL origin is invalid.');
     this.baseUrl = url.origin;
     this.workspaceId = assertId(options.workspaceId);
-    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > MAX_TIMEOUT_MS)) throw new KclClientError('INVALID_TIMEOUT', 'KCL timeout 설정이 올바르지 않습니다.');
+    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > MAX_TIMEOUT_MS)) throw new KnowledgerClientError('INVALID_TIMEOUT', 'Knowledger timeout 설정이 올바르지 않습니다.');
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const fallbackFetch = globalThis.fetch;
-    if (!options.fetch && typeof fallbackFetch !== 'function') throw new KclClientError('FETCH_UNAVAILABLE', 'A fetch implementation is required.');
+    if (!options.fetch && typeof fallbackFetch !== 'function') throw new KnowledgerClientError('FETCH_UNAVAILABLE', 'A fetch implementation is required.');
     this.fetchImpl = options.fetch ?? fallbackFetch.bind(globalThis);
     this.headersProvider = options.headers;
   }
 
   async request<T = any>(path: string, options: RequestOptions = {}): Promise<T> {
-    if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || path.startsWith('/v1/workspaces/') || path.includes('\\') || path.includes('\u0000') || /%(?:2e|2f|5c|00)/iu.test(path) || path.split(/[/?#]/u).includes('..')) throw new KclClientError('INVALID_PATH', 'KCL 경로가 올바르지 않습니다.');
+    if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//') || path.startsWith('/v1/workspaces/') || path.includes('\\') || path.includes('\u0000') || /%(?:2e|2f|5c|00)/iu.test(path) || path.split(/[/?#]/u).includes('..')) throw new KnowledgerClientError('INVALID_PATH', 'Knowledger 경로가 올바르지 않습니다.');
     const method = options.method ?? 'GET';
-    if (method !== 'GET' && method !== 'POST') throw new KclClientError('INVALID_METHOD', 'KCL method가 올바르지 않습니다.');
+    if (method !== 'GET' && method !== 'POST') throw new KnowledgerClientError('INVALID_METHOD', 'Knowledger method가 올바르지 않습니다.');
     const url = `${this.baseUrl}/v1/workspaces/${encodeURIComponent(this.workspaceId)}${path}`;
     const controller = new AbortController();
-    if (options.signal?.aborted) throw new KclClientError('ABORTED', 'KCL 요청이 취소되었습니다.', undefined, true);
-    let rejectDeadline!: (error: KclClientError) => void;
+    if (options.signal?.aborted) throw new KnowledgerClientError('ABORTED', 'Knowledger 요청이 취소되었습니다.', undefined, true);
+    let rejectDeadline!: (error: KnowledgerClientError) => void;
     const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
-    const timer = setTimeout(() => { controller.abort(); rejectDeadline(new KclTimeoutError()); }, this.timeoutMs);
-    const abort = () => { controller.abort(options.signal?.reason); rejectDeadline(new KclClientError('ABORTED', 'KCL 요청이 취소되었습니다.', undefined, true)); };
+    const timer = setTimeout(() => { controller.abort(); rejectDeadline(new KnowledgerTimeoutError()); }, this.timeoutMs);
+    const abort = () => { controller.abort(options.signal?.reason); rejectDeadline(new KnowledgerClientError('ABORTED', 'Knowledger 요청이 취소되었습니다.', undefined, true)); };
     if (options.signal) {
       if (options.signal.aborted) abort();
       else options.signal.addEventListener('abort', abort, { once: true });
@@ -245,20 +245,20 @@ export class KclClient {
         if (!provided || typeof provided !== 'object' || Array.isArray(provided) || Object.entries(provided).some(([key, value]) => typeof key !== 'string' || typeof value !== 'string')) throw new Error('headers');
         headers = { ...headers, ...provided };
         if (options.body !== undefined) headers['Content-Type'] ??= 'application/json';
-      } catch { throw new KclClientError('INVALID_HEADERS', 'KCL 요청 인증 헤더를 준비할 수 없습니다.'); }
-      if(controller.signal.aborted)throw new KclClientError('ABORTED','KCL 요청이 취소되었습니다.',undefined,true);
+      } catch { throw new KnowledgerClientError('INVALID_HEADERS', 'Knowledger 요청 인증 헤더를 준비할 수 없습니다.'); }
+      if(controller.signal.aborted)throw new KnowledgerClientError('ABORTED','Knowledger 요청이 취소되었습니다.',undefined,true);
       let body: string | undefined;
-      if (options.body !== undefined) { try { body = JSON.stringify(options.body); } catch { throw new KclClientError('INVALID_BODY', 'KCL 요청 본문을 준비할 수 없습니다.'); } }
+      if (options.body !== undefined) { try { body = JSON.stringify(options.body); } catch { throw new KnowledgerClientError('INVALID_BODY', 'Knowledger 요청 본문을 준비할 수 없습니다.'); } }
       let response: Response;
       try { response = await this.fetchImpl(url, { method, headers, body, redirect: 'error', signal: controller.signal }); }
-      catch (error) { if (options.signal?.aborted) throw new KclClientError('ABORTED', 'KCL 요청이 취소되었습니다.', undefined, true); throw new KclClientError('NETWORK_ERROR', 'KCL 서버에 연결할 수 없습니다.', undefined, true); }
+      catch (error) { if (options.signal?.aborted) throw new KnowledgerClientError('ABORTED', 'Knowledger 요청이 취소되었습니다.', undefined, true); throw new KnowledgerClientError('NETWORK_ERROR', 'Knowledger 서버에 연결할 수 없습니다.', undefined, true); }
       const bytes = await readBounded(response, controller.signal);
-      if (response.status === 202) throw new KclPendingError();
+      if (response.status === 202) throw new KnowledgerPendingError();
       const parsed = parseResponse(bytes);
       if (!response.ok) {
         const bodyValue = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
         const code = safeCode(bodyValue.code) ?? `HTTP_${response.status}`;
-        throw new KclClientError(code, 'KCL 요청을 처리하지 못했습니다.', response.status, bodyValue.retryable === true || response.status >= 500);
+        throw new KnowledgerClientError(code, 'Knowledger 요청을 처리하지 못했습니다.', response.status, bodyValue.retryable === true || response.status >= 500);
       }
       return parsed as T;
     })();
@@ -288,7 +288,7 @@ export class KclClient {
     const raw = object(await this.rawResolve(normalized, options)) as RawResolveResponse;
     if (raw.status === 'withheld') return {status:'withheld',reason:safeCode(raw.reason)??'KNOWLEDGE_UNAVAILABLE',documents:[]};
     if (raw.status !== 'provided') invalid();
-    if (!['fabric', ...(options.allowDevelopment ? ['local-simulation', 'fabric-test-network'] : [])].includes(raw.mode ?? '')) throw new KclClientError('DEVELOPMENT_MODE_REJECTED', 'Development ledger mode requires explicit allowDevelopment.');
+    if (!['fabric', ...(options.allowDevelopment ? ['local-simulation', 'fabric-test-network'] : [])].includes(raw.mode ?? '')) throw new KnowledgerClientError('DEVELOPMENT_MODE_REJECTED', 'Development ledger mode requires explicit allowDevelopment.');
     const documents = Array.isArray(raw.documents) && raw.documents.length === 1 ? raw.documents : invalid();
     const document = object(documents[0]);
     if(Object.keys(document).some(key=>!['revision_digest','title','body_markdown','agreement_id'].includes(key)))invalid();
@@ -300,7 +300,7 @@ export class KclClient {
     if (manifestValue.checkpoint.channel_id !== full.payload.channel_id) invalid();
     if (full.payload.document_id !== normalized.document_ids[0] || full.payload.context_id !== normalized.context_id || full.payload.scope_id !== normalized.scope_id || full.payload.usage_scope !== normalized.usage_scope
       || document.title !== full.payload.title || document.body_markdown !== full.payload.body_markdown || digestPayload(full.payload) !== digest) invalid();
-    if(performance.now()-started>30_000)throw new KclClientError('FRESHNESS_EXPIRED','신선한 원장 응답의 유효 시간이 지났습니다.',503,true);
+    if(performance.now()-started>30_000)throw new KnowledgerClientError('FRESHNESS_EXPIRED','신선한 원장 응답의 유효 시간이 지났습니다.',503,true);
     return { ...raw, status: 'provided', documents, manifest: manifestValue, revision: full };
   }
 
@@ -312,7 +312,7 @@ export class KclClient {
       const selection=validateSelection({document_ids:['doc-manifest-validation'],context_id:manifest.context_id,scope_id:manifest.scope_id,usage_scope:manifest.usage_scope});
       validateManifest(manifest,selection,assertDigest(reference.revision_digest),assertId(reference.agreement_id));
       validateSharedCheckpoint(result.checkpoint,manifest);
-      if(performance.now()-started>30_000)throw new KclClientError('FRESHNESS_EXPIRED','신선한 원장 응답의 유효 시간이 지났습니다.',503,true);
+      if(performance.now()-started>30_000)throw new KnowledgerClientError('FRESHNESS_EXPIRED','신선한 원장 응답의 유효 시간이 지났습니다.',503,true);
     }
     if (result.status !== 'valid' && result.status !== 'withheld') invalid();
     return result;

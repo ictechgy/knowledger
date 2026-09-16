@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { KclService } from '../../apps/api/service.ts';
+import { KnowledgerService } from '../../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 
@@ -19,7 +19,7 @@ const dataDir = dataPath();
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const ledger = new LocalLedger(join(dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
 const vault = new PrivateStore(join(dataDir, 'private-local.sqlite'));
-const service = new KclService(ledger, vault, demoDefinition());
+const service = new KnowledgerService(ledger, vault, demoDefinition());
 const actor = actorIdentity(PERSONAS[1]);
 let stopped = false;
 

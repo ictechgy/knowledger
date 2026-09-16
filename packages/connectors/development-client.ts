@@ -1,4 +1,4 @@
-import { KclClient, KclClientError } from '../client/knowledge-client.ts';
+import { KnowledgerClient, KnowledgerClientError } from '../client/knowledge-client.ts';
 import { parseStrictJson } from '../fabric/canonical.ts';
 
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/u;
@@ -16,7 +16,7 @@ export interface DevelopmentClientOptions {
 }
 
 function fail(code: string, status?: number): never {
-  throw new KclClientError(code, '개발 클라이언트 handshake를 확인할 수 없습니다.', status, Boolean(status && status >= 500));
+  throw new KnowledgerClientError(code, '개발 클라이언트 handshake를 확인할 수 없습니다.', status, Boolean(status && status >= 500));
 }
 
 function id(value: unknown): string { if (typeof value !== 'string' || !ID.test(value)) fail('INVALID_CLIENT_OPTIONS'); return value; }
@@ -51,15 +51,15 @@ async function boundedJson(response: Response): Promise<any> {
     if (bytes.byteLength > MAX_HANDSHAKE_BYTES) fail('HANDSHAKE_RESPONSE_TOO_LARGE', response.status);
     try { return parseStrictJson(bytes); } catch { fail('INVALID_HANDSHAKE_RESPONSE', response.status); }
   } catch (error) {
-    if (error instanceof KclClientError) throw error;
+    if (error instanceof KnowledgerClientError) throw error;
     fail('HANDSHAKE_NETWORK_ERROR');
   }
 }
 
 async function handshakeRequest(fetchImpl: typeof fetch, url: string, init: RequestInit, timeoutMs: number): Promise<{ response: Response; value: any }> {
   const controller = new AbortController();
-  let rejectTimeout!: (error: KclClientError) => void;
-  const timer = setTimeout(() => { controller.abort(); rejectTimeout(new KclClientError('HANDSHAKE_TIMEOUT', '개발 클라이언트 handshake 시간이 초과되었습니다.', undefined, true)); }, timeoutMs);
+  let rejectTimeout!: (error: KnowledgerClientError) => void;
+  const timer = setTimeout(() => { controller.abort(); rejectTimeout(new KnowledgerClientError('HANDSHAKE_TIMEOUT', '개발 클라이언트 handshake 시간이 초과되었습니다.', undefined, true)); }, timeoutMs);
   try {
     const result = await Promise.race([
       (async () => {
@@ -85,7 +85,7 @@ function verifySession(value: unknown, workspaceId: string, expectedOrg?: string
   return response.csrf_token;
 }
 
-export async function createDevelopmentClient(options: DevelopmentClientOptions): Promise<KclClient> {
+export async function createDevelopmentClient(options: DevelopmentClientOptions): Promise<KnowledgerClient> {
   let base: URL;
   try { base = new URL(options.baseUrl); } catch { fail('INVALID_ORIGIN'); }
   if (!['http:', 'https:'].includes(base.protocol) || !loopback(base.hostname) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) fail('INVALID_ORIGIN');
@@ -104,10 +104,10 @@ export async function createDevelopmentClient(options: DevelopmentClientOptions)
   const cookie = setCookies[0].split(';', 1)[0];
   const firstCsrf = verifySession(initial.value, workspaceId);
   const selected = await handshakeRequest(fetchImpl.bind(globalThis), `${base.origin}/api/session`, {
-    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Origin: base.origin, Cookie: cookie, 'X-KCL-CSRF': firstCsrf },
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Origin: base.origin, Cookie: cookie, 'X-KNOWLEDGER-CSRF': firstCsrf },
     body: JSON.stringify({ org_id: orgId, actor_id: actorId }),
   }, timeoutMs);
   const csrf = verifySession(selected.value, workspaceId, orgId, actorId);
-  const client = new KclClient({ baseUrl: base.origin, workspaceId, fetch: fetchImpl, timeoutMs, headers: () => ({ Accept: 'application/json', Origin: base.origin, Cookie: cookie, 'X-KCL-CSRF': csrf }) });
+  const client = new KnowledgerClient({ baseUrl: base.origin, workspaceId, fetch: fetchImpl, timeoutMs, headers: () => ({ Accept: 'application/json', Origin: base.origin, Cookie: cookie, 'X-KNOWLEDGER-CSRF': csrf }) });
   return client;
 }

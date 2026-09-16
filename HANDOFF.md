@@ -1,19 +1,20 @@
 # Handoff
 
-_Last updated: 2026-09-16 19:46 KST by Codex_
+_Last updated: 2026-09-16 22:15 KST by Devin_
 
 ## Goal
 
-MIT 지식 합의 원장을 오픈소스로 공개한다. 조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
-합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신은 완료했다. 다음 우선순위는 공개 준비와 원격 CI 확인이다.
-이번 요청은 HANDOFF/AGENTS 갱신이다. 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
+MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Knowledger로 확정**했다(기존 `knowledge-consensus-ledger`/`kcl`에서 리네임).
+조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
+합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임은 완료했다. 다음 우선순위는 공개 준비와 원격 CI 확인이다.
+이번 요청은 제품 이름 확정과 리네임이다. 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
 
-- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, branch `main`. 런타임 기준 커밋 `e1e9850`.
+- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`. 런타임 기준 커밋 `e1e9850`에 리네임 커밋이 올라간다.
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- 이번 문서 작업 전 추적 파일은 clean, 사용자 `.serena/`만 untracked. `.serena/`는 보존·커밋 제외.
+- 리네임 전 추적 파일은 clean, 사용자 `.serena/`와 `scorpionfish/`만 untracked. 둘 다 보존·커밋 제외.
 - **마지막 실행 검증: 2026-09-16 15:41 KST.** 아래 실행 상태는 그때의 관측이며 이번 문서 작업에서 앱을 다시 검사하지 않았다.
   기본 http://127.0.0.1:4317 은 빈 2조직 local workspace(block1·문서0개), 예제4318은 Fabric block265·최신 슬롯4개였다.
 - 앱4317/4318/4319/4321/4331/4341의 liveness 및 probe 후 readiness200, OIDC 앱4개의 익명 overview401 확인.
@@ -33,6 +34,11 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. 조직·업무는 설�
 - [인증서 유지보수](docs/27-TEST-CERTIFICATES.md): 공개 점검/기존 키 기반90일 갱신 준비·적용,
   전체 사전 검증·원자적 파일 교체·롤백·부분 재개. signer는 요청 전과 반환 전 만료를 검사한다.
   실제 cert3개만 교체, 모든 공개키 및 대상 외130개 파일·genesis 보존. 관련 앱5개와 signer를 재시작했다.
+- 제품 리네임 `knowledger`: 패키지명·`knowledger.config.json` 기본값·`@knowledger/*` 범위·`Knowledger*` 클래스·
+  `X-KNOWLEDGER-CSRF`·OIDC 쿠키/client_id·`KNOWLEDGER_SNAPSHOT_*` env·스키마 `$id`·테스트 접두사·문서 표기.
+  실행 중인 배포 계약은 `kcl` 그대로 유지한다 — `kcl:` 원장 state 키, `kcl.actor_*` 인증서 속성,
+  `kcl.test-certificate-renewal` plan 스키마, fixture 이름(channel `kcl-demo`, chaincode `kcl`/`kcl_0.1.0`,
+  compose `kcl-fabric-smoke`, 도메인 `*.kcl.test`). 경계 규칙은 [AGENTS.md](AGENTS.md)에 있다.
 
 ## Key Files & State
 
@@ -40,14 +46,18 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. 조직·업무는 설�
 - `infra/fabric/certificates.ts`, `examples/order-workflow/client-certificates.ts`: 갱신 core와 고정 예제 CLI.
   적용 plan: `.data/fabric-smoke/certificate-renewals/renewal-20260916062911-ba83c15935beb018/plan.json`.
 - `packages/storage/browse-index.ts`, `apps/api/service.ts`: 조회 인덱스 및 canonical 대조·페이지 계약.
-- 보존할 local 설정/데이터: Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local`.
+- 보존할 local 설정/데이터: Git 제외 `knowledger.config.json`, `.data/workspaces/knowledge/local`.
   예제 데이터: `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement`.
 - 네트워크: `.data/fabric-smoke/compose.json`, 같은 폴더의 `crypto/`·`channel.block`.
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
 
-런타임 `e1e9850`의 실행 근거다. 이번 변경은 문서만 수정한다.
+리네임 변경의 실행 근거다(2026-09-16 22:1x KST 재실행).
+
+- `npm run check`: **274 passed /0 failed /1 GC 전용 skipped** — 리네임 후 동일. `npm run check:types`, `npm run demo` 통과.
+- `npm run config:init -- --output /tmp/...`으로 새 기본 설정 파일명 동작 확인. `kcl.config` 추적 파일 참조 0.
+- 이전 런타임 `e1e9850` 근거(문서·이름만 달라진 동일 코드):
 
 - `npm run check`: **274 passed /0 failed /1 GC 전용 skipped**. `npm run check:types`, `npm run demo` 통과.
 - 인증서/signer 집중19개 통과. 키/CA/actor mismatch, 만료 경계·늦은 갱신, tamper·stale plan,
@@ -104,6 +114,7 @@ python3 -B tools/check_docs.py
 
 ## Resume Prompt
 
-`/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 공개 준비 상태를 로컬에서 점검해.
-완료된 코드와 기존 데이터·키·genesis·.serena를 보존하고, 확인된 미비점만 수정·검증해.
+`/Users/jinhongan/Desktop/knowledge-consensus-ledger`(공개 이름 `knowledger`)에서 AGENTS.md와 HANDOFF.md를 읽고 공개 준비 상태를 로컬에서 점검해.
+완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
+`kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 원격 게시·릴리스는 명시적 요청 이후 진행하고 실제 실행하지 않은 CI/장애 시험을 완료로 표시하지 마.

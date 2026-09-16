@@ -18,7 +18,7 @@ function binding(organization?: string): ConfiguredRuntimeBinding {
 }
 
 test("configuration scope binds generic local and selected-organization Fabric data", () => {
-  const root = mkdtempSync(join(tmpdir(), "kcl-config-scope-"));
+  const root = mkdtempSync(join(tmpdir(), "knowledger-config-scope-"));
   try {
     const local = join(root, "local");
     ensureConfigurationScope(local, binding());
@@ -35,7 +35,7 @@ test("configuration scope binds generic local and selected-organization Fabric d
 });
 
 test("configuration scope never adopts legacy files or malformed authority bindings", () => {
-  const root = mkdtempSync(join(tmpdir(), "kcl-config-scope-invalid-"));
+  const root = mkdtempSync(join(tmpdir(), "knowledger-config-scope-invalid-"));
   try {
     const directory = join(root, "legacy");
     ensureConfigurationScope(directory, binding());

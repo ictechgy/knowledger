@@ -128,7 +128,7 @@ function transactionCheckpoint(result: { checkpoint: Pick<Checkpoint, "channel_i
 }
 
 test("persists exact transaction fences, restart state, and VALID-only receipts/events", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("first-123456");
@@ -161,7 +161,7 @@ test("persists exact transaction fences, restart state, and VALID-only receipts/
 });
 
 test("publishes only verified VALID browse metadata after durable commit and rebuilds it on restart", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-browse-index-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-browse-index-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = revision("revision-fabric-first");
@@ -230,7 +230,7 @@ test("publishes only verified VALID browse metadata after durable commit and reb
 });
 
 test("keeps browse metadata available at an empty full-block checkpoint", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-browse-empty-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-browse-empty-");
   const path = join(directory, "projection.sqlite");
   try {
     const value = revision("revision-fabric-before-empty");
@@ -251,7 +251,7 @@ test("keeps browse metadata available at an empty full-block checkpoint", { skip
 });
 
 test("rolls back raw journal, materialized state, and cursor on SQL failure", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("first-123456");
@@ -275,7 +275,7 @@ test("rolls back raw journal, materialized state, and cursor on SQL failure", { 
 });
 
 test("rejects wrong bindings, forged checkpoints, and corrupted raw journals", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("first-123456");
@@ -293,7 +293,7 @@ test("rejects wrong bindings, forged checkpoints, and corrupted raw journals", {
 });
 
 test("rejects tampered derived latest and historical caches", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("first-123456");
@@ -319,7 +319,7 @@ test("rejects tampered derived latest and historical caches", { skip: !available
 });
 
 test("anchors state creation to the first verified VALID write", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const key = keyFor.eligibilityEpoch();
@@ -349,7 +349,7 @@ test("anchors state creation to the first verified VALID write", { skip: !availa
 });
 
 test("treats the transaction table as an untrusted receipt locator", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("locator-123456");
@@ -365,7 +365,7 @@ test("treats the transaction table as an untrusted receipt locator", { skip: !av
 });
 
 test("anchors live creation and receipt proofs to the verified raw block bytes", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("raw-anchor-12345");
@@ -386,7 +386,7 @@ test("anchors live creation and receipt proofs to the verified raw block bytes",
 });
 
 test("cold history rejects changed VALID metadata even when later writes restore the same final state", { skip: !available }, () => {
-  const directory = mkdtempSync('/tmp/kcl-fabric-history-anchor-'); const path = join(directory, 'projection.sqlite');
+  const directory = mkdtempSync('/tmp/knowledger-fabric-history-anchor-'); const path = join(directory, 'projection.sqlite');
   const projection = new SqliteFabricProjection(path, options); const key = keyFor.eligibilityEpoch();
   try {
     const first = projection.applyBlock(block(0, [transaction('tx-anchor-first', key, 0)]));
@@ -406,7 +406,7 @@ test("cold history rejects changed VALID metadata even when later writes restore
 });
 
 test("rebuilds the additive state creation index on restart", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("migration-12345");
@@ -423,7 +423,7 @@ test("rebuilds the additive state creation index on restart", { skip: !available
 });
 
 test("raw digest detects a VALID filter mutation and append preserves old history", { skip: !available }, () => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const first = fence("first-123456");
@@ -447,7 +447,7 @@ test("raw digest detects a VALID filter mutation and append preserves old histor
 });
 
 test("streams a long raw journal while preserving point-in-time reads", { skip: !available }, (t) => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-");
   const path = join(directory, "projection.sqlite");
   try {
     const projection = new SqliteFabricProjection(path, options);
@@ -506,7 +506,7 @@ test("streams a long raw journal while preserving point-in-time reads", { skip: 
 });
 
 test("does not retain padded raw block history in process memory", { skip: !available || typeof globalThis.gc !== "function" }, async (t) => {
-  const directory = mkdtempSync("/tmp/kcl-fabric-projection-memory-");
+  const directory = mkdtempSync("/tmp/knowledger-fabric-projection-memory-");
   const path = join(directory, "projection.sqlite");
   try {
     const projection = new SqliteFabricProjection(path, options);

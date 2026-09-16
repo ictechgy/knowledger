@@ -9,7 +9,7 @@ import { keyFor } from '../../packages/domain/index.ts';
 
 const actor = { org_id: 'SalesMSP', actor_id: 'person-sales', kind: 'human' as const };
 function fixture(t: any) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-ledger-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-ledger-test-'));
   const ledger = new LocalLedger(join(directory, 'ledger.sqlite'), 'channel-test');
   t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });
   return ledger;
@@ -76,7 +76,7 @@ test('a revision ID index cannot point to a missing immutable revision', async t
 });
 
 test('current reads detect projection divergence from the historical write-set view', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-projection-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-projection-test-'));
   const path = join(directory, 'ledger.sqlite');
   const ledger = new LocalLedger(path, 'channel-test');
   t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });

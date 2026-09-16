@@ -1,6 +1,6 @@
 # KB source connector
 
-KCL의 source connector는 로컬 Markdown 저장소를 먼저 비공개 초안으로 가져온다. 이 단계는 공유 원장에 쓰거나 문서를 게시하지 않는다. 정책에 연결된 파일만 private source 상태에 기록하고, 사용자가 별도로 공개 미리보기와 게시를 요청해야 한다.
+Knowledger의 source connector는 로컬 Markdown 저장소를 먼저 비공개 초안으로 가져온다. 이 단계는 공유 원장에 쓰거나 문서를 게시하지 않는다. 정책에 연결된 파일만 private source 상태에 기록하고, 사용자가 별도로 공개 미리보기와 게시를 요청해야 한다.
 
 ## 빠른 실행
 

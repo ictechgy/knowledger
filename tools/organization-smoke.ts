@@ -50,7 +50,7 @@ async function startOrganization(organization: DevelopmentOrganization, restored
   child.once('error', () => { failed = true; });
   child.stdout?.on('data', chunk => {
     output = (output + String(chunk)).slice(-4096);
-    if (output.includes(`KCL development login: ${origin}`)) ready = true;
+    if (output.includes(`Knowledger development login: ${origin}`)) ready = true;
   });
   try {
     for (let attempt = 0; attempt < 80; attempt++) {
@@ -85,7 +85,7 @@ try {
   async function post(app: OrganizationApp, path: string, input: unknown, expected = 200): Promise<any> {
     for (let attempt = 0; attempt < 10; attempt++) {
       const response = await browser.request(`${app.origin}${path.startsWith('/api/') || path.startsWith('/auth/') ? path : `/v1/workspaces/demo${path}`}`, {
-        method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json', 'X-KCL-CSRF': app.csrf }, body: JSON.stringify(input),
+        method: 'POST', headers: { Origin: app.origin, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': app.csrf }, body: JSON.stringify(input),
       });
       if (response.status === 204) { assert.equal(expected, 204); return {}; }
       const value = await response.json();

@@ -11,7 +11,7 @@ import { guardedGeneration } from '../packages/client/guarded-generation.ts';
 
 /** Explicitly fictional local integration example; uses a callback stub and no external model. */
 export async function runKbDemo(){
-  const directory=mkdtempSync(join(tmpdir(),'kcl-kb-demo-'));
+  const directory=mkdtempSync(join(tmpdir(),'knowledger-kb-demo-'));
   const config=createProjectTemplate(['WriterMSP','ReviewerMSP'],'kb-demo');
   const app=await createConfiguredApp(config,{dataDir:directory,port:0});
   try{

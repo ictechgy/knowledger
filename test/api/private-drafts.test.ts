@@ -8,7 +8,7 @@ import { createDemoApp as createApp } from '../../examples/order-workflow/applic
 let sequence = 0;
 
 async function fixture(t: any) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-private-drafts-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-private-drafts-test-'));
   const app = await createApp({ dataDir: directory });
   const url = await app.listen(0);
   let closed = false;
@@ -17,7 +17,7 @@ async function fixture(t: any) {
   let session = await initial.json() as any;
   const post = async (path: string, input: any, expected = 200) => {
     const response = await fetch(`${url}${path}`, {
-      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify(input),
+      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify(input),
     });
     const value = await response.json() as any;
     assert.equal(response.status, expected, `${path}: ${value.code ?? value.status}`);
@@ -224,7 +224,7 @@ test('expression pagination keeps equal timestamp order stable when a new draft 
     const initial = await fetch(`${url}/api/session`);
     const cookie = initial.headers.get('set-cookie')!.split(';')[0];
     const session = await initial.json() as any;
-    const headers = { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token };
+    const headers = { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token };
     const first = await (await fetch(`${url}/v1/workspaces/demo/drafts?limit=2`, { headers: { Cookie: cookie } })).json() as any;
     assert.deepEqual(first.drafts.map((item: any) => item.draft_id), originals.map(item => item.draft_id).sort().reverse().slice(0, 2));
     await fetch(`${url}/v1/workspaces/demo/drafts`, { method: 'POST', headers, body: JSON.stringify(draft({ title: '페이지 사이 신규' })) });
@@ -248,7 +248,7 @@ test('resumed edit idempotency survives a service restart', async t => {
     const cookie = initial.headers.get('set-cookie')!.split(';')[0];
     const session = await initial.json() as any;
     const response = await fetch(`${url}/v1/workspaces/demo/drafts/${original.draft_id}/edits`, {
-      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify(edit),
+      method: 'POST', headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify(edit),
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), first);

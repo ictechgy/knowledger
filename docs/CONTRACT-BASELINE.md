@@ -2,7 +2,7 @@
 
 이 파일은 병렬 작업에서 사용한 요약 기준이다. 최종 계약의 상세 의미는 01–09 설계 문서와 schemas에 있으며, 이 기준은 해당 문서와 일치하도록 유지한다. 런타임 구현이나 운영 보증을 뜻하지 않는다.
 
-- 가칭: Knowledge Consensus Ledger (KCL).
+- 이름: Knowledger.
 - DDD bounded context와 부서/조직은 별도 ID다. 한 부서가 여러 context를 소유하거나 공동 소유할 수 있다.
 - 공유 channel의 참여자는 문서 본문과 과거 공유 이력을 볼 수 있다. 공용 원장의 평문을 API ACL만으로 숨기지 않는다.
 - 부서 private vault는 공용 원장 밖에 둔다. 원문/임베딩/문서 존재 정보는 자동 공개하지 않는다. 제한된 부서들 간 full-content channel은 추후 확장이다.

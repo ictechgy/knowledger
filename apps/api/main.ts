@@ -18,7 +18,7 @@ else if(args.includes('--demo')) {
       if(!['--config','--data','--port','--organization'].includes(key)||values.has(key)||!value||value.startsWith('--')) throw new Error('Invalid command line');
       values.set(key,value);
     }
-    const configPath=resolve(values.get('--config')??'kcl.config.json');
+    const configPath=resolve(values.get('--config')??'knowledger.config.json');
     if(!existsSync(configPath)) throw new Error('Configuration missing');
     const configuration=loadProjectConfiguration(configPath);
     const port=Number(values.get('--port')??4317);
@@ -27,13 +27,13 @@ else if(args.includes('--demo')) {
     const dataDir=resolve(values.get('--data')??`.data/workspaces/${configuration.workspace.id}/${organization??'local'}`);
     app=await createConfiguredApp(configuration,{dataDir,port,organization});
     const origin=await app.listen(port);
-    console.log(`Knowledge Consensus Ledger: ${origin}`);
+    console.log(`Knowledger: ${origin}`);
     console.log(configuration.ledger.mode==='fabric'?'Configured Fabric · authenticated organization · verified peer blocks':'Configured local simulation · development account switching · empty initial workspace');
     let stopping=false;
     for(const signal of ['SIGINT','SIGTERM'] as const) process.on(signal,async()=>{if(stopping)return;stopping=true;await app?.close();});
   } catch {
     await app?.close();
-    console.error(`KCL could not start. Check the configuration, selected organization, data binding, and connection.\n${help}`);
+    console.error(`Knowledger could not start. Check the configuration, selected organization, data binding, and connection.\n${help}`);
     process.exitCode=1;
   }
 }

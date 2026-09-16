@@ -149,7 +149,7 @@ test("SQLite outbox persists recoverable attempts", async () => {
 });
 
 test('restart recovery forwards persisted commit bytes to the SDK status lookup', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-outbox-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-outbox-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'outbox.sqlite');
   let outbox = new SqliteOutbox(path);

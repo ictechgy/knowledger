@@ -1,5 +1,5 @@
 {
-  "name": "knowledge-consensus-ledger",
+  "name": "knowledger",
   "version": "0.1.0",
   "private": true,
   "description": "Domain-scoped knowledge agreements for KB, LLM wiki and AI workflows",

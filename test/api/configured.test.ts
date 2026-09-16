@@ -9,7 +9,7 @@ import { createDemoApp } from '../../examples/order-workflow/application.ts';
 
 for (const orgs of [['OrionMSP','VegaMSP'], ['ResearchMSP','ReviewMSP','DeliveryMSP','AuditMSP']]) {
   test(`configured ${orgs.length}-organization API starts empty and requires every configured representative`, async t => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'kcl-configured-api-'));
+    const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-configured-api-'));
     const config = createProjectTemplate(orgs,'custom-workspace');
     const app = await createConfiguredApp(config, {dataDir,port:0});
     t.after(async()=>{await app.close();rmSync(dataDir,{recursive:true,force:true});});
@@ -23,7 +23,7 @@ for (const orgs of [['OrionMSP','VegaMSP'], ['ResearchMSP','ReviewMSP','Delivery
     const base = `${origin}/v1/workspaces/custom-workspace`;
     let n=0;
     const post=async(path:string,input:any,status=200)=>{
-      const response=await fetch(path==='/api/session'?`${origin}${path}`:base+path,{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KCL-CSRF':session.csrf_token},body:JSON.stringify(input)});
+      const response=await fetch(path==='/api/session'?`${origin}${path}`:base+path,{method:'POST',headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KNOWLEDGER-CSRF':session.csrf_token},body:JSON.stringify(input)});
       const value:any=await response.json(); assert.equal(response.status,status,`${path}: ${value.code}`);
       if(path==='/api/session'&&response.ok) session=value;
       return value;
@@ -57,7 +57,7 @@ for (const orgs of [['OrionMSP','VegaMSP'], ['ResearchMSP','ReviewMSP','Delivery
 }
 
 test('configured storage pins authority, allows label changes and rejects demo reuse',async t=>{
-  const dataDir=mkdtempSync(join(tmpdir(),'kcl-config-restart-'));
+  const dataDir=mkdtempSync(join(tmpdir(),'knowledger-config-restart-'));
   t.after(()=>rmSync(dataDir,{recursive:true,force:true}));
   const config=createProjectTemplate();
   const first=await createConfiguredApp(config,{dataDir,port:0});await first.close();
@@ -77,7 +77,7 @@ test('configured storage pins authority, allows label changes and rejects demo r
 test('configured HTTPS proxy origin pins Host and Origin and ignores forwarded headers',async t=>{
   const { createApp }=await import('../../apps/api/server.ts');
   const { applicationDefinition }=await import('../../packages/config/project.ts');
-  const dataDir=mkdtempSync(join(tmpdir(),'kcl-origin-test-'));
+  const dataDir=mkdtempSync(join(tmpdir(),'knowledger-origin-test-'));
   const authentication:any={mode:'oidc',origin:'https://knowledge.example',handle:async()=>false,session:async()=>undefined,run:async(_s:any,fn:any)=>fn(),assertCurrentActor:async()=>{},close:()=>{}};
   const app=await createApp({dataDir,definition:applicationDefinition(createProjectTemplate()),authentication,publicOrigin:authentication.origin});
   t.after(async()=>{await app.close();rmSync(dataDir,{recursive:true,force:true});});

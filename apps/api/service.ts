@@ -46,7 +46,7 @@ function identifier(value: unknown): string {
 }
 
 /** API orchestration over verified application-ledger reads and actor-private storage. */
-export class KclService {
+export class KnowledgerService {
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
   private personas: Persona[];

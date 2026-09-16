@@ -28,7 +28,7 @@ Build the runnable JavaScript bundle and pinned public genesis with fixed
 source paths:
 
 ```sh
-node infra/fabric/build.mjs --config kcl.config.json
+node infra/fabric/build.mjs --config knowledger.config.json
 # Explicit example:
 node infra/fabric/build.mjs --demo
 ```
@@ -203,7 +203,7 @@ validation codes, known transaction types and write schemas. It ignores INVALID
 transaction effects, admits the initial channel configuration and lifecycle
 transactions, and stops on later channel reconfiguration or unsupported writes.
 Fabric's reserved Init marker is accepted only for the pinned chaincode version
-with the KCL bootstrap in the same transaction, and is kept out of domain state.
+with the Knowledger bootstrap in the same transaction, and is kept out of domain state.
 All state changes and the cursor advance together only after the entire block
 passes. Synthetic protobuf tests use the real domain engine to check resolution
 after a fence and withdrawal in one block; independent OpenSSL ASN.1 fixtures

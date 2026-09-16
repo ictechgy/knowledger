@@ -31,7 +31,7 @@ class FakeAuthentication implements ApplicationAuthentication {
       res.writeHead(302, { Location: '/' }); res.end(); return true;
     }
     if (url.pathname === '/auth/logout' && req.method === 'POST') {
-      if (this.authenticated && req.headers['x-kcl-csrf'] !== this.csrf) {
+      if (this.authenticated && req.headers['x-knowledger-csrf'] !== this.csrf) {
         res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ code: 'CSRF_REJECTED' })); return true;
       }
       this.authenticated = false; req.resume(); res.writeHead(204); res.end(); return true;
@@ -54,7 +54,7 @@ class FakeAuthentication implements ApplicationAuthentication {
 }
 
 async function fixture(t: any) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-auth-api-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-auth-api-test-'));
   const authentication = new FakeAuthentication();
   const app = await createApp({ dataDir: directory, authentication });
   const url = await app.listen(0);
@@ -82,7 +82,7 @@ test('authenticated sessions cannot inject a role and protected work uses auth.r
   assert.equal(session.actor.actor_id, actor.actor_id);
   assert.deepEqual(session.personas, []);
   assert.equal(session.logout_url, '/auth/logout');
-  const injected = await fetch(`${api.url}/api/session`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': session.csrf_token }, body: JSON.stringify({ org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' }) });
+  const injected = await fetch(`${api.url}/api/session`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify({ org_id: 'SettlementMSP', actor_id: 'person-settlement-owner' }) });
   assert.equal(injected.status, 403);
   const overview = await fetch(`${api.url}/v1/workspaces/demo/overview`, { headers: { Cookie: cookie } });
   assert.equal(overview.status, 200);
@@ -98,7 +98,7 @@ test('authentication mutations require CSRF and logout revokes access', async t 
   assert.equal(noCsrf.status, 403);
   const logout = await fetch(`${api.url}/auth/logout`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url } });
   assert.equal(logout.status, 403);
-  const okLogout = await fetch(`${api.url}/auth/logout`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'X-KCL-CSRF': api.authentication.csrf } });
+  const okLogout = await fetch(`${api.url}/auth/logout`, { method: 'POST', headers: { Cookie: cookie, Origin: api.url, 'X-KNOWLEDGER-CSRF': api.authentication.csrf } });
   assert.equal(okLogout.status, 204);
   assert.equal((await fetch(`${api.url}/v1/workspaces/demo/overview`, { headers: { Cookie: cookie } })).status, 401);
 });
@@ -131,7 +131,7 @@ test('strict freshness includes the final authentication check before the respon
   t.mock.method(api.authentication, 'run', async (_session: AuthenticatedSession, operation: () => Promise<unknown>) => {
     const result = await operation(); elapsed = 31_000; return result;
   });
-  const response = await fetch(`${api.url}/v1/workspaces/demo/resolve`, { method: 'POST', headers: { Cookie: api.authentication.loginCookie(), Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.authentication.csrf },
+  const response = await fetch(`${api.url}/v1/workspaces/demo/resolve`, { method: 'POST', headers: { Cookie: api.authentication.loginCookie(), Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.authentication.csrf },
     body: JSON.stringify({ document_ids: ['doc-fulfillment-delivery-definition-001'], context_id: 'context-fulfillment', scope_id: 'scope-order-2026-001', usage_scope: 'domain-definition/v1' }) });
   assert.equal(response.status, 503);
   assert.equal((await response.json()).code, 'FRESHNESS_UNAVAILABLE');

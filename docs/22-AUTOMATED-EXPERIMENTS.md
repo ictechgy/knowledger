@@ -1,6 +1,6 @@
 # Automated performance and resilience experiments
 
-The repository includes repeatable, local-only experiment harnesses. They exercise the real `KclService`, `LocalLedger`, `PrivateStore`, snapshot code, and HTTP server paths. They never connect to the Fabric network, use port 4317, or modify an existing runtime directory.
+The repository includes repeatable, local-only experiment harnesses. They exercise the real `KnowledgerService`, `LocalLedger`, `PrivateStore`, snapshot code, and HTTP server paths. They never connect to the Fabric network, use port 4317, or modify an existing runtime directory.
 
 ## Performance smoke
 

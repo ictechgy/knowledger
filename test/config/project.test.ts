@@ -48,7 +48,7 @@ test('authority digest binds identities and policy but permits display label cha
 });
 
 test('configuration loader rejects duplicate JSON and resolves only declared connection paths', t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-config-')); t.after(() => rmSync(directory, {recursive:true, force:true}));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-config-')); t.after(() => rmSync(directory, {recursive:true, force:true}));
   const path = join(directory, 'project.json');
   writeFileSync(path, '{"version":1,"version":1}');
   assert.throws(() => loadProjectConfiguration(path));
@@ -60,10 +60,10 @@ test('configuration loader rejects duplicate JSON and resolves only declared con
 });
 
 test('Fabric configuration validates OIDC routes and resolves references without reading credentials',t=>{
-  const directory=mkdtempSync(join(tmpdir(),'kcl-fabric-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const directory=mkdtempSync(join(tmpdir(),'knowledger-fabric-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
   const config:any=createProjectTemplate(['OrionMSP','VegaMSP']);
   config.ledger.mode='fabric';
-  config.authentication={mode:'oidc',issuer:'https://issuer.example',client_id:'kcl-public-client',bindings:config.identities.map((actor:any,index:number)=>({subject:`subject-${index}`,org_id:actor.org_id,actor_id:actor.actor_id}))};
+  config.authentication={mode:'oidc',issuer:'https://issuer.example',client_id:'knowledger-public-client',bindings:config.identities.map((actor:any,index:number)=>({subject:`subject-${index}`,org_id:actor.org_id,actor_id:actor.actor_id}))};
   config.server={public_origin:'https://knowledge.example'};
   config.fabric={chaincode_name:'kcl',chaincode_version:'0.1.0',identities:config.identities.map((actor:any)=>({org_id:actor.org_id,actor_id:actor.actor_id,certificate_path:'cert.pem',tls_ca_path:'tls-ca.pem',peer_endpoint:'127.0.0.1:7051',peer_host_alias:'peer.organization.example',key_id:'organization-key',signer_socket_path:'signer.sock'}))};
   const path=join(directory,'project.json');writeFileSync(path,JSON.stringify(config));

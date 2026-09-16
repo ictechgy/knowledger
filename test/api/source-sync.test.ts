@@ -8,12 +8,12 @@ import { createConfiguredApp } from '../../apps/api/configured-runtime.ts';
 import { createProjectTemplate } from '../../packages/config/template.ts';
 
 async function fixture(t:any){
-  const directory=mkdtempSync(join(tmpdir(),'kcl-source-api-'));const config=createProjectTemplate(['FirstMSP','SecondMSP'],'source-workspace');
+  const directory=mkdtempSync(join(tmpdir(),'knowledger-source-api-'));const config=createProjectTemplate(['FirstMSP','SecondMSP'],'source-workspace');
   let app=await createConfiguredApp(config,{dataDir:directory,port:0});let origin=await app.listen(0);let cookie='';let csrf='';
   const login=async()=>{const r=await fetch(origin+'/api/session');cookie=r.headers.get('set-cookie')!.split(';')[0];csrf=(await r.json()).csrf_token;};await login();
   t.after(async()=>{await app.close();rmSync(directory,{recursive:true,force:true});});
   const request=async(method:string,path:string,input:any,status=200)=>{
-    const r=await fetch(origin+(path==='/api/session'?path:'/v1/workspaces/source-workspace'+path),{method,headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KCL-CSRF':csrf},...(method==='GET'?{}:{body:JSON.stringify(input)})});
+    const r=await fetch(origin+(path==='/api/session'?path:'/v1/workspaces/source-workspace'+path),{method,headers:{Cookie:cookie,Origin:origin,'Content-Type':'application/json','X-KNOWLEDGER-CSRF':csrf},...(method==='GET'?{}:{body:JSON.stringify(input)})});
     const value=await r.json();assert.equal(r.status,status,`${method} source API: ${value.code ?? value.status ?? 'response'}`);if(path==='/api/session'&&r.ok)csrf=value.csrf_token;return value;
   };
   return {directory,config,app:()=>app,get:(path:string,status=200)=>request('GET',path,undefined,status),post:(path:string,input:any,status=200)=>request('POST',path,input,status),

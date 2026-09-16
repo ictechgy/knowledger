@@ -15,13 +15,13 @@ import type { ProjectConfiguration } from '../packages/config/types.ts';
 import { configuredOutboxFile } from '../apps/api/configured-fabric-runtime.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
 import { OidcTestBrowser } from './oidc-test-browser.ts';
-import { KclClient } from '../packages/client/knowledge-client.ts';
+import { KnowledgerClient } from '../packages/client/knowledge-client.ts';
 import { guardedGeneration } from '../packages/client/guarded-generation.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 mkdirSync(join(root,'.data'),{recursive:true});
 const directory=mkdtempSync(join(root,'.data/configured-smoke-'));
-const socketPath=join(mkdtempSync('/tmp/kcl-config-sign-'),'sign.sock');
+const socketPath=join(mkdtempSync('/tmp/knowledger-config-sign-'),'sign.sock');
 const dataDir=join(directory,'runtime');const run=randomUUID().slice(0,8);
 let app:Awaited<ReturnType<typeof createConfiguredApp>>|undefined;
 let issuer:Awaited<ReturnType<typeof startDevelopmentIssuer>>|undefined;
@@ -59,7 +59,7 @@ try {
   const get=async(path:string)=>{const response=await browser.request(`${origin}/v1/workspaces/configured-knowledge${path}`);assert.equal(response.status,200);return response.json();};
   const post=async(path:string,input:unknown,status=200)=>{
     for(let attempt=0;attempt<10;attempt++){
-      const response=await browser.request(`${origin}${path.startsWith('/api/')?path:'/v1/workspaces/configured-knowledge'+path}`,{method:'POST',headers:{Origin:origin,'X-KCL-CSRF':csrf,'Content-Type':'application/json'},body:JSON.stringify(input)});
+      const response=await browser.request(`${origin}${path.startsWith('/api/')?path:'/v1/workspaces/configured-knowledge'+path}`,{method:'POST',headers:{Origin:origin,'X-KNOWLEDGER-CSRF':csrf,'Content-Type':'application/json'},body:JSON.stringify(input)});
       const value=await response.json();if(response.status===202&&status===200){await delay(300);continue;}assert.equal(response.status,status,`${path}: ${value.code}`);return value;
     }throw new Error('Command stayed pending');
   };
@@ -97,7 +97,7 @@ try {
   const scope={document_ids:[base.payload.document_id],context_id:base.payload.context_id,scope_id:base.payload.scope_id,usage_scope:base.payload.usage_scope};
   assert.equal((await post('/resolve',scope)).status,'provided');
   phase='SDK and guarded model release';
-  const client=new KclClient({baseUrl:origin,workspaceId:config.workspace.id,fetch:async(input,init)=>browser.request(String(input),init),headers:()=>({Origin:origin,'X-KCL-CSRF':csrf})});
+  const client=new KnowledgerClient({baseUrl:origin,workspaceId:config.workspace.id,fetch:async(input,init)=>browser.request(String(input),init),headers:()=>({Origin:origin,'X-KNOWLEDGER-CSRF':csrf})});
   const selection={...scope,document_ids:[base.payload.document_id] as [string]};
   const validated=await client.resolve(selection);assert.equal(validated.status,'provided');assert.equal(JSON.stringify(validated).includes('private-source-'),false);
   const generated=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async()=>true,generate:async()=>({draft:'local stub output'})});assert.equal(generated.status,'provided');

@@ -7,7 +7,7 @@ import { runPerformanceSmoke } from '../../tools/performance-smoke.ts';
 import { runResilienceSmoke } from '../../tools/resilience-smoke.ts';
 
 test('performance smoke reports measured local workload and functional assertions', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-performance-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-performance-test-'));
   try {
     const result = await runPerformanceSmoke({ dataDir: join(root, 'runtime'), documents: 51, samples: 2, bodyBytes: 128 });
     assert.equal(result.mode, 'local-simulation');
@@ -26,7 +26,7 @@ test('performance smoke reports measured local workload and functional assertion
 });
 
 test('performance smoke refuses to reuse a non-empty data directory', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-performance-preserve-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-performance-preserve-test-'));
   const dataDir = join(root, 'runtime');
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, 'sentinel.txt'), 'preserve');
@@ -38,7 +38,7 @@ test('performance smoke refuses to reuse a non-empty data directory', async () =
 });
 
 test('resilience smoke verifies restart, snapshot restore, idempotency, and peer outage recovery', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'kcl-resilience-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-resilience-test-'));
   try {
     const result = await runResilienceSmoke({ rootDir: root });
     assert.equal(result.mode, 'local-simulation');
@@ -54,7 +54,7 @@ test('resilience smoke verifies restart, snapshot restore, idempotency, and peer
 
 test('experiment CLIs start from a clean checkout and accept relative output paths', async t=>{
   const {spawnSync}=await import('node:child_process');
-  const root=mkdtempSync(join(tmpdir(),'kcl-clean-cli-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const root=mkdtempSync(join(tmpdir(),'knowledger-clean-cli-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
   for(const [script,flags,out] of [['performance-smoke.ts',['--documents','2','--samples','1','--body-bytes','1'],'performance.json'],['resilience-smoke.ts',[],'resilience.json']] as const){
     const result=spawnSync(process.execPath,[join(process.cwd(),'tools',script),...flags,'--out',out],{cwd:root,encoding:'utf8',timeout:30_000});
     assert.equal(result.status,0,result.stderr);
@@ -63,7 +63,7 @@ test('experiment CLIs start from a clean checkout and accept relative output pat
 });
 
 test('resilience smoke refuses a nonempty root directory',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'kcl-resilience-preserve-'));
+  const root=mkdtempSync(join(tmpdir(),'knowledger-resilience-preserve-'));
   writeFileSync(join(root,'sentinel.txt'),'preserve');
   try {await assert.rejects(runResilienceSmoke({rootDir:root}),/new or empty/);}finally{rmSync(root,{recursive:true,force:true});}
 });

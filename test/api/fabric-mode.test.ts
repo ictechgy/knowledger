@@ -9,7 +9,7 @@ import type { ApplicationLedger, CommittedReceipt, PendingReceipt } from '../../
 import type { DomainCommand } from '../../packages/domain/index.ts';
 import { demoFixtures, PERSONAS, BOOTSTRAP_ACTOR } from '../../examples/order-workflow/config.ts';
 import { createDemoApp as createApp } from '../../examples/order-workflow/application.ts';
-import { KclService } from '../../apps/api/service.ts';
+import { KnowledgerService } from '../../apps/api/service.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 import { demoDefinition } from '../../examples/order-workflow/config.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
@@ -50,7 +50,7 @@ async function preparedPort() {
 }
 
 async function appFixture(t: any, port: FabricTestPort, personas = PERSONAS.slice(0, 3)) {
-  const dataDir = mkdtempSync(join(tmpdir(), 'kcl-fabric-api-test-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-fabric-api-test-'));
   const app = await createApp({ dataDir, ledger: port, personas });
   const url = await app.listen(0);
   const sessionResponse = await fetch(`${url}/api/session`);
@@ -67,13 +67,13 @@ test('Fabric mode does not seed and requires the injected signer list', async t 
   assert.equal(port.events(0, 1000).length, before);
   assert.equal((await fetch(`${api.url}/api/session`)).status, 200);
   const response = await fetch(`${api.url}/api/session`, {
-    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
+    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session.csrf_token },
     body: JSON.stringify({ org_id: 'FulfillmentMSP', actor_id: 'agent-knowledge-drafter' }),
   });
   assert.equal(response.status, 404);
 
   const missing = await preparedPort();
-  const dataDir = mkdtempSync(join(tmpdir(), 'kcl-fabric-api-missing-personas-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-fabric-api-missing-personas-'));
   await assert.rejects(() => createApp({ dataDir, ledger: missing }), /explicit signer persona list/);
   assert.equal(missing.closeCount, 1);
   rmSync(dataDir, { recursive: true, force: true });
@@ -84,7 +84,7 @@ test('pending Fabric commands return HTTP 202 without reading a receipt', async 
   const api = await appFixture(t, port);
   port.pendingNext = true;
   const response = await fetch(`${api.url}/v1/workspaces/demo/agreement-proposals`, {
-    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
+    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session.csrf_token },
     body: JSON.stringify({ revision_digest: demoFixtures().revisions[1].revision_digest, policy_id: 'policy-fulfillment-v1', policy_version: 1, command_id: 'command-pending-fabric' }),
   });
   assert.equal(response.status, 202);
@@ -96,7 +96,7 @@ test('pending fence fails closed with HTTP 503', async t => {
   const api = await appFixture(t, port);
   port.pendingNext = true;
   const response = await fetch(`${api.url}/v1/workspaces/demo/resolve`, {
-    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
+    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session.csrf_token },
     body: JSON.stringify({ document_ids: ['doc-pending-fence'], context_id: 'context-test', scope_id: 'scope-test', usage_scope: 'domain-definition/v1' }),
   });
   assert.equal(response.status, 503);
@@ -108,7 +108,7 @@ test('a committed receipt without an idempotency record fails closed', async t =
   const api = await appFixture(t, port);
   port.committedWithoutRecord = true;
   const response = await fetch(`${api.url}/v1/workspaces/demo/agreement-proposals`, {
-    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
+    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session.csrf_token },
     body: JSON.stringify({ revision_digest: demoFixtures().revisions[1].revision_digest, policy_id: 'policy-fulfillment-v1', policy_version: 1, command_id: 'command-missing-receipt' }),
   });
   assert.equal(response.status, 503);
@@ -118,7 +118,7 @@ test('a committed receipt without an idempotency record fails closed', async t =
 test('resolve withholds a fence superseded after full block refresh', async t => {
   const local = new LocalLedger(':memory:', 'kcl-demo');
   const seedVault = new PrivateStore(':memory:');
-  const seedService = new KclService(local, seedVault, demoDefinition());
+  const seedService = new KnowledgerService(local, seedVault, demoDefinition());
   await seedService.initialize();
   await seedDemo(seedService);
   const port = new FabricTestPort(local);
@@ -127,7 +127,7 @@ test('resolve withholds a fence superseded after full block refresh', async t =>
   port.epochOverride = 999;
   const fixture = demoFixtures().revisions[0].payload;
   const response = await fetch(`${api.url}/v1/workspaces/demo/resolve`, {
-    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KCL-CSRF': api.session.csrf_token },
+    method: 'POST', headers: { Cookie: api.cookie, Origin: api.url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': api.session.csrf_token },
     body: JSON.stringify({ document_ids: [fixture.document_id], context_id: fixture.context_id, scope_id: fixture.scope_id, usage_scope: fixture.usage_scope }),
   });
   assert.equal(response.status, 200);

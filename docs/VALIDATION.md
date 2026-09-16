@@ -174,7 +174,7 @@ OIDC 앱4개는 익명 overview401. 4318에서 exact revision view/history의200
 - 기존6개 앱을 새 코드로 재기동했고4317 health200/block1, Fabric 앱들 health200/block206 확인.
   기존 데이터·원장·인증서는 보존했다. 원격 push와 CI 실행은 하지 않았다.
 
-이번 근거 로그는 `.artifacts/kb-integration/`에 있다. SDK는 신뢰하는 KCL 응답을 검증하며
+이번 근거 로그는 `.artifacts/kb-integration/`에 있다. SDK는 신뢰하는 Knowledger 응답을 검증하며
 별도의 Fabric quorum proof를 검증하지 않는다. 실제 회사의 source/SSO·모델 공급자·egress 운영 설정은
 이번 합성 데이터/개발 IdP·local callback 검증과 구분한다.
 
@@ -557,7 +557,7 @@ CLI 데모 결과는 `withheld → 두 부서 승인 후 provided → 의존성 
 
 `agent-browser`로 문서 열람, 물류·정산 승인, 채택, resolver 제공, 비공개 초안 저장, 공개 미리보기, 새 개정 게시와 fresh proposal을 조작했다. 마지막 UI 변경 뒤 범위 자동 선택, 새 문서/개정 구분, 역할 변경 시 비공개 편집 화면 초기화, 미승인 문서 withheld를 추가 확인했다. 화면 JavaScript 구문 검사는 통과했다.
 
-캡처 기능은 `agent-browser` daemon 오류 후 별도의 격리된 Chrome/CDP로 확인했다. 데스크톱 1440×1200, 모바일 device viewport 390×844에서 문서 4개가 로딩됐고 모바일 `innerWidth = scrollWidth = 390`이었다. 스크린샷은 로컬 `.artifacts/kcl-verified-desktop.png`, `.artifacts/kcl-verified-mobile.png`에 보관하며 Git에는 넣지 않았다. 열람 상태와 fresh fence 기반 실행 권한을 화면 문구에서도 구분했다.
+캡처 기능은 `agent-browser` daemon 오류 후 별도의 격리된 Chrome/CDP로 확인했다. 데스크톱 1440×1200, 모바일 device viewport 390×844에서 문서 4개가 로딩됐고 모바일 `innerWidth = scrollWidth = 390`이었다. 스크린샷은 로컬 `.artifacts/knowledger-verified-desktop.png`, `.artifacts/knowledger-verified-mobile.png`에 보관하며 Git에는 넣지 않았다. 열람 상태와 fresh fence 기반 실행 권한을 화면 문구에서도 구분했다.
 
 독립 코드 검토에서 발견한 최신 승인 포인터의 representative mismatch, manifest 승인 바인딩, 중복 명령의 원래 checkpoint, projection 불일치, revision ID 참조 문제를 보강했다. 원장 입력 구조뿐 아니라 상태 간 참조를 검사하고, 로컬 browse도 하나의 checkpoint에서 읽는다.
 
@@ -614,6 +614,6 @@ python3 -B tools/check_docs.py
 
 검사기는 이 폴더가 사용하는 JSON Schema keyword와 좁은 JCS 입력 부분집합을 확인한다. 범용 Draft 2020-12 또는 RFC 8785 구현으로 배포할 수 있는 라이브러리가 아니다. 실제 identity·서명·인가·active ledger 상태·합의/분산 장애·서버 최신성·성능은 확인하지 않았다.
 
-Mermaid는 fence 구조만 확인했다. `mmdc`가 설치되어 있지 않아 실제 렌더링은 수행하지 않았다. Mermaid CLI를 사용하는 환경에서는 예를 들어 `mmdc -i README.md -o /tmp/kcl-readme.md`로 Markdown 내 다이어그램을 렌더링해 확인할 수 있다.
+Mermaid는 fence 구조만 확인했다. `mmdc`가 설치되어 있지 않아 실제 렌더링은 수행하지 않았다. Mermaid CLI를 사용하는 환경에서는 예를 들어 `mmdc -i README.md -o /tmp/knowledger-readme.md`로 Markdown 내 다이어그램을 렌더링해 확인할 수 있다.
 
 최종 운영 완료 기준은 [구현 계획](07-DELIVERY-PLAN.md)의 P-01–P-17, S-01–S-07, R-01–R-13 및 CFT/BFT·복구 실험이다. 위의 런타임 테스트와 실제 네트워크 시험을 구분한다. 성능 수치는 설계 가설이며 benchmark 결과가 아니다.

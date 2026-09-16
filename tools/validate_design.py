@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restricted, stdlib-only checks for the KCL design contracts.
+"""Restricted, stdlib-only checks for the Knowledger design contracts.
 
 This is deliberately a design-contract validator.  It is not a general JSON
 Schema implementation, a production RFC 8785 implementation, or runtime

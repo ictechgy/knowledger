@@ -28,7 +28,7 @@ import { ensureConfigurationScope, readConfigurationScope, CONFIGURATION_SCOPE_F
 import { getDevelopmentOrganization } from '../../examples/order-workflow/organizations.ts';
 
 function tempDirectory(): string {
-  return mkdtempSync(join(tmpdir(), 'kcl-runtime-snapshot-'));
+  return mkdtempSync(join(tmpdir(), 'knowledger-runtime-snapshot-'));
 }
 
 async function localFixture(root: string): Promise<string> {
@@ -163,7 +163,7 @@ function startBackupChild(dataDir: string, snapshotDir: string): {
     import { createRuntimeSnapshot } from ${JSON.stringify(join(process.cwd(), 'packages/storage/runtime-snapshot.ts'))};
     process.stdin.once('data', async () => {
       try {
-        await createRuntimeSnapshot({ dataDir: process.env.KCL_SNAPSHOT_DATA, snapshotDir: process.env.KCL_SNAPSHOT_OUT });
+        await createRuntimeSnapshot({ dataDir: process.env.KNOWLEDGER_SNAPSHOT_DATA, snapshotDir: process.env.KNOWLEDGER_SNAPSHOT_OUT });
         process.stdout.write('ok\\n');
       } catch (error) {
         process.stderr.write(String(error?.code ?? 'snapshot_failed') + '\\n');
@@ -173,7 +173,7 @@ function startBackupChild(dataDir: string, snapshotDir: string): {
   `;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
     cwd: process.cwd(),
-    env: { ...process.env, KCL_SNAPSHOT_DATA: dataDir, KCL_SNAPSHOT_OUT: snapshotDir },
+    env: { ...process.env, KNOWLEDGER_SNAPSHOT_DATA: dataDir, KNOWLEDGER_SNAPSHOT_OUT: snapshotDir },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -301,7 +301,7 @@ test('detects a source mutation after the first copy and leaves no destination b
   }
   assert.equal(copies, 2);
   assert.equal(existsSync(snapshotDir), false);
-  assert.equal(readdirSync(root).some(name => name.includes('.kcl-staging-')), false);
+  assert.equal(readdirSync(root).some(name => name.includes('.knowledger-staging-')), false);
   assert.notDeepEqual(readFileSync(sourcePath), original);
 });
 
@@ -360,7 +360,7 @@ test('cleans only owned staging files when a later copy fails', async t => {
   }
   assert.equal(copies, 2);
   assert.equal(existsSync(snapshotDir), false);
-  assert.equal(readdirSync(root).some(name => name.includes('.kcl-staging-')), false);
+  assert.equal(readdirSync(root).some(name => name.includes('.knowledger-staging-')), false);
 });
 
 test('rejects symlink snapshot paths and never publishes a partial restore', async t => {
@@ -408,7 +408,7 @@ test('publishes one destination under concurrent child-process backup attempts a
   assert.equal(results.filter(result => result.stdout.includes('ok')).length, 1);
   assert.equal(results.filter(result => result.stderr.includes('destination')).length, 1);
   assert.deepEqual(readdirSync(snapshot).sort(), ['manifest.json', 'private-local.sqlite', 'shared-ledger.sqlite']);
-  assert.equal(readdirSync(root).some(name => name.includes('.kcl-staging-')), false);
+  assert.equal(readdirSync(root).some(name => name.includes('.knowledger-staging-')), false);
   const restored = join(root, 'concurrent-restored');
   await restoreRuntimeSnapshot({ snapshotDir: snapshot, dataDir: restored });
   for (const name of ['private-local.sqlite', 'shared-ledger.sqlite']) assert.deepEqual(readFileSync(join(restored, name)), readFileSync(join(source, name)));

@@ -196,7 +196,7 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
     const rwset = decode(ledger.rwset.TxReadWriteSet, resultBytes);
     if (rwset.getDataModel() !== ledger.rwset.TxReadWriteSet.DataModel.KV) fail("Unsupported Fabric state data model");
     if (actionChaincode === "_lifecycle") {
-      if (rwset.getNsRwsetList().some(namespace => namespace.getNamespace() === options.chaincode_name)) fail("Lifecycle transaction contains a hidden KCL namespace");
+      if (rwset.getNsRwsetList().some(namespace => namespace.getNamespace() === options.chaincode_name)) fail("Lifecycle transaction contains a hidden Knowledger namespace");
       continue;
     }
     for (const namespace of rwset.getNsRwsetList()) {
@@ -223,7 +223,7 @@ function decodeTransaction(data: Uint8Array, index: number, validationCode: numb
       }
     }
   }
-  if (initialized && (!seenKeys.has(BOOTSTRAP_KEY) || !seenKeys.has("kcl:v1:config"))) fail("Fabric Init marker requires the pinned KCL bootstrap in the same transaction");
+  if (initialized && (!seenKeys.has(BOOTSTRAP_KEY) || !seenKeys.has("kcl:v1:config"))) fail("Fabric Init marker requires the pinned Knowledger bootstrap in the same transaction");
   result.writes = result.writeset.length;
   return result;
 }

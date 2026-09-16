@@ -9,7 +9,7 @@ npm run config:init
 npm start
 ```
 
-브라우저에서 `http://127.0.0.1:4317`을 연다. `kcl.config.json`의 조직·담당자·정책으로 빈 작업 공간을 시작한다. 기본 저장 위치는 `.data/workspaces/{workspace-id}/local`이며 Git에서 제외한다. 공유 원장과 비공개 저장소는 서로 다른 SQLite 파일이다. 설정은 [범용 실행 가이드](19-PROJECT-CONFIGURATION.md)를 참조한다.
+브라우저에서 `http://127.0.0.1:4317`을 연다. `knowledger.config.json`의 조직·담당자·정책으로 빈 작업 공간을 시작한다. 기본 저장 위치는 `.data/workspaces/{workspace-id}/local`이며 Git에서 제외한다. 공유 원장과 비공개 저장소는 서로 다른 SQLite 파일이다. 설정은 [범용 실행 가이드](19-PROJECT-CONFIGURATION.md)를 참조한다.
 
 기존 영업·이행·정산과 AI 작성자가 있는 가상 예제는 별도로 켠다.
 
@@ -81,7 +81,7 @@ v0.1 resolver는 **정확한 문서 한 개와 하나의 사용 범위**를 받�
 | `POST /resolve` | 새 fence와 시점별 상태에 근거한 지식 패킷 또는 withheld |
 | `POST /runs/{id}/revalidate` | `action: use-context`의 현재 지식 사용 가능 여부 재검증 |
 
-쓰기 요청은 `application/json`, 동일 출처, 로컬 세션 cookie, `X-KCL-CSRF`가 필요하다. 토큰을 로그에 남기지 않는다. 합의 변경에는 `command_id`가 필수다. 동일 조직/명령 ID로 다른 actor나 본문을 보내면 충돌한다. HTTP 계층은 처음 만든 결정 ID·시각까지 저장해 재시도 때 바뀌지 않게 한다.
+쓰기 요청은 `application/json`, 동일 출처, 로컬 세션 cookie, `X-KNOWLEDGER-CSRF`가 필요하다. 토큰을 로그에 남기지 않는다. 합의 변경에는 `command_id`가 필수다. 동일 조직/명령 ID로 다른 actor나 본문을 보내면 충돌한다. HTTP 계층은 처음 만든 결정 ID·시각까지 저장해 재시도 때 바뀌지 않게 한다.
 
 로컬 명령은 SQLite commit 후 HTTP 200 `committed`를 반환한다. `--ledger fabric-test-network`에서는 실제 Gateway 제출 후 peer VALID 블록과 영속 projection의 원래 거래 receipt를 확인해야 `committed`다. 확인 대기는 HTTP 202 `pending`, 엄격 조회의 연결·신선도 실패는 HTTP 503이다. [Fabric 웹 실행 가이드](12-FABRIC-WEB.md)를 참조한다.
 

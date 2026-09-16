@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import type { DevelopmentIssuer, StartDevelopmentIssuerOptions } from '../../examples/order-workflow/issuer.ts';
 
-const CLIENT_ID = 'kcl-development-client';
+const CLIENT_ID = 'knowledger-development-client';
 const REDIRECT_URI = 'http://127.0.0.1:4399/auth/callback';
 const authPackageRequire = createRequire(new URL('../../packages/auth/package.json', import.meta.url));
 let openidClientPath: string | undefined;

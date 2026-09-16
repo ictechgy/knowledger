@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createConfiguredApp } from '../../apps/api/configured-runtime.ts';
 import { createProjectTemplate } from '../../packages/config/template.ts';
-import { KclService } from '../../apps/api/service.ts';
+import { KnowledgerService } from '../../apps/api/service.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { keyFor } from '../../packages/domain/index.ts';
 
 async function fixture(t: any, size = 60) {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-browse-index-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-browse-index-'));
   const config = createProjectTemplate(); const actor = config.bootstrap_actor; const policy = config.genesis.policies[0];
   let app = await createConfiguredApp(config, { dataDir: directory, port: 0 });
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -29,7 +29,7 @@ async function fixture(t: any, size = 60) {
     async reopen() { await app.close(); app = await createConfiguredApp(config, { dataDir: directory, port: 0 }); } };
 }
 
-function observeWork(service: KclService) {
+function observeWork(service: KnowledgerService) {
   const ledger = service.ledger;
   const entries = ledger.entries.bind(ledger), read = ledger.read.bind(ledger), creation = ledger.checkpointForStateCreation.bind(ledger);
   const work = { wholeRows: 0, revisionReads: 0, creationReads: 0 };
@@ -90,7 +90,7 @@ test('indexed API equals verified scanning fallback and reopens without index pe
   const f = await fixture(t, 8); const service = f.app.service;
   const proxy = new Proxy(service.ledger, { get(target, key) { if (key === 'queryBrowse') return undefined; const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value; } });
   const vault = new PrivateStore(':memory:'); t.after(() => vault.close());
-  const scan = new KclService(proxy, vault, service.definition); await scan.initialize();
+  const scan = new KnowledgerService(proxy, vault, service.definition); await scan.initialize();
   const original = f.revisions[0];
   const proposal = await service.propose(f.actor, { command_id: 'index-propose', revision_digest: original.revision_digest, policy_id: f.policy.policy_id, policy_version: 1 });
   await f.publish(original.payload.document_id, original.revision_digest);

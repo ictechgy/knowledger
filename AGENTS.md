@@ -1,6 +1,6 @@
 # Project instructions
 
-This is an MIT-licensed knowledge agreement ledger. The design in `docs/` is the protocol baseline; record deliberate deviations as decisions.
+This is Knowledger, an MIT-licensed knowledge agreement ledger. The design in `docs/` is the protocol baseline; record deliberate deviations as decisions.
 
 Read [HANDOFF.md](HANDOFF.md) for continuation state; use this file for durable repository rules.
 
@@ -14,6 +14,7 @@ Read [HANDOFF.md](HANDOFF.md) for continuation state; use this file for durable 
 - AI actors may draft but may not issue human approvals.
 - Keep consensus transitions deterministic, atomic, and testable. Use the same domain rules in the local and Fabric adapters.
 - Keep generated identities, credentials, runtime databases, and downloaded tools out of Git.
+- The product name is Knowledger. `kcl:` ledger state keys, `kcl.actor_*` certificate attributes, the `kcl.test-certificate-renewal` plan schema, and the deployed example fixture's names (channel `kcl-demo`, chaincode `kcl`/`kcl_0.1.0`, compose project `kcl-fabric-smoke`, domain `*.kcl.test`) are persisted contracts of the running network, issued certificates, and committed ledger state. Do not rename them; regenerated networks keep the same fixture naming.
 - Derive browse indexes and caches from verified journal state; they do not authorize knowledge use. Preserve canonical-value checks, exact checkpoints, and fresh authorization/eligibility checks. See [browse index constraints](docs/26-BROWSE-INDEX.md).
 
 ## Runtime & Data Preservation

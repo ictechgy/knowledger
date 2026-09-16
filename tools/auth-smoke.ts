@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite';
 const root = fileURLToPath(new URL('..', import.meta.url));
 mkdirSync(join(root, '.data'), { recursive: true });
 const dataDir = mkdtempSync(join(root, '.data/auth-smoke-'));
-const socketPath = join(mkdtempSync('/tmp/kcl-auth-sign-'), 'sign.sock');
+const socketPath = join(mkdtempSync('/tmp/knowledger-auth-sign-'), 'sign.sock');
 const runId = randomUUID().slice(0, 8);
 let signer: ChildProcess | undefined;
 let app: Awaited<ReturnType<typeof createApp>> | undefined;
@@ -53,7 +53,7 @@ try {
   const origin = `http://127.0.0.1:${await freePort()}`;
   issuer = await startDevelopmentIssuer({ port: 0, redirectUri: `${origin}/auth/callback` });
   const subjects = new Map(['dev-sales-owner', 'dev-fulfillment-owner', 'dev-settlement-owner'].map((subject, index) => [subject, actorIdentity(PERSONAS[index])]));
-  const authentication = await OidcAuthentication.create({ issuer: issuer.issuer, clientId: 'kcl-development-client', redirectUri: `${origin}/auth/callback`, development: true,
+  const authentication = await OidcAuthentication.create({ issuer: issuer.issuer, clientId: 'knowledger-development-client', redirectUri: `${origin}/auth/callback`, development: true,
     authorizationVersionClaim: 'account_version', resolveActor: (receivedIssuer, subject) => receivedIssuer === issuer!.issuer ? subjects.get(subject) : undefined });
   let pauseNextSubmit = false;
   let submissionReached: (() => void) | undefined;
@@ -81,7 +81,7 @@ try {
   async function post(path: string, input: unknown, expected = 200): Promise<any> {
     for (let attempt = 0; attempt < 10; attempt++) {
       const response = await browser.request(`${origin}${path.startsWith('/api/') || path.startsWith('/auth/') ? path : '/v1/workspaces/demo' + path}`, {
-        method: 'POST', headers: { Origin: origin, 'X-KCL-CSRF': csrf, 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+        method: 'POST', headers: { Origin: origin, 'X-KNOWLEDGER-CSRF': csrf, 'Content-Type': 'application/json' }, body: JSON.stringify(input),
       });
       if (response.status === 204) { assert.equal(expected, 204); return {}; }
       const value = await response.json();

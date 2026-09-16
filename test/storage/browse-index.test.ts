@@ -187,7 +187,7 @@ test('streamed index preparation is atomic and sorts a whole replay once', () =>
 });
 
 test('LocalLedger publishes browse changes only after SQL commit and rebuilds them from the journal', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'kcl-browse-index-'));
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-browse-index-'));
   const path = join(directory, 'ledger.sqlite');
   let ledger = new LocalLedger(path, CHANNEL);
   t.after(() => { ledger.close(); rmSync(directory, { recursive: true, force: true }); });

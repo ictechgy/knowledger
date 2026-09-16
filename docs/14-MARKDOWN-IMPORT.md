@@ -41,7 +41,7 @@ private 저장소는 공용 원장과 분리되어 있지만, 현재 로컬 개�
 
 `POST /v1/workspaces/{workspace.id}/draft-imports/markdown` (order-workflow 예제: `demo`)
 
-기존 세션·동일 출처·`X-KCL-CSRF` 검사를 사용한다. OIDC 모드에서는 현재 계정 권한도
+기존 세션·동일 출처·`X-KNOWLEDGER-CSRF` 검사를 사용한다. OIDC 모드에서는 현재 계정 권한도
 요청 전후에 확인한다. 본문은 JSON이며 아래 필드만 받는다.
 
 | 필드 | 의미 |

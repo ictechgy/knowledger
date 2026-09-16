@@ -38,11 +38,11 @@ try {
     : mode === 'fabric-test-network' ? await (await import('./fabric-runtime.ts')).createFabricTestRuntime(dataDir) : {};
   app = await createApp({ dataDir, ...runtime });
   const address = await app.listen(port);
-  console.log(`Knowledge Consensus Ledger: ${address}`);
+  console.log(`Knowledger: ${address}`);
   console.log(issuer ? 'OIDC development login · separate signing service · verified Fabric blocks' : mode === 'fabric-test-network' ? 'Fabric test network · verified peer blocks · fictional test identities' : 'Local simulation · fictional demo personas · no external model calls');
 } catch {
   await app?.close();
-  console.error('KCL could not start. Check the local port, data directory, and selected ledger connection.');
+  console.error('Knowledger could not start. Check the local port, data directory, and selected ledger connection.');
   process.exitCode = 1;
 }
 let stopping = false;

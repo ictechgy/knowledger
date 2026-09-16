@@ -25,7 +25,7 @@ export async function startFabricChaincode(factory: (responses: FabricResponseFa
     const msp_id = identity.getMSPID();
     const actor_id = identity.getAttributeValue("kcl.actor_id");
     const actor_kind = identity.getAttributeValue("kcl.actor_kind");
-    if (!msp_id || !actor_id || (actor_kind !== "human" && actor_kind !== "agent")) throw new Error("required KCL certificate attributes missing");
+    if (!msp_id || !actor_id || (actor_kind !== "human" && actor_kind !== "agent")) throw new Error("required Knowledger certificate attributes missing");
     return { msp_id, actor_id, actor_kind };
   };
   const chaincode = factory({

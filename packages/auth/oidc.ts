@@ -82,8 +82,8 @@ export class OidcAuthentication implements ApplicationAuthentication {
   private cookieValue(name: string, value: string, maxAge: number, path = '/'): string {
     return `${name}=${value}; HttpOnly; SameSite=Lax; Path=${path}; Max-Age=${maxAge}${this.secure ? '; Secure' : ''}`;
   }
-  private sessionCookie() { return `${this.secure ? '__Host-' : ''}kcl_oidc_session_${this.cookieNamespace}`; }
-  private flowCookie() { return `${this.secure ? '__Host-' : ''}kcl_oidc_flow_${this.cookieNamespace}`; }
+  private sessionCookie() { return `${this.secure ? '__Host-' : ''}knowledger_oidc_session_${this.cookieNamespace}`; }
+  private flowCookie() { return `${this.secure ? '__Host-' : ''}knowledger_oidc_flow_${this.cookieNamespace}`; }
   private cleanup() {
     for (const [id, value] of this.flows) if (value.expires <= this.now()) this.flows.delete(id);
     for (const [id, value] of this.sessions) if (value.expires <= this.now()) this.sessions.delete(id);
@@ -131,7 +131,7 @@ export class OidcAuthentication implements ApplicationAuthentication {
     if (req.method === 'POST' && url.pathname === '/auth/logout') {
       if (req.headers.origin !== this.origin) throw new AuthenticationError('AUTH_ORIGIN_REJECTED', 403);
       const id = cookie(req, this.sessionCookie()); const session = id ? this.sessions.get(id) : undefined;
-      if (session && (typeof req.headers['x-kcl-csrf'] !== 'string' || !sameToken(req.headers['x-kcl-csrf'], session.csrf))) throw new AuthenticationError('CSRF_REJECTED', 403);
+      if (session && (typeof req.headers['x-knowledger-csrf'] !== 'string' || !sameToken(req.headers['x-knowledger-csrf'], session.csrf))) throw new AuthenticationError('CSRF_REJECTED', 403);
       if (id) this.sessions.delete(id);
       req.resume();
       res.setHeader('Set-Cookie', this.cookieValue(this.sessionCookie(), '', 0)); res.writeHead(204); res.end(); return true;
