@@ -317,11 +317,12 @@ export class SqliteFabricProjection {
     this.ensureOpen();
     const unique = [...new Set(keys)];
     const result = new Map<string, unknown>();
-    if (!unique.length) return result;
     let replayed: HistoricalReplay | null = null;
+    // 빈 키 묶음이어도 커서·체크포인트 검증은 read()와 동일하게 수행한다.
     if (at === undefined || at === null) this.verifyCurrentCursor();
     else if (this.isCurrentCheckpoint(at)) this.verifyCurrentCheckpoint(at);
     else replayed = this.replayCheckpoint(at);
+    if (!unique.length) return result;
     for (let start = 0; start < unique.length; start += 500) {
       const chunk = unique.slice(start, start + 500);
       const placeholders = chunk.map(() => "?").join(",");
