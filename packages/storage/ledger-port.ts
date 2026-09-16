@@ -22,6 +22,8 @@ export interface ApplicationLedger {
   readonly mode: 'local-simulation' | 'fabric-test-network' | 'fabric';
   refresh(): Promise<void>;
   read(key: string, at?: Checkpoint | null): any | undefined;
+  /** 배치 읽기 최적화. 각 값은 read()와 동일한 무결성 검증을 거치며, 없는 키는 Map에 없다. */
+  readMany?(keys: string[], at?: Checkpoint | null): Map<string, any>;
   entries(prefix: string, at?: Checkpoint | null): [string, any][];
   /** Optional indexed metadata selection; canonical values still use read(). */
   queryBrowse?: BrowseQueryFunction;

@@ -26,7 +26,7 @@ export class FabricLedgerError extends Error {
   constructor(code: string, message: string, status = 503, retryable = true) { super(message); this.code = code; this.status = status; this.retryable = retryable; }
 }
 
-type Projection = Pick<SqliteFabricProjection, 'channelId' | 'applyBlock' | 'blockCheckpoint' | 'read' | 'entries' | 'checkpoint' | 'checkpointForTransaction' | 'checkpointForStateCreation' | 'assertCheckpoint' | 'events' | 'close'> & { queryBrowse?: BrowseQueryFunction };
+type Projection = Pick<SqliteFabricProjection, 'channelId' | 'applyBlock' | 'blockCheckpoint' | 'read' | 'readMany' | 'entries' | 'checkpoint' | 'checkpointForTransaction' | 'checkpointForStateCreation' | 'assertCheckpoint' | 'events' | 'close'> & { queryBrowse?: BrowseQueryFunction };
 const sameActor = (a: Actor, b: Actor) => a.org_id === b.org_id && a.actor_id === b.actor_id && a.kind === b.kind;
 function isActor(value: unknown): value is Actor {
   return !!value && typeof value === 'object' && 'org_id' in value && typeof value.org_id === 'string'
@@ -179,6 +179,7 @@ export class FabricApplicationLedger implements ApplicationLedger {
     if (this.closed || !this.available) throw new FabricLedgerError('FRESHNESS_UNAVAILABLE', '최신 peer 상태를 확인한 뒤 다시 시도해 주세요.');
   }
   read(key: string, at?: Checkpoint | null): any { this.ready(); return this.options.projection.read(key, at); }
+  readMany(keys: string[], at?: Checkpoint | null): Map<string, any> { this.ready(); return this.options.projection.readMany(keys, at); }
   entries(prefix: string, at?: Checkpoint | null): [string, any][] { this.ready(); return this.options.projection.entries(prefix, at); }
   checkpoint() { this.ready(); return this.options.projection.checkpoint(); }
   checkpointForTransaction(id: string) { this.ready(); return this.options.projection.checkpointForTransaction(id); }

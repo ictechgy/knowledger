@@ -32,12 +32,14 @@ async function fixture(t: any, size = 60) {
 function observeWork(service: KnowledgerService) {
   const ledger = service.ledger;
   const entries = ledger.entries.bind(ledger), read = ledger.read.bind(ledger), creation = ledger.checkpointForStateCreation.bind(ledger);
-  const work = { wholeRows: 0, revisionReads: 0, creationReads: 0 };
+  const readMany = ledger.readMany?.bind(ledger);
+  const work = { wholeRows: 0, revisionReads: 0, creationReads: 0, reads: 0, batchCalls: 0, batchedKeys: 0 };
   ledger.entries = (prefix, at) => { const result = entries(prefix, at); if (['revision', 'proposal', 'agreement'].some(kind => prefix === `kcl:v1:${kind}:`)) work.wholeRows += result.length; return result; };
-  ledger.read = (key, at) => { if (key.startsWith('kcl:v1:revision:')) work.revisionReads++; return read(key, at); };
+  ledger.read = (key, at) => { work.reads++; if (key.startsWith('kcl:v1:revision:')) work.revisionReads++; return read(key, at); };
+  if (readMany) ledger.readMany = (keys, at) => { work.batchCalls++; work.batchedKeys += new Set(keys).size; return readMany(keys, at); };
   ledger.checkpointForStateCreation = key => { work.creationReads++; return creation(key); };
-  return { work, reset() { work.wholeRows = work.revisionReads = work.creationReads = 0; },
-    close() { ledger.entries = entries; ledger.read = read; ledger.checkpointForStateCreation = creation; } };
+  return { work, reset() { work.wholeRows = work.revisionReads = work.creationReads = work.reads = work.batchCalls = work.batchedKeys = 0; },
+    close() { ledger.entries = entries; ledger.read = read; if (readMany) ledger.readMany = readMany; ledger.checkpointForStateCreation = creation; } };
 }
 
 test('indexed pages load canonical values proportional to the page, including after unrelated fences', async t => {
@@ -46,6 +48,10 @@ test('indexed pages load canonical values proportional to the page, including af
   assert.equal(page.documents.length, 5); assert.equal(page.documents_total, 60);
   assert.equal(probe.work.wholeRows, 0, 'page selection must not materialize every public record');
   assert.ok(probe.work.revisionReads <= 10); assert.ok(probe.work.creationReads <= 5);
+  // 배치 읽기가 페이지 크기에 비례하고 전체 코퍼스(60개)에 비례하지 않는지 고정한다.
+  assert.ok(probe.work.batchCalls >= 1, 'overview must batch canonical reads');
+  assert.ok(probe.work.reads <= 15, 'per-key reads must not scale with the corpus');
+  assert.ok(probe.work.batchedKeys <= 50, 'batched keys must stay proportional to the page');
   probe.reset();
   await service.ledger.execute(f.actor, { command_id: 'index-unrelated-fence', type: 'fence', input: { nonce: 'index-unrelated-fence' } });
   const second = await service.overview(f.actor, { limit: 5, cursor: page.next_cursor! });
@@ -64,6 +70,7 @@ test('search cursor pages reuse bounded ID matches without rescanning the corpus
   const second = await service.search(f.actor, { query: 'BODY_INDEX_CANARY', limit: 5, cursor: first.next_cursor! });
   assert.equal(second.total, 60); assert.equal(second.results.length, 5);
   assert.equal(probe.work.wholeRows, 0); assert.ok(probe.work.revisionReads <= 10, 'a cached search page must not re-read all candidate bodies');
+  assert.ok(probe.work.batchCalls >= 1 && probe.work.reads <= 15, 'a cached search page must batch candidate reads');
   for (const query of ['', '한', '검색', '%_', '\n', 'i', 'İ', '😀', 'not-present']) {
     const expected = f.revisions.filter(revision => `${revision.payload.title}\n${revision.payload.body_markdown}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).length;
     const result = await service.search(f.actor, { query }); assert.equal(result.total, expected, `query ${JSON.stringify(query)}`);

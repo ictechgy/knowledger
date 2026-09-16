@@ -29,6 +29,8 @@ interface BrowseRequestContext {
   eligibility: Map<string, ReturnType<typeof domain.resolveAt>>;
   annotations: Map<string, RevisionBrowseAnnotation>;
   revisions: Map<string, any>;
+  /** 체크포인트에 바인드된 검증된 읽기 캐시. null은 검증된 부재를 뜻한다. */
+  values: Map<string, any>;
 }
 
 export class ApiError extends Error {
@@ -226,7 +228,51 @@ export class KnowledgerService {
   }
 
   private browseContext(checkpoint: Checkpoint): BrowseRequestContext {
-    return { checkpoint, config: this.config(checkpoint), eligibility: new Map(), annotations: new Map(), revisions: new Map() };
+    const config = this.config(checkpoint);
+    const values = new Map<string, any>([[domain.keyFor.config(), config ?? null]]);
+    return { checkpoint, config, eligibility: new Map(), annotations: new Map(), revisions: new Map(), values };
+  }
+
+  /** 요청 범위 캐시를 통한 읽기. 모든 값은 ledger.read와 동일한 무결성 검증을 거친다. */
+  private readAt(context: BrowseRequestContext, key: string): any {
+    if (!context.values.has(key)) context.values.set(key, this.ledger.read(key, context.checkpoint) ?? null);
+    const value = context.values.get(key);
+    // 캐시된 객체는 요청 안에서 공유되므로, 호출자의 in-place 변형이 다른 소비자를
+    // 오염시키지 않도록 read()와 같은 격리를 위해 복제본을 돌려준다.
+    return value === undefined || value === null ? undefined : structuredClone(value);
+  }
+
+  /** 알려진 키를 한 번의 배치 조회로 미리 적재한다. 어댑터가 readMany를 제공하지 않으면 순차 읽기로 되돌아간다. */
+  private prefetch(context: BrowseRequestContext, keys: Iterable<string | undefined>): void {
+    const missing = new Set<string>();
+    for (const key of keys) if (typeof key === 'string' && !context.values.has(key)) missing.add(key);
+    if (!missing.size) return;
+    if (this.ledger.readMany) {
+      const found = this.ledger.readMany([...missing], context.checkpoint);
+      for (const key of missing) context.values.set(key, found.get(key) ?? null);
+    } else {
+      for (const key of missing) context.values.set(key, this.ledger.read(key, context.checkpoint) ?? null);
+    }
+  }
+
+  /** 개정본 페이지의 읽기를 세 단계로 적재한다: 본문·슬롯 포인터 → 활성 합의 → 승인 결정·합의 대상 개정본. */
+  private prefetchRevisionSet(context: BrowseRequestContext, refs: RevisionBrowseRef[]): void {
+    this.prefetch(context, refs.flatMap(ref => [ref.key, domain.keyFor.activeSlot(ref.slot), context.annotations.get(ref.revision_digest)?.agreement?.key]));
+    const agreementIds = new Set<string>();
+    for (const ref of refs) {
+      const pointer = this.readAt(context, domain.keyFor.activeSlot(ref.slot));
+      // active_slot 값은 { agreement_id } 객체다 — 커밋 시 상태 검증이 보장한다.
+      const id = pointer?.agreement_id;
+      if (typeof id === 'string') agreementIds.add(id);
+    }
+    this.prefetch(context, [...agreementIds].map(id => domain.keyFor.agreement(id)));
+    const followup: string[] = [];
+    for (const id of agreementIds) {
+      const agreement = this.readAt(context, domain.keyFor.agreement(id));
+      for (const decisionId of agreement?.approval_decision_ids ?? []) if (typeof decisionId === 'string') followup.push(domain.keyFor.decision(decisionId));
+      if (typeof agreement?.revision_digest === 'string') followup.push(domain.keyFor.revision(agreement.revision_digest));
+    }
+    this.prefetch(context, followup);
   }
 
   private annotate(context: BrowseRequestContext, digests: string[]): void {
@@ -243,23 +289,28 @@ export class KnowledgerService {
     return reference;
   }
 
-  private readIndexedRevision(reference: RevisionBrowseRef, at: Checkpoint) {
-    const revision = this.ledger.read(reference.key, at);
+  /** 브라우즈 색인 참조와 canonical 개정본의 일치를 검증한다 — 색인은 참조일 뿐 값의 근거가 아니다. */
+  private checkIndexedRevision(reference: RevisionBrowseRef, revision: any): void {
     if (reference.key !== domain.keyFor.revision(reference.revision_digest) || !revision?.payload
       || revision.revision_digest !== reference.revision_digest || !sameSlot(revision.payload, reference.slot)) {
       throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 개정본이 일치하지 않습니다.', 503);
     }
+  }
+
+  private readIndexedRevision(reference: RevisionBrowseRef, context: BrowseRequestContext) {
+    const revision = this.readAt(context, reference.key);
+    this.checkIndexedRevision(reference, revision);
     return { ...revision, published_checkpoint: reference.published_checkpoint };
   }
 
   private pageRevision(reference: RevisionBrowseRef, context: BrowseRequestContext) {
     let value = context.revisions.get(reference.revision_digest);
-    if (!value) { value = this.readIndexedRevision(reference, context.checkpoint); context.revisions.set(reference.revision_digest, value); }
+    if (!value) { value = this.readIndexedRevision(reference, context); context.revisions.set(reference.revision_digest, value); }
     return value;
   }
 
-  private readIndexedProposal(reference: ProposalBrowseRef, at: Checkpoint) {
-    const proposal = this.ledger.read(reference.key, at);
+  private readIndexedProposal(reference: ProposalBrowseRef, context: BrowseRequestContext) {
+    const proposal = this.readAt(context, reference.key);
     if (reference.key !== domain.keyFor.proposal(reference.proposal_id) || !proposal || proposal.proposal_id !== reference.proposal_id
       || proposal.revision_digest !== reference.revision_digest || proposal.created_at !== reference.created_at || !sameSlot(proposal, reference.slot)) {
       throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 제안이 일치하지 않습니다.', 503);
@@ -267,8 +318,8 @@ export class KnowledgerService {
     return proposal;
   }
 
-  private readIndexedAgreement(reference: AgreementBrowseRef, at: Checkpoint) {
-    const agreement = this.ledger.read(reference.key, at);
+  private readIndexedAgreement(reference: AgreementBrowseRef, context: BrowseRequestContext) {
+    const agreement = this.readAt(context, reference.key);
     if (reference.key !== domain.keyFor.agreement(reference.agreement_id) || !agreement || agreement.agreement_id !== reference.agreement_id
       || agreement.revision_digest !== reference.revision_digest || agreement.activated_at !== reference.activated_at || !sameSlot(agreement, reference.slot)) {
       throw new ApiError('PROJECTION_INVALID', '검증된 원장 참조와 합의가 일치하지 않습니다.', 503);
@@ -279,12 +330,12 @@ export class KnowledgerService {
   private async describeRevision(revision: any, context: BrowseRequestContext, full = false) {
     const key = slotKey(revision.payload);
     let pending = context.eligibility.get(key);
-    if (!pending) { pending = domain.resolveAt(async stateKey => this.ledger.read(stateKey, context.checkpoint), slotFields(revision.payload)); context.eligibility.set(key, pending); }
+    if (!pending) { pending = domain.resolveAt(async stateKey => this.readAt(context, stateKey), slotFields(revision.payload)); context.eligibility.set(key, pending); }
     const eligibility = await pending;
     this.annotate(context, [revision.revision_digest]);
     const annotation = context.annotations.get(revision.revision_digest);
     const agreement = eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement
-      : annotation?.agreement ? this.readIndexedAgreement(annotation.agreement, context.checkpoint) : undefined;
+      : annotation?.agreement ? this.readIndexedAgreement(annotation.agreement, context) : undefined;
     const { body_markdown, ...summary } = revision.payload;
     return { view: full ? 'full' : 'summary', revision_digest: revision.revision_digest, payload: full ? revision.payload : summary,
       published_checkpoint: revision.published_checkpoint, agreement,
@@ -293,27 +344,49 @@ export class KnowledgerService {
       reason: eligibility.reason, proposed: annotation?.has_proposal ?? false };
   }
 
+  /** 제안이 바인딩된 정책 버전의 책임자 슬롯 목록을 반환한다. 정책이 없으면 예외 — 설정과 제안의 정합성은 커밋 시 보장된다. */
+  private proposalRepresentatives(context: BrowseRequestContext, proposal: any): any[] {
+    return context.config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
+  }
+
+  /** 제안 페이지가 읽을 키를 세 단계로 미리 적재한다: 제안/개정본 → 합의·최신 결정 포인터 → 결정 본문. */
+  private prefetchProposalPage(context: BrowseRequestContext, proposals: any[]): void {
+    const pointerKeys: string[] = [];
+    const dependencyKeys: (string | undefined)[] = [];
+    for (const proposal of proposals) {
+      dependencyKeys.push(proposal.agreement_id ? domain.keyFor.agreement(proposal.agreement_id) : undefined);
+      for (const representative of this.proposalRepresentatives(context, proposal)) {
+        pointerKeys.push(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, representative.domain_role, representative.actor_org_id, representative.actor_id));
+      }
+    }
+    this.prefetch(context, [...dependencyKeys, ...pointerKeys]);
+    this.prefetch(context, pointerKeys
+      .map(key => this.readAt(context, key)?.decision_id)
+      .filter((id): id is string => typeof id === 'string')
+      .map(id => domain.keyFor.decision(id)));
+  }
+
   private describeProposal(proposal: any, context: BrowseRequestContext, revision: any) {
-    const checkpoint = context.checkpoint;
-    const representatives = context.config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
+    const representatives = this.proposalRepresentatives(context, proposal);
     const { body_markdown, ...payload } = revision.payload;
-    return { ...proposal, agreement: proposal.agreement_id ? this.ledger.read(domain.keyFor.agreement(proposal.agreement_id), checkpoint) : undefined,
+    return { ...proposal, agreement: proposal.agreement_id ? this.readAt(context, domain.keyFor.agreement(proposal.agreement_id)) : undefined,
       revision_summary: { view: 'summary', revision_digest: revision.revision_digest, payload, published_checkpoint: revision.published_checkpoint },
       decisions: representatives.map((rep: any) => {
-        const pointer = this.ledger.read(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id), checkpoint);
-        return pointer ? this.ledger.read(domain.keyFor.decision(pointer.decision_id), checkpoint) : undefined;
+        const pointer = this.readAt(context, domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id));
+        return pointer ? this.readAt(context, domain.keyFor.decision(pointer.decision_id)) : undefined;
       }).filter(Boolean), required_representatives: representatives };
   }
 
   private proposalPage(page: PageContext, context: BrowseRequestContext, digest?: string) {
     const result = this.queryBrowse({ kind: 'proposals', at: page.checkpoint, offset: page.offset, limit: page.limit, revision_digest: digest });
     this.annotate(context, result.items.map(reference => reference.revision_digest));
-    const proposals = result.items.map(reference => {
-      const proposal = this.readIndexedProposal(reference, page.checkpoint);
-      const revision = this.pageRevision(this.revisionRef(reference.revision_digest, context), context);
+    this.prefetch(context, result.items.flatMap(reference => [reference.key, context.annotations.get(reference.revision_digest)?.revision?.key]));
+    const proposals = result.items.map(reference => this.readIndexedProposal(reference, context));
+    this.prefetchProposalPage(context, proposals);
+    return { proposals: proposals.map(proposal => {
+      const revision = this.pageRevision(this.revisionRef(proposal.revision_digest, context), context);
       return this.describeProposal(proposal, context, revision);
-    });
-    return { proposals, proposals_total: result.total, proposals_next_cursor: this.nextCursor(page, result.total) };
+    }), proposals_total: result.total, proposals_next_cursor: this.nextCursor(page, result.total) };
   }
 
   async getProposal(actor: Actor, id: string) {
@@ -336,6 +409,7 @@ export class KnowledgerService {
     const context = this.browseContext(checkpoint);
     const result = this.queryBrowse({ kind: 'revisions', mode: 'latest-per-slot', at: checkpoint, offset: page.offset, limit: page.limit });
     this.annotate(context, result.items.map(reference => reference.revision_digest));
+    this.prefetchRevisionSet(context, result.items);
     const documents = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     const config = context.config;
     const proposalPage = this.proposalPage({ ...proposals, checkpoint }, context);
@@ -399,6 +473,7 @@ export class KnowledgerService {
     this.pageRevision(target, context);
     const result = this.queryBrowse({ kind: 'revisions', mode: 'slot', slot: target.slot, at: page.checkpoint, offset: page.offset, limit: page.limit });
     this.annotate(context, result.items.map(reference => reference.revision_digest));
+    this.prefetchRevisionSet(context, result.items);
     const revisions = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
     return { revisions, total: result.total, next_cursor: this.nextCursor(page, result.total), checkpoint: page.checkpoint };
@@ -412,6 +487,7 @@ export class KnowledgerService {
     const result = this.queryBrowse({ kind: 'revisions', mode: 'document', document_id: id, at: page.checkpoint, offset: page.offset, limit: page.limit });
     if (!result.total) throw new ApiError('NOT_FOUND', '문서를 찾을 수 없거나 접근할 수 없습니다.', 404);
     this.annotate(context, result.items.map(reference => reference.revision_digest));
+    this.prefetchRevisionSet(context, result.items);
     const revisions = await Promise.all(result.items.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
     return { revisions, total: result.total, next_cursor: this.nextCursor(page, result.total), checkpoint: page.checkpoint };
@@ -743,12 +819,15 @@ export class KnowledgerService {
       while (true) {
         const candidates = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000,
           context_id: input.context_id || undefined, scope_id: input.scope_id || undefined, usage_scope: input.usage_scope || undefined });
+        // 빈 질의는 본문을 전혀 읽지 않는다 — 스캔 결과를 결과 캐시에 싣지 않는 것과 같은 이유로 배치 읽기도 건너뛴다.
+        const prefetched = query === '' ? undefined : this.ledger.readMany?.(candidates.items.map(reference => reference.key), page.checkpoint);
         for (const reference of candidates.items) {
           // Preserve the existing literal JS substring rule, including empty,
           // short, CJK and UTF-16 queries; no SQL/FTS locale approximation.
           if (query === '') ids.push(reference.revision_digest);
           else {
-            const revision = this.readIndexedRevision(reference, page.checkpoint);
+            const revision = prefetched ? prefetched.get(reference.key) : this.ledger.read(reference.key, page.checkpoint);
+            this.checkIndexedRevision(reference, revision);
             if (`${revision.payload.title}\n${revision.payload.body_markdown}`.toLocaleLowerCase().includes(query)) ids.push(reference.revision_digest);
           }
         }
@@ -761,7 +840,9 @@ export class KnowledgerService {
     const context = this.browseContext(page.checkpoint);
     const selected = matches.slice(page.offset, page.offset + page.limit);
     this.annotate(context, [...selected]);
-    const results = await Promise.all(selected.map(digest => this.describeRevision(this.pageRevision(this.revisionRef(digest, context), context), context)));
+    const refs = selected.map(digest => this.revisionRef(digest, context));
+    this.prefetchRevisionSet(context, refs);
+    const results = await Promise.all(refs.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
     return { view: 'summary', results, total: matches.length, next_cursor: this.nextCursor(page, matches.length), checkpoint: page.checkpoint };
   }
