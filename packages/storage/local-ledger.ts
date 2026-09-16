@@ -61,7 +61,6 @@ export class LocalLedger {
     selectTransactionBySequence: ReturnType<DatabaseSync['prepare']>;
     selectTransactionById: ReturnType<DatabaseSync['prepare']>;
     selectStateCreation: ReturnType<DatabaseSync['prepare']>;
-    iterateTransactions: ReturnType<DatabaseSync['prepare']>;
   };
 
   constructor(path: string, channelId: string) {
@@ -109,7 +108,6 @@ export class LocalLedger {
       selectTransactionBySequence: this.db.prepare('SELECT record_json FROM ledger_transactions WHERE sequence = ?'),
       selectTransactionById: this.db.prepare('SELECT record_json FROM ledger_transactions WHERE transaction_id = ?'),
       selectStateCreation: this.db.prepare('SELECT t.record_json FROM projection_history h JOIN ledger_transactions t ON t.sequence = h.sequence WHERE h.state_key = ? ORDER BY h.sequence LIMIT 1'),
-      iterateTransactions: this.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence'),
     };
     // rebuildProjection이 저널 해시 검증을 다시 수행하므로 여기서 따로 검증하지 않는다.
     try { this.rebuildProjection(); }
@@ -138,7 +136,7 @@ export class LocalLedger {
     return value;
   }
 
-  /** 트랜잭션 내부 적용 전용 — 최신 projection 행만 읽는다. 서빙 읽기의 이중 검증은 read()에 남는다. */
+  /** 재생 전용 읽기 — 저널 전체 검증 직후에만 호출되므로 projection 행만 읽는다. 서빙 읽기의 이중 검증은 read()에 남는다. */
   private readCurrent(key: string): any | undefined {
     const row = this.statements.selectProjection.get(key) as any;
     if (!row) return undefined;
@@ -273,7 +271,9 @@ export class LocalLedger {
   validateHistory(): void {
     let previousHash = ZERO_HASH;
     let expectedSequence = 1;
-    for (const row of this.statements.iterateTransactions.iterate() as Iterable<any>) {
+    // 순회는 호출마다 새 문장을 준비한다 — 진행 중인 반복자를 공유하면 재진입 시 서로를 리셋한다.
+    const rows = this.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
+    for (const row of rows) {
       const event: LedgerEvent = JSON.parse(row.record_json);
       const { block_hash, ...checkpoint } = event.checkpoint;
       const unsigned = { checkpoint, previous_hash: event.previous_hash, timestamp: event.timestamp, validation_code: event.validation_code, reducer_version: event.reducer_version, writes: event.writes };
@@ -295,9 +295,10 @@ export class LocalLedger {
       this.db.exec('DELETE FROM projection; DELETE FROM projection_history; DELETE FROM projection_cursor;');
       const self = this;
       function* replayBrowse(): Generator<BrowseWriteBatch> {
-        for (const row of self.statements.iterateTransactions.iterate() as Iterable<any>) {
+        const rows = self.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
+        for (const row of rows) {
           const event: LedgerEvent = JSON.parse(row.record_json);
-          self.apply(event);
+          self.apply(event, true);
           const writes = event.writes.filter(([key]) => isBrowseWrite(key));
           if (writes.length) yield { checkpoint: event.checkpoint, writes };
         }
@@ -310,19 +311,22 @@ export class LocalLedger {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
-  private apply(event: LedgerEvent): void {
+  private apply(event: LedgerEvent, replayTrusted = false): void {
     if (event.reducer_version !== 1) throw new Error('Unknown write-set reducer');
+    // 재생(replayTrusted)은 직전 저널 전체 검증을 전제로 projection만 읽는다.
+    // 라이브 커밋은 쓰기 시점의 projection/history 교차 검증을 유지해 파생 테이블 변조를 탐지한다.
+    const priorOf = replayTrusted ? (key: string) => this.readCurrent(key) : (key: string) => this.read(key);
     for (const [key, value] of event.writes) {
       validateWrite(key, value);
       if (IMMUTABLE_KINDS.has(key.split(':')[2])) {
-        const prior = this.readCurrent(key);
+        const prior = priorOf(key);
         if (prior !== undefined && canonicalize(prior) !== canonicalize(value)) throw new Error('Immutable ledger write-set was overwritten; projection halted');
       }
       const encoded = JSON.stringify(value);
       this.statements.upsertProjection.run(key, encoded);
       this.statements.insertHistory.run(key, event.checkpoint.block_number, encoded);
     }
-    for (const [key, value] of event.writes) validateStateLinks(key, value, referenced => this.readCurrent(referenced));
+    for (const [key, value] of event.writes) validateStateLinks(key, value, priorOf);
     this.statements.upsertCursor.run(event.checkpoint.block_number);
   }
 }
