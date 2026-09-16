@@ -9,13 +9,15 @@ import { runResilienceSmoke } from '../../tools/resilience-smoke.ts';
 test('performance smoke reports measured local workload and functional assertions', async () => {
   const root = mkdtempSync(join(tmpdir(), 'kcl-performance-test-'));
   try {
-    const result = await runPerformanceSmoke({ dataDir: join(root, 'runtime'), documents: 3, samples: 2, bodyBytes: 128 });
+    const result = await runPerformanceSmoke({ dataDir: join(root, 'runtime'), documents: 51, samples: 2, bodyBytes: 128 });
     assert.equal(result.mode, 'local-simulation');
-    assert.equal(result.dataset.documents_requested, 3);
+    assert.equal(result.dataset.documents_requested, 51);
+    assert.equal(result.dataset.read_workload, 'all_pages_summary');
     assert.equal(result.dataset.body_bytes, 128);
     assert.equal(result.assessment.fabric_sla_proven, false);
-    assert.equal(result.functional_assertions.documents_generated, 3);
-    assert.equal(result.functional_assertions.search_matches, 3);
+    assert.equal(result.functional_assertions.documents_generated, 51);
+    assert.equal(result.functional_assertions.search_matches, 51);
+    assert.equal(result.functional_assertions.replay_documents_retrieved, 51);
     assert.ok(result.metrics.publish.p95_ms >= result.metrics.publish.p50_ms);
     assert.ok(result.metrics.replay_restart_ms >= 0);
   } finally {

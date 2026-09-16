@@ -54,4 +54,5 @@ jobs:
       - run: node packages/browser-tests/node_modules/playwright/cli.js install --with-deps chromium
       - run: npm run test:browser
       - run: npm run test:performance -- --documents 25 --samples 3
+      - run: npm run test:history-performance
       - run: npm run test:resilience

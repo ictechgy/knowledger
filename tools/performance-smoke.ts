@@ -29,7 +29,7 @@ export interface PerformanceSmokeResult {
   schema_version: 1;
   mode: 'local-simulation';
   environment: { node: string; platform: string; arch: string; cpu_count: number };
-  dataset: { documents_requested: number; body_bytes: number; samples: number; marker: string };
+  dataset: { documents_requested: number; body_bytes: number; samples: number; marker: string; read_workload: 'all_pages_summary' };
   metrics: {
     publish: LatencyMetric;
     search: LatencyMetric;
@@ -93,6 +93,17 @@ function validateOptions(options: PerformanceSmokeOptions): Required<Performance
   };
 }
 
+/** Measure the complete paginated traversal, including every returned summary. */
+async function browseAll(service: KclService, searching = false): Promise<any[]> {
+  const rows: any[] = []; let cursor: string | undefined;
+  do {
+    const page = searching ? await service.search(actor, { query: marker, limit: 50, cursor }) : await service.overview(actor, { limit: 50, cursor });
+    rows.push(...('results' in page ? page.results : page.documents));
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return rows;
+}
+
 export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promise<PerformanceSmokeResult> {
   const options = validateOptions(input);
   if (existsSync(options.dataDir)) {
@@ -126,18 +137,18 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       publishTimes.push(performance.now() - started);
     }
 
-    let overview = await service.overview(actor);
-    const generated = overview.documents.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
+    let overview = await browseAll(service);
+    const generated = overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
     if (generated.length !== options.documents) throw new Error('generated document count mismatch');
     for (let sample = 0; sample < options.samples; sample += 1) {
       let started = performance.now();
-      const search = await service.search(actor, { query: marker });
+      const search = await browseAll(service, true);
       searchTimes.push(performance.now() - started);
-      if (search.results.length !== options.documents) throw new Error('search result count mismatch');
+      if (search.length !== options.documents) throw new Error('search result count mismatch');
       started = performance.now();
-      overview = await service.overview(actor);
+      overview = await browseAll(service);
       overviewTimes.push(performance.now() - started);
-      if (overview.documents.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length !== options.documents) throw new Error('overview result count mismatch');
+      if (overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length !== options.documents) throw new Error('overview result count mismatch');
     }
 
     const databaseBytesBeforeReplay = directoryBytes(options.dataDir);
@@ -149,22 +160,22 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     service = new KclService(ledger, vault, definition);
     await service.initialize();
     const replayRestartMs = performance.now() - replayStarted;
-    const replayOverview = await service.overview(actor);
-    const replaySearch = await service.search(actor, { query: marker });
-    const replayDocuments = replayOverview.documents.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length;
-    if (replayDocuments !== options.documents || replaySearch.results.length !== options.documents) throw new Error('replay result count mismatch');
+    const replayOverview = await browseAll(service);
+    const replaySearch = await browseAll(service, true);
+    const replayDocuments = replayOverview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length;
+    if (replayDocuments !== options.documents || replaySearch.length !== options.documents) throw new Error('replay result count mismatch');
     return {
       schema_version: 1,
       mode: 'local-simulation',
       environment: { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length },
-      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, marker },
+      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, marker, read_workload: 'all_pages_summary' },
       metrics: { publish: latency(publishTimes), search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
         documents_generated: generated.length,
-        documents_retrieved: overview.documents.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length,
+        documents_retrieved: overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length,
         search_matches: options.documents,
         replay_documents_retrieved: replayDocuments,
-        replay_search_matches: replaySearch.results.length,
+        replay_search_matches: replaySearch.length,
       },
       assessment: { functional_pass: true, performance: 'measurement_only', fabric_sla_proven: false },
     };

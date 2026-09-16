@@ -37,6 +37,7 @@
 | `GET /commands/{command_id}` | ledger submit/commit 상태와 안전한 오류 |
 | `GET /documents/{document_id}` | 허용된 context/scope별 개정·합의 view |
 | `GET /revisions/{revision_digest}` | 인가된 본문 snapshot + digest |
+| `GET /revisions/{revision_digest}/view`, `/history` | 선택한 원문·상태 / 같은 슬롯의 개정 요약 페이지 |
 | `GET /agreements/{agreement_id}` | 상태·policy·결정·dependencies·effective eligibility |
 | `GET /events?cursor=...` | 허용된 channel의 변경 feed; opaque cursor |
 | `POST /search` | browse 후보 + projection checkpoint; 규범적 사용권 증명 아님 |
@@ -44,6 +45,10 @@
 | `POST /runs/{run_id}/revalidate` | 현재 SSO·application entitlement·channel 정합성·private source 권한/상태·모델 egress·tool 권한 + 새 fence와 manifest 비교 |
 
 Private vault endpoint는 조직별 origin과 권한 범위에서 제공한다. common API가 private source URI를 임의로 fetch하지 않는다. private source 연결은 allowlisted adapter만 사용하고 SSRF 방지·egress 권한을 적용한다.
+
+현재 browse API는 기본20/최대50 요약과 actor·조회 조건·snapshot에 결속된 cursor를 사용한다.
+본문과 누적 이력은 목록마다 반복하지 않는다. 상세 응답 필드와 개발 알파 호출자 변경 사항은
+[실행 API의 조회 페이지 계약](11-RUNTIME.md#조회-페이지와-원문)에 있다. 규범적 사용 판정의 fence 계약은 유지한다.
 
 ## 오류
 

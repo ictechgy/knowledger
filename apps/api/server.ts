@@ -17,6 +17,7 @@ import { ensureConfigurationScope, readConfigurationScope } from '../../packages
 import type { ConfiguredRuntimeBinding } from '../../packages/storage/configuration-scope.ts';
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
+import { ReadinessMonitor } from './readiness.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
 type RequestSession = Session | AuthenticatedSession;
@@ -26,6 +27,19 @@ const equal = (a: string, b: string) => a.length > 0 && a.length === b.length &&
 
 function decodeResourceId(value:string):string {
   try{return decodeURIComponent(value);}catch{throw new ApiError('INVALID_INPUT','올바른 경로 식별자가 필요합니다.');}
+}
+
+function pageQuery(url: URL, allowed: string[] = ['limit', 'cursor']): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const [key, value] of url.searchParams) {
+    if (!allowed.includes(key) || Object.hasOwn(result, key)) throw new ApiError('INVALID_QUERY', '허용되지 않은 목록 조건입니다.');
+    if (key.endsWith('limit')) {
+      const number = /^[1-9][0-9]*$/.test(value) ? Number(value) : NaN;
+      if (!Number.isSafeInteger(number) || number > 50) throw new ApiError('INVALID_QUERY', '목록 크기는 1부터 50까지여야 합니다.');
+      result[key] = number;
+    } else result[key] = value;
+  }
+  return result;
 }
 
 export interface AppOptions {
@@ -70,6 +84,7 @@ export async function createApp(options: AppOptions) {
   }
   const sessions = new Map<string, Session>();
   const rateLimits = new Map<string, { minute: number; count: number; touched: number }>();
+  const readiness = new ReadinessMonitor(() => service.refresh());
 
   function json(res: ServerResponse, status: number, value: any) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -169,10 +184,11 @@ export async function createApp(options: AppOptions) {
         res.end(contents); return;
       }
       if (req.method === 'GET' && path === '/healthz') {
-        let healthy = true;
-        let checkpoint: ReturnType<ApplicationLedger['checkpoint']> = null;
-        try { await service.refresh(); checkpoint = ledger.checkpoint(); } catch { healthy = false; }
-        json(res, healthy ? 200 : 503, { status: healthy ? 'ok' : 'unavailable', healthy, mode: ledger.mode, channel_id: ledger.channelId, checkpoint, state: healthy ? 'ready' : 'peer-unavailable' }); return;
+        json(res, 200, { status: 'ok', healthy: true, state: 'live' }); return;
+      }
+      if (req.method === 'GET' && path === '/readyz') {
+        const sample = readiness.read();
+        json(res, sample.healthy ? 200 : 503, sample); return;
       }
       if (req.method === 'GET' && path === '/api/session') {
         if (authentication) {
@@ -249,6 +265,16 @@ export async function createApp(options: AppOptions) {
         }
         const sourceMatch=/^\/sources\/([^/]+)$/.exec(resourcePath);
         if(sourceMatch){json(res,200,await run(()=>service.getSource(actor,decodeResourceId(sourceMatch[1]))));return;}
+        const proposalMatch = /^\/agreement-proposals\/([^/]+)$/.exec(resourcePath);
+        if (proposalMatch) { json(res, 200, await run(() => service.getProposal(actor, decodeResourceId(proposalMatch[1])))); return; }
+        const revisionBrowse = /^\/revisions\/([^/]+)\/(view|history)$/.exec(resourcePath);
+        if (revisionBrowse) {
+          const digest = decodeResourceId(revisionBrowse[1]);
+          const view = revisionBrowse[2] === 'view';
+          const input = pageQuery(url, view ? ['proposal_limit', 'proposal_cursor'] : ['limit', 'cursor']);
+          const result = view ? await run(() => service.revisionView(actor, digest, input)) : await run(() => service.revisionHistory(actor, digest, input));
+          json(res, 200, result); return;
+        }
         const revisionMatch=/^\/revisions\/([^/]+)$/.exec(resourcePath);
         if(revisionMatch){let digest;try{digest=decodeURIComponent(revisionMatch[1]);}catch{throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');}json(res,200,await run(()=>service.getRevision(actor,digest)));return;}
         if (path === `${workspaceRoot}/commands`) {
@@ -277,18 +303,17 @@ export async function createApp(options: AppOptions) {
         }
         const draftDetail = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})$/.exec(resourcePath);
         if (draftDetail) { json(res, 200, await run(() => service.getDraft(actor, draftDetail[1]))); return; }
-        if (path === `${workspaceRoot}/overview`) { json(res, 200, await run(() => service.overview(actor))); return; }
+        if (path === `${workspaceRoot}/overview`) { const input = pageQuery(url, ['limit', 'cursor', 'proposal_limit', 'proposal_cursor']); json(res, 200, await run(() => service.overview(actor, input))); return; }
         if (path === `${workspaceRoot}/events`) {
           const cursor = Number(url.searchParams.get('cursor') ?? 0);
           if (!Number.isSafeInteger(cursor) || cursor < 0) throw new ApiError('INVALID_CURSOR', '올바른 커서가 필요합니다.');
           json(res, 200, await run(async () => { await service.refresh(); service.actor(actor); return { events: ledger.events(cursor), checkpoint: ledger.checkpoint() }; })); return;
         }
-        const match = /^\/(documents|agreements)\/([A-Za-z0-9._:-]+)$/.exec(resourcePath);
+        const match = /^\/(documents|agreements)\/([^/]+)$/.exec(resourcePath);
         if (match) {
-          const found = await run(async () => {
-            const overview = await service.overview(actor);
-            return match![1] === 'documents' ? overview.documents.filter(item => item.payload.document_id === match![2]) : service.values('agreement').find(item => item.agreement_id === match![2]);
-          });
+          const id = decodeResourceId(match[2]);
+          if (match[1] === 'documents') { const input = pageQuery(url); json(res, 200, await run(() => service.documentRevisions(actor, id, input))); return; }
+          const found = await run(() => service.getAgreement(actor, id));
           if (!found || (Array.isArray(found) && !found.length)) throw new ApiError('NOT_FOUND', '대상을 찾을 수 없거나 접근할 수 없습니다.', 404);
           json(res, 200, found); return;
         }
@@ -316,6 +341,7 @@ export async function createApp(options: AppOptions) {
       });
     },
     async close() {
+      readiness.close();
       if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } }
     },

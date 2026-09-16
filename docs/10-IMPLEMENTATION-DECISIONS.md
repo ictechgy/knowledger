@@ -132,3 +132,28 @@ Node CLI는 같은 source API를 사용한다. 파일 경로·해시·원본 연
 모델 callback은 명시적인 generate/release 권한 검사와 fresh revalidation 사이에서 초안만 만든다.
 결과 반환 직전 철회·권한 변경·실패가 발견되면 output을 내보내지 않는다. 이미 모델에 보낸 본문 회수,
 callback의 외부 부작용 원자적 취소, 독립 Fabric quorum 검증을 보증하는 라이브러리는 아니다.
+
+### 리뷰 후 조회·대기 경계 — 2026-09-16
+
+같은 슬롯의 모든 개정에 전체 이력을 반복하던 browse 응답을 기본20/최대50 요약 페이지와
+선택한 정확한 개정의 원문/이력으로 분리했다. 개발 알파의 목록 호출 계약 변경이며,
+SDK 원문 조회와 resolver/fence/재검증 계약은 유지한다. 페이지 cursor는 actor·조건·원장 snapshot에
+HMAC으로 결속하고 프로세스 재시작 때 무효화한다. 과거 페이지는 최신 사용 권한의 증거가 아니다.
+
+비공개 import/edit/source CAS는 fresh 인가 뒤 동기 SQLite 구간에서 끝내며, 외부 원장 제출 대기와
+service 큐를 공유하지 않는다. 공개 명령은 안정적인 command ID/시각 생성을 위해 순서를 유지하고32개로
+진입을 제한한다. Fabric은 projection 적용 순서를 유지하면서 transport 대기 중 refresh를 허용한다.
+동시 refresh를 합치되 제출 완료 후에는 이전 세대의 refresh를 사용하지 않는다.
+
+`/healthz`는 원장 통신 없는 생존 확인이다. `/readyz`만 단일 비동기 probe,1초 간격,5초 최대 샘플 나이를
+사용한다. 운영 probe의 완만한 관측과 지식 사용 직전 strict freshness를 분리한 것이며,
+준비 상태 캐시가 합의나 VALID commit의 근거를 대신하지 않는다.
+
+Fabric projection은 raw journal을 한 블록씩 재생하고 현재 상태만 유지한다. 과거 상태와 검증된 블록 결과는
+각각8개 LRU로 제한한다. 최초 VALID 쓰기의 checkpoint·값/거래/raw digest는 현재 key당 하나씩 독립 anchor로
+보관한다. SQL 인덱스는 위치 탐색과 파생 view이며 자체 권위가 아니다. 캐시 미스 재생은 현재 상태뿐 아니라
+검증 당시 원시 journal의 누적 digest와도 대조해, 나중에 덮어쓴 값의 과거 VALID 메타데이터 변조를 거부한다.
+
+이 변경은 이력을 삭제하거나 무결성 검사를 health로 옮기지 않는다. 모든 durable raw/history 행을 유지하고
+재시작 시 파생 creation 인덱스를 재구축한다. 현재 상태 O(keys), 최대8개 과거 상태 복사본, cold replay 비용은
+명시적인 확장 한계다. 새로운 블록 합의 알고리즘이나 외부 quorum proof를 추가한 것은 아니다.

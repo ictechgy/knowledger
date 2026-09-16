@@ -56,7 +56,7 @@ async function startOrganization(organization: DevelopmentOrganization, restored
     for (let attempt = 0; attempt < 80; attempt++) {
       if (failed || child.exitCode !== null) throw new Error('Organization application exited during startup');
       if (ready) {
-        const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(6000) });
+        const response = await fetch(`${origin}/readyz`, { signal: AbortSignal.timeout(6000) });
         if (response.status === 200 && (await response.json()).healthy === true) return { organization, dataDir, origin, issuerOrigin, process: child, csrf: '' };
       }
       await delay(250);

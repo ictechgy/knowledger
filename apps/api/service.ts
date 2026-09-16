@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
@@ -16,6 +16,13 @@ const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
 const newId = (prefix: string) => `${prefix}-${randomUUID()}`;
 const stableId = (prefix: string, actor: Actor, commandId: string) => `${prefix}-${createHash('sha256').update(`${actor.org_id}:${actor.actor_id}:${commandId}`).digest('hex').slice(0,32)}`;
 const sameSlot = (a: any, b: any) => ['channel_id', 'document_id', 'context_id', 'scope_id', 'usage_scope'].every(field => a[field] === b[field]);
+const slotKey = (payload: any) => JSON.stringify(slotFields(payload));
+interface PageInput { limit?: number; cursor?: string }
+interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string }
+interface OverviewInput extends PageInput { proposal_limit?: number; proposal_cursor?: string }
+const comparePublished = (a: any, b: any) => b.published_checkpoint.block_number - a.published_checkpoint.block_number
+  || b.published_checkpoint.transaction_index - a.published_checkpoint.transaction_index
+  || a.revision_digest.localeCompare(b.revision_digest);
 
 export class ApiError extends Error {
   code: string; status: number; retryable: boolean;
@@ -31,7 +38,7 @@ function identifier(value: unknown): string {
   return value;
 }
 
-/** API orchestration for the explicitly labelled local simulation. */
+/** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KclService {
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
@@ -39,6 +46,8 @@ export class KclService {
   readonly definition: ApplicationDefinition;
   private bootId = randomUUID();
   private commandQueue: Promise<unknown> = Promise.resolve();
+  private queuedCommands = 0;
+  private readonly cursorKey = randomBytes(32);
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas) {
     this.definition = definition;
@@ -63,12 +72,12 @@ export class KclService {
     if (!config.serving_enabled) throw new ApiError('SERVING_FROZEN', '현재 공유 지식 제공이 중지되어 있습니다.', 503, true);
   }
   private revision(digest: string, at?: Checkpoint) {
-    const value = this.values('revision', at).find(item => item.revision_digest === digest);
+    const value = this.ledger.read(domain.keyFor.revision(digest), at);
     if (!value) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
     return value;
   }
   private proposal(id: string) {
-    const value = this.values('proposal').find(item => item.proposal_id === id);
+    const value = this.ledger.read(domain.keyFor.proposal(id));
     if (!value) throw new ApiError('NOT_FOUND', '제안을 찾을 수 없거나 접근할 수 없습니다.', 404);
     return value;
   }
@@ -172,33 +181,150 @@ export class KclService {
     return metadata;
   }
 
-  async overview(actor: Actor) {
-    await this.refresh();
-    this.actor(actor);
-    const checkpoint = this.ledger.checkpoint()!;
-    const revisions = this.values('revision', checkpoint);
-    const agreements = this.values('agreement', checkpoint);
-    const documents = await Promise.all(revisions.map(async revision => {
-      const eligibility = await domain.resolveAt(async key => this.ledger.read(key, checkpoint), slotFields(revision.payload));
-      const agreement = eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement : agreements.filter(item => item.revision_digest === revision.revision_digest).sort((a, b) => a.activated_at.localeCompare(b.activated_at) || a.agreement_id.localeCompare(b.agreement_id)).at(-1);
-      return { ...revision, published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)), agreement, eligible: eligibility.eligible && eligibility.revision?.revision_digest === revision.revision_digest, reason: eligibility.reason,
-        history: revisions.filter(item => sameSlot(item.payload, revision.payload)).map(item => ({ revision_digest: item.revision_digest, title: item.payload.title, created_at: item.payload.metadata.created_at, checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(item.revision_digest)) })) };
-    }));
-    const decisions = this.values('decision', checkpoint);
+  private page(actor: Actor, kind: string, input: PageInput = {}, filter: unknown = null, at?: Checkpoint): PageContext {
+    const limit = input.limit === undefined ? 20 : input.limit;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new ApiError('INVALID_QUERY', '목록 크기는 1부터 50까지여야 합니다.');
+    const binding = createHash('sha256').update(domain.canonicalize([actor.org_id, actor.actor_id, actor.kind, kind, filter])).digest('hex');
+    let checkpoint = at ?? this.ledger.checkpoint()!;
+    let offset = 0;
+    if (input.cursor !== undefined) {
+      try {
+        if (typeof input.cursor !== 'string' || input.cursor.length > 2048 || !/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(input.cursor)) throw new Error('format');
+        const [encoded, signature] = input.cursor.split('.');
+        const expected = createHmac('sha256', this.cursorKey).update(encoded).digest();
+        if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) throw new Error('signature');
+        const cursor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+        if (cursor.version !== 1 || cursor.binding !== binding || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new Error('binding');
+        this.ledger.assertCheckpoint(cursor.checkpoint);
+        if (at && domain.canonicalize(cursor.checkpoint) !== domain.canonicalize(at)) throw new Error('snapshot');
+        checkpoint = cursor.checkpoint; offset = cursor.offset;
+      } catch { throw new ApiError('INVALID_CURSOR', '목록 조건이나 계정이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.'); }
+    }
+    return { limit, offset, checkpoint, binding };
+  }
+
+  private nextCursor(page: PageContext, total: number): string | null {
+    const offset = page.offset + page.limit;
+    if (offset >= total) return null;
+    const encoded = Buffer.from(JSON.stringify({ version: 1, binding: page.binding, checkpoint: page.checkpoint, offset })).toString('base64url');
+    return `${encoded}.${createHmac('sha256', this.cursorKey).update(encoded).digest('hex')}`;
+  }
+
+  private browseState(at: Checkpoint) {
+    const revisions = this.values('revision', at).map(revision => ({ ...revision,
+      published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)) }));
+    const agreements = this.values('agreement', at);
+    const byRevision = new Map<string, any>();
+    for (const agreement of agreements) {
+      const previous = byRevision.get(agreement.revision_digest);
+      if (!previous || agreement.activated_at > previous.activated_at || (agreement.activated_at === previous.activated_at && agreement.agreement_id > previous.agreement_id)) byRevision.set(agreement.revision_digest, agreement);
+    }
+    const proposals = this.values('proposal', at);
+    return { revisions, byRevision, proposals, proposed: new Set(proposals.map(proposal => proposal.revision_digest)),
+      eligibility: new Map<string, ReturnType<typeof domain.resolveAt>>() };
+  }
+
+  private async describeRevision(revision: any, at: Checkpoint, state: ReturnType<KclService['browseState']>, full = false) {
+    const key = slotKey(revision.payload);
+    let pending = state.eligibility.get(key);
+    if (!pending) { pending = domain.resolveAt(async stateKey => this.ledger.read(stateKey, at), slotFields(revision.payload)); state.eligibility.set(key, pending); }
+    const eligibility = await pending;
+    const { body_markdown, ...summary } = revision.payload;
+    return { view: full ? 'full' : 'summary', revision_digest: revision.revision_digest, payload: full ? revision.payload : summary,
+      published_checkpoint: revision.published_checkpoint,
+      agreement: eligibility.agreement?.revision_digest === revision.revision_digest ? eligibility.agreement : state.byRevision.get(revision.revision_digest),
+      active_agreement: eligibility.agreement?.status === 'active' ? eligibility.agreement : null,
+      eligible: eligibility.eligible && eligibility.revision?.revision_digest === revision.revision_digest,
+      reason: eligibility.reason, proposed: state.proposed.has(revision.revision_digest) };
+  }
+
+  private describeProposal(proposal: any, checkpoint: Checkpoint, revision: any) {
     const config = this.config(checkpoint);
-    const proposals = this.values('proposal', checkpoint).map(proposal => {
-      const representatives = config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
-      return { ...proposal, agreement: agreements.find(item => item.agreement_id === proposal.agreement_id),
-        decision_history: decisions.filter(decision => decision.proposal_id === proposal.proposal_id),
-        decisions: representatives.map((rep: any) => {
-          const pointer = this.ledger.read(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id), checkpoint);
-          return pointer ? this.ledger.read(domain.keyFor.decision(pointer.decision_id), checkpoint) : undefined;
-        }).filter(Boolean),
-        required_representatives: representatives,
-      };
-    });
+    const representatives = config.policies.find((policy: any) => policy.policy_id === proposal.policy_id && policy.policy_version === proposal.policy_version).role_representatives;
+    const { body_markdown, ...payload } = revision.payload;
+    return { ...proposal, agreement: proposal.agreement_id ? this.ledger.read(domain.keyFor.agreement(proposal.agreement_id), checkpoint) : undefined,
+      revision_summary: { view: 'summary', revision_digest: revision.revision_digest, payload, published_checkpoint: revision.published_checkpoint },
+      decisions: representatives.map((rep: any) => {
+        const pointer = this.ledger.read(domain.keyFor.latestDecision(proposal.proposal_id, proposal.policy_version, rep.domain_role, rep.actor_org_id, rep.actor_id), checkpoint);
+        return pointer ? this.ledger.read(domain.keyFor.decision(pointer.decision_id), checkpoint) : undefined;
+      }).filter(Boolean), required_representatives: representatives };
+  }
+
+  private proposalPage(page: PageContext, state: ReturnType<KclService['browseState']>, digest?: string) {
+    const all = state.proposals.filter(proposal => !digest || proposal.revision_digest === digest).sort((a, b) => b.created_at.localeCompare(a.created_at) || a.proposal_id.localeCompare(b.proposal_id));
+    const revisions = new Map(state.revisions.map(revision => [revision.revision_digest, revision]));
+    const proposals = all.slice(page.offset, page.offset + page.limit).map(proposal => this.describeProposal(proposal, page.checkpoint, revisions.get(proposal.revision_digest)));
+    return { proposals, proposals_total: all.length, proposals_next_cursor: this.nextCursor(page, all.length) };
+  }
+
+  async getProposal(actor: Actor, id: string) {
+    identifier(id); await this.refresh(); this.actor(actor);
+    const checkpoint = this.ledger.checkpoint()!;
+    const proposal = this.ledger.read(domain.keyFor.proposal(id), checkpoint);
+    if (!proposal) throw new ApiError('NOT_FOUND', '제안을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    const revision = this.revision(proposal.revision_digest, checkpoint);
+    return { ...this.describeProposal(proposal, checkpoint, { ...revision,
+      published_checkpoint: this.ledger.checkpointForStateCreation(domain.keyFor.revision(revision.revision_digest)) }), checkpoint };
+  }
+
+  async overview(actor: Actor, input: OverviewInput = {}) {
+    onlyFields(input, ['limit', 'cursor', 'proposal_limit', 'proposal_cursor']);
+    await this.refresh(); this.actor(actor);
+    let page = this.page(actor, 'overview', input);
+    const proposalPage = this.page(actor, 'proposals', { limit: input.proposal_limit, cursor: input.proposal_cursor }, null, input.cursor ? page.checkpoint : undefined);
+    if (!input.cursor && input.proposal_cursor) page = this.page(actor, 'overview', input, null, proposalPage.checkpoint);
+    const checkpoint = page.checkpoint;
+    const state = this.browseState(checkpoint);
+    const latest = new Map<string, any>();
+    for (const revision of state.revisions) {
+      const key = slotKey(revision.payload); const previous = latest.get(key);
+      if (!previous || comparePublished(revision, previous) < 0) latest.set(key, revision);
+    }
+    const all = [...latest.values()].sort(comparePublished);
+    const documents = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, checkpoint, state)));
+    const config = this.config(checkpoint);
     this.actor(actor);
-    return { workspace: this.definition.workspace, organizations: this.definition.organizations, demo: this.definition.demo, mode: this.ledger.mode, channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch }, actor, documents, proposals, policies: config.policies, checkpoint };
+    return { view: 'summary', workspace: this.definition.workspace, organizations: this.definition.organizations, demo: this.definition.demo, mode: this.ledger.mode,
+      channel: { channel_id: config.channel_id, org_ids: [...new Set(config.identities.map((item: any) => item.org_id))], config_version: config.config_version, membership_epoch: config.membership_epoch },
+      actor, documents, documents_total: all.length, next_cursor: this.nextCursor(page, all.length),
+      ...this.proposalPage({ ...proposalPage, checkpoint }, state), policies: config.policies, checkpoint };
+  }
+
+  async revisionView(actor: Actor, digest: string, input: { proposal_limit?: number; proposal_cursor?: string } = {}) {
+    onlyFields(input, ['proposal_limit', 'proposal_cursor']);
+    await this.refresh(); this.actor(actor);
+    const page = this.page(actor, 'revision-proposals', { limit: input.proposal_limit, cursor: input.proposal_cursor }, digest);
+    const state = this.browseState(page.checkpoint);
+    const revision = state.revisions.find(revision => revision.revision_digest === digest);
+    if (!revision) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    const view = await this.describeRevision(revision, page.checkpoint, state, true);
+    this.actor(actor);
+    return { ...view, ...this.proposalPage(page, state, digest), checkpoint: page.checkpoint };
+  }
+
+  async revisionHistory(actor: Actor, digest: string, input: PageInput = {}) {
+    onlyFields(input, ['limit', 'cursor']);
+    await this.refresh(); this.actor(actor);
+    const page = this.page(actor, 'revision-history', input, digest);
+    const state = this.browseState(page.checkpoint);
+    const revision = state.revisions.find(revision => revision.revision_digest === digest);
+    if (!revision) throw new ApiError('NOT_FOUND', '개정본을 찾을 수 없거나 접근할 수 없습니다.', 404);
+    const all = state.revisions.filter(item => sameSlot(item.payload, revision.payload)).sort(comparePublished);
+    const revisions = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(item => this.describeRevision(item, page.checkpoint, state)));
+    this.actor(actor);
+    return { revisions, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
+  }
+
+  async documentRevisions(actor: Actor, id: string, input: PageInput = {}) {
+    identifier(id); onlyFields(input, ['limit', 'cursor']);
+    await this.refresh(); this.actor(actor);
+    const page = this.page(actor, 'document-revisions', input, id);
+    const state = this.browseState(page.checkpoint);
+    const all = state.revisions.filter(revision => revision.payload.document_id === id).sort(comparePublished);
+    if (!all.length) throw new ApiError('NOT_FOUND', '문서를 찾을 수 없거나 접근할 수 없습니다.', 404);
+    const revisions = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, page.checkpoint, state)));
+    this.actor(actor);
+    return { revisions, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
   }
 
   async draft(actor: Actor, input: any) {
@@ -240,9 +366,7 @@ export class KclService {
     identifier(input.edit_id);
     if (typeof input.title !== 'string' || typeof input.body_markdown !== 'string') throw new ApiError('INVALID_INPUT', '초안 제목과 본문이 필요합니다.');
     if (input.source_kind !== undefined && !['human_authored', 'approved_import', 'llm_drafted'].includes(input.source_kind)) throw new ApiError('INVALID_INPUT', '올바른 초안 source_kind가 필요합니다.');
-    const run = this.commandQueue.then(async () => {
-      await this.refresh();
-      this.actor(actor);
+    return this.privateWrite(actor, () => {
       const source = this.readPrivateDraft(actor, draftId);
       const base = source.revision;
       const requestDigest = createHash('sha256').update(domain.canonicalize({ route: 'draft-edit', source_draft_id: draftId, input })).digest('hex');
@@ -262,17 +386,13 @@ export class KclService {
       this.vault.put('draft', newDraftId, actor, { revision, source_draft_id: draftId, request_digest: requestDigest });
       return { draft_id: newDraftId, revision, source_draft_id: draftId };
     });
-    this.commandQueue = run.catch(() => undefined);
-    return run;
   }
 
   async importMarkdown(actor: Actor, input: any) {
     onlyFields(input, ['import_id', 'filename', 'content_base64', 'title', 'context_id', 'scope_id', 'usage_scope', 'document_id', 'base_revision_digest']);
     identifier(input.import_id);
     if (input.base_revision_digest !== undefined && (typeof input.base_revision_digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(input.base_revision_digest))) throw new ApiError('INVALID_INPUT', '올바른 기존 개정 digest가 필요합니다.');
-    const run = this.commandQueue.then(async () => {
-      await this.refresh();
-      this.actor(actor);
+    return this.privateWrite(actor, () => {
       const requestDigest = createHash('sha256').update(domain.canonicalize({ route: 'markdown-import', input })).digest('hex');
       const draftId = `draft-import-${createHash('sha256').update(`${actor.org_id}:${actor.actor_id}:${actor.kind}:${input.import_id}`).digest('hex').slice(0, 48)}`;
       const existing = this.vault.get('draft', draftId, actor);
@@ -292,8 +412,6 @@ export class KclService {
       this.vault.put('draft', draftId, actor, { revision, import: metadata, request_digest: requestDigest });
       return { draft_id: draftId, revision, import: metadata };
     });
-    this.commandQueue = run.catch(() => undefined);
-    return run;
   }
 
   async validateSourceManifest(actor:Actor,input:any) {
@@ -311,13 +429,16 @@ export class KclService {
     await this.refresh();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
     if(!source)throw new SourceStoreError('NOT_FOUND',404);return source;
   }
-  private sourceWrite<T>(actor:Actor,operation:()=>T):Promise<T> {
-    const run=this.commandQueue.then(async()=>{await this.refresh();this.actor(actor);return operation();});
-    this.commandQueue=run.catch(()=>undefined);return run;
+  private async privateWrite<T>(actor: Actor, operation: () => T): Promise<T> {
+    await this.refresh();
+    this.actor(actor);
+    // No await inside operation: validation, CAS, and private writes finish atomically
+    // with respect to other JS tasks, without waiting for public transport submission.
+    return operation();
   }
   importSourceMarkdown(actor:Actor,id:string,input:any) {
     onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64']);
-    return this.sourceWrite(actor,()=>{
+    return this.privateWrite(actor,()=>{
       const mapping=sourceMapping({path:input.path,policy_id:input.policy_id,policy_version:input.policy_version,title:input.title});
       const policy=this.policy(mapping.policy_id,mapping.policy_version);
       return new SourceStore(this.vault).importMarkdown(actor,id,input,(_mapping,content)=>{
@@ -331,7 +452,7 @@ export class KclService {
   }
   reconcileSource(actor:Actor,id:string,input:any) {
     onlyFields(input,['operation_id','expected_version','present_paths']);
-    return this.sourceWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input));
+    return this.privateWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input));
   }
   async getRevision(actor:Actor,digest:string) {
     if(!/^sha256:[a-f0-9]{64}$/.test(digest))throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');
@@ -339,6 +460,13 @@ export class KclService {
     const revision=this.ledger.read(domain.keyFor.revision(digest));
     if(!revision)throw new ApiError('NOT_FOUND','개정본을 찾을 수 없거나 접근할 수 없습니다.',404);
     return domain.validateRevision(revision);
+  }
+
+  async getAgreement(actor: Actor, id: string) {
+    identifier(id); await this.refresh(); this.actor(actor);
+    const agreement = this.ledger.read(domain.keyFor.agreement(id));
+    if (!agreement) throw new ApiError('NOT_FOUND', '합의를 찾을 수 없거나 접근할 수 없습니다.', 404);
+    return agreement;
   }
 
   async preview(actor: Actor, input: any) {
@@ -357,10 +485,18 @@ export class KclService {
     return preview;
   }
 
+  private serializeCommand<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.queuedCommands >= 32) return Promise.reject(new ApiError('COMMAND_QUEUE_FULL', '원장 요청이 많습니다. 잠시 후 같은 요청으로 다시 시도하세요.', 503, true));
+    this.queuedCommands++;
+    const run = this.commandQueue.then(operation).finally(() => { this.queuedCommands--; });
+    this.commandQueue = run.catch(() => undefined);
+    return run;
+  }
+
   /** Persist the exact generated command before execution so HTTP retries bind identical timestamps/IDs. */
   private command(actor: Actor, route: string, input: any, build: () => any): Promise<any> {
     identifier(input.command_id);
-    const run = this.commandQueue.then(async () => {
+    return this.serializeCommand(async () => {
       await this.refresh();
       this.actor(actor);
       const digest = createHash('sha256').update(domain.canonicalize({ route, input })).digest('hex');
@@ -373,8 +509,6 @@ export class KclService {
       return this.executeStoredCommand(actor, stored);
 
     });
-    this.commandQueue = run.catch(() => undefined);
-    return run;
   }
 
   private storedCommand(actor: Actor, id: string, supplied?: any): any {
@@ -421,8 +555,11 @@ export class KclService {
     } catch (error:any) {
       // Only definitive preflight/authorization/conflict errors become rejection hints.
       // A verified ledger receipt or outstanding transport attempt always takes precedence.
-      if (Number.isInteger(error?.status) && error.status>=400 && error.status<500 && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)) {
+      if (!error?.retryable && Number.isInteger(error?.status) && error.status>=400 && error.status<500 && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)) {
         stored.tracking={created_at:stored.tracking?.created_at ?? new Date().toISOString(),status:'rejected',code:error.code};
+        this.vault.updateCommand(id,actor,stored);
+      } else if (stored.tracking?.status === 'rejected') {
+        stored.tracking={created_at:stored.tracking.created_at,status:'pending'};
         this.vault.updateCommand(id,actor,stored);
       }
       throw error;
@@ -463,11 +600,10 @@ export class KclService {
 
   retryCommand(actor: Actor,id:string,input:any) {
     identifier(id);onlyFields(input,[]);
-    const operation=this.commandQueue.then(async()=>{
+    return this.serializeCommand(async()=>{
       await this.refresh();this.actor(actor);
       return this.executeStoredCommand(actor,this.storedCommand(actor,id));
     });
-    this.commandQueue=operation.catch(()=>undefined);return operation;
   }
 
   async publish(actor: Actor, input: any) {
@@ -503,12 +639,19 @@ export class KclService {
   }
 
   async search(actor: Actor, input: any) {
-    await this.refresh();
-    onlyFields(input, ['query', 'context_id', 'scope_id', 'usage_scope']);
+    onlyFields(input, ['query', 'context_id', 'scope_id', 'usage_scope', 'limit', 'cursor']);
     if (typeof input.query !== 'string' || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하여야 합니다.');
-    const overview = await this.overview(actor);
+    for (const field of ['context_id', 'scope_id', 'usage_scope']) if (input[field] !== undefined && (typeof input[field] !== 'string' || input[field].length > 100)) throw new ApiError('INVALID_INPUT', '올바른 검색 범위가 필요합니다.');
+    await this.refresh(); this.actor(actor);
+    const filter = { query: input.query, context_id: input.context_id ?? null, scope_id: input.scope_id ?? null, usage_scope: input.usage_scope ?? null };
+    const page = this.page(actor, 'search', input, filter);
+    const state = this.browseState(page.checkpoint);
     const query = input.query.toLocaleLowerCase();
-    return { results: overview.documents.filter(doc => ['context_id', 'scope_id', 'usage_scope'].every(field => !input[field] || doc.payload[field] === input[field]) && `${doc.payload.title}\n${doc.payload.body_markdown}`.toLocaleLowerCase().includes(query)), checkpoint: overview.checkpoint };
+    const all = state.revisions.filter(revision => ['context_id', 'scope_id', 'usage_scope'].every(field => !input[field] || revision.payload[field] === input[field])
+      && `${revision.payload.title}\n${revision.payload.body_markdown}`.toLocaleLowerCase().includes(query)).sort(comparePublished);
+    const results = await Promise.all(all.slice(page.offset, page.offset + page.limit).map(revision => this.describeRevision(revision, page.checkpoint, state)));
+    this.actor(actor);
+    return { view: 'summary', results, total: all.length, next_cursor: this.nextCursor(page, all.length), checkpoint: page.checkpoint };
   }
 
   async resolve(actor: Actor, input: any) {

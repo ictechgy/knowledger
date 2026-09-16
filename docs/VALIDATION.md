@@ -1,5 +1,49 @@
 # 검증 기록
 
+## Claude 리뷰 후 성능·보안·구조·사용성 수정 — 2026-09-16
+
+`399f78b`의 리뷰 기록에 대한 R1–R6 수정이다. 원래 발견과 최종 제한은
+[공동 리뷰의 후속 수정](25-CLAUDE-REVIEW.md#후속-수정--2026-09-16)에 있다.
+
+- `npm run check`: **249 passed /0 failed /1 skipped**. skip은 명시적 GC가 필요한 메모리 실험이다.
+- `node --expose-gc --test test/fabric/sqlite-projection.test.ts`: **12 passed /0 skipped**로 해당 실험까지 확인.
+- `npm run check:types`, `npm run demo`, `npm run demo:kb` 통과.
+- `npm run test:browser`: **Chromium18개 통과**. source21개 pagination, 큰/해제된 manifest와 늦은 응답,
+  문서·제안 페이지 동시 이동, 페이지 밖 부모 개정·과거 제안 유지, 활성 합의 교체,
+  더 최신인 상세 상태 우선 표시와 승인 근거 입력 보존을 포함한다.
+- 외부 패키지 없는 source copy: **208 passed /0 failed /42 skipped**. optional Fabric/auth/GC 조건을
+  분리했고 로컬 실행 경로에 새 외부 의존성을 추가하지 않았다.
+- API는 actor/조회조건/snapshot에 결속된 cursor, invalid query, 콜론 ID, 명령 대기 상한,
+  retryable429 후 같은 명령 재시도, 지연된 게시 중 private CAS, health/readiness 실패·정체·회복을 검사한다.
+- projection은 최초 VALID 쓰기/영수증 locator 변조, history/current 변조, live VALID filter/raw digest 동시 변조,
+  최종 값이 같아지는 과거 메타데이터 변조, append rollback, additive index 재구축을 검사한다.
+
+### 측정
+
+같은26-byte 문서를 한 슬롯에서200번 개정한 overview JSON은 **16,811,761→2,820 bytes**다.
+새5회 계산은 약7.33–9.70ms였고 이력은20개씩22,176 bytes로 조회됐다. 전체 원문과200개 이력은 유지된다.
+이전359.6ms는 한 번의 로컬 측정이므로 p95/SLA 개선으로 표현하지 않는다.
+
+1,000개1KiB 문서 실험은 모든50개 요약 페이지를 끝까지 순회해 검색/목록 p95 약1,095.74/1,071.22ms,
+재시작 replay 약255.24ms였다. 전체1,000개를 재시작 전후 모두 조회했다. 이전 단일 거대 응답과
+새 전체 페이지 순회는 서로 다른 작업이며, 첫 페이지 응답이나 Fabric 운영 성능의 보증이 아니다.
+
+고정 key를 갱신하는64→512블록 실험은 raw29,527,920 bytes를 추가했고, GC 뒤 retained ArrayBuffer 증가9 bytes였다.
+512블록에서 현재 읽기16회 약0.14ms, warm 과거 영수증16회 약0.68ms, cold 영수증 약15.36ms,
+검증 재시작 약25.55ms. 상태 key가 늘면 현재 상태/anchor도 늘고 과거 snapshot은 최대8개를 보관하므로
+이 결과를 전체 heap이 항상 일정하다는 주장으로 사용하지 않는다.
+
+### 실행 중인 앱
+
+기존 데이터 폴더를 보존하고4317·4318·4319·4321·4331·4341 개발 앱만 graceful restart했다.
+모두 `/healthz`와 `/readyz`200. 기본4317은 local block1·문서0개,4318은 실제 Fabric block206·최신 슬롯4개.
+OIDC 앱4개는 익명 overview401. 4318에서 exact revision view/history의200과 페이지 한도를 읽기 전용으로 확인했다.
+이번 검증은 실제 Fabric 새 거래 제출·peer 정지·chaincode 배포·네트워크 초기화를 하지 않았다.
+개발 로그인 세션은 재시작으로 초기화됐다.
+
+상세 근거: `.artifacts/review-fixes/{check-final,types-final,browser-final,projection-memory-final,no-optional-check}.log`,
+`history-after.json`, `performance-1000.json`, `runtime-health.json`, `live-fabric-browse.json`.
+
 ## Markdown KB 연결과 지식 클라이언트 — 2026-09-16
 
 - `npm run check`: **227 passed /0 failed /0 skipped**, `check:types`·`demo`·`demo:kb` 통과.

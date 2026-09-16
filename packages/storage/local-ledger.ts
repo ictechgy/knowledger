@@ -103,12 +103,21 @@ export class LocalLedger {
 
   entries(prefix: string, at?: Checkpoint | null): [string, any][] {
     if (at) this.assertCheckpoint(at);
-    const rows = at
-      ? this.db.prepare(`SELECT h.state_key, h.value_json FROM projection_history h JOIN
-          (SELECT state_key, MAX(sequence) sequence FROM projection_history WHERE sequence <= ? GROUP BY state_key) latest
-          ON h.state_key = latest.state_key AND h.sequence = latest.sequence ORDER BY h.state_key`).all(at.block_number)
-      : this.db.prepare('SELECT state_key, value_json FROM projection ORDER BY state_key').all();
-    return (rows as any[]).filter(row => row.state_key.startsWith(prefix)).map(row => [row.state_key, this.read(row.state_key, at)]);
+    // Domain state keys are ASCII. Restrict both views before reading/validating
+    // values; do not prepare and execute another query for every returned row.
+    const end = prefix + '\uffff';
+    const history = this.db.prepare(`SELECT h.state_key, h.value_json FROM projection_history h JOIN
+      (SELECT state_key, MAX(sequence) sequence FROM projection_history
+       WHERE state_key >= ? AND state_key < ? ${at ? 'AND sequence <= ?' : ''} GROUP BY state_key) latest
+      ON h.state_key = latest.state_key AND h.sequence = latest.sequence ORDER BY h.state_key`)
+      .all(prefix, end, ...(at ? [at.block_number] : [])) as any[];
+    if (!at) {
+      const current = this.db.prepare('SELECT state_key, value_json FROM projection WHERE state_key >= ? AND state_key < ? ORDER BY state_key').all(prefix, end) as any[];
+      if (current.length !== history.length || current.some((row, index) => row.state_key !== history[index].state_key || row.value_json !== history[index].value_json)) {
+        throw new Error('Projection integrity check failed; rebuild the derived view');
+      }
+    }
+    return history.map(row => { const value = JSON.parse(row.value_json); validateWrite(row.state_key, value); return [row.state_key, value]; });
   }
 
   checkpoint(): Checkpoint | null {

@@ -32,7 +32,7 @@ async function freePort(): Promise<number> {
 async function waitHealthy() {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (child?.exitCode !== null) throw new Error('HTTP application exited before becoming ready');
-    try { const response = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(6000) }); if (response.status === 200) return await response.json() as any; } catch { /* Startup or reconnect is still in progress. */ }
+    try { const response = await fetch(`${url}/readyz`, { signal: AbortSignal.timeout(6000) }); if (response.status === 200) return await response.json() as any; } catch { /* Startup or reconnect is still in progress. */ }
     await delay(200);
   }
   throw new Error('HTTP application did not become healthy');
@@ -45,7 +45,7 @@ async function start() {
   child.stdout?.on('data', () => {}); child.stderr?.on('data', () => {});
   exited = new Promise<void>((resolve, reject) => { child!.once('error', reject); child!.once('exit', () => resolve()); });
   const health = await waitHealthy();
-  assert.equal(health.mode, 'fabric-test-network');
+  assert.equal(health.state, 'ready');
   const response = await fetch(`${url}/api/session`);
   cookie = response.headers.get('set-cookie')!.split(';')[0];
   const session = await response.json() as any; csrf = session.csrf_token;
@@ -117,7 +117,10 @@ try {
   console.log('HTTP VALID: private draft boundary, publication confirmation, authorization, approval and activation');
 
   pausedPeer = true; peer('stop');
-  const unavailable = await fetch(`${url}/healthz`);
+  let unavailable = await fetch(`${url}/readyz`);
+  for (let attempt = 0; unavailable.status === 200 && attempt < 50; attempt++) {
+    await delay(200); unavailable = await fetch(`${url}/readyz`);
+  }
   assert.equal(unavailable.status, 503);
   await post('/resolve', scope, 503);
   peer('start'); pausedPeer = false;

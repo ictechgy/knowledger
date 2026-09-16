@@ -5,12 +5,27 @@ let apiBase = '';
 const state = {
   session: null,
   overview: null,
+  overviewRequestVersion: 0,
+  overviewLoading: false,
   selectedDocumentKey: null,
   selectedRevisionDigest: null,
+  selectedDocumentSnapshot: null,
+  selectedRevisionView: null,
+  selectedRevisionViewVersion: 0,
+  selectedProposalPageLoading: false,
+  selectedHistory: { revisions: [], total: 0, next_cursor: null },
   selectedProposalId: null,
+  reviewDraft: null,
   compareRevisionDigest: null,
+  comparisonRevision: null,
+  comparisonRevisionVersion: 0,
   draft: null,
   draftBaseDigest: null,
+  draftBaseLookupVersion: 0,
+  draftBaseLookupPending: false,
+  draftBaseLookupError: null,
+  draftBaseLookupPolicyKey: null,
+  draftBaseLookupComplete: false,
   composerVersion: 0,
   markdownImportRequest: null,
   draftSourceId: null,
@@ -23,7 +38,7 @@ const state = {
   commandPollBusy: false,
   commandPollDelay: 5000,
   commandPollToken: 0,
-  sources: { sources: [] },
+  sources: { sources: [], next_cursor: null },
   sourceDetail: null,
   sourceManifest: null,
   sourceFiles: new Map(),
@@ -106,7 +121,7 @@ async function request(path, options = {}) {
       state.session = null;
       state.overview = null;
       if (authMode) renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });
-      else { state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null; resetComposer(); clearPrivateDrafts(); clearCommands(); renderOverview(); }
+      else { state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null; clearSelectedRevisionState(); resetComposer(); clearPrivateDrafts(); clearCommands(); renderOverview(); }
     }
     const apiError = body && body.code ? `${body.code}: ${body.message || '요청이 거절되었습니다.'}` : `요청 실패 (${response.status})`;
     const error = new Error(apiError);
@@ -171,6 +186,7 @@ function renderAuthState(session) {
     state.selectedDocumentKey = null;
     state.selectedRevisionDigest = null;
     state.selectedProposalId = null;
+    clearSelectedRevisionState();
     state.compareRevisionDigest = null;
     resetComposer();
     clearPrivateDrafts();
@@ -186,6 +202,7 @@ function renderAuthState(session) {
 }
 
 function clearPrivateDrafts() {
+  state.reviewDraft = null;
   state.draftListVersion++;
   state.privateDrafts = { drafts: [], total: 0, next_cursor: null };
   el('private-draft-list').replaceChildren();
@@ -195,10 +212,20 @@ function clearPrivateDrafts() {
   el('refresh-drafts').disabled = false;
 }
 
+function clearSelectedRevisionState() {
+  state.selectedRevisionViewVersion++;
+  state.comparisonRevisionVersion++;
+  state.selectedDocumentSnapshot = null;
+  state.selectedRevisionView = null;
+  state.selectedHistory = { revisions: [], total: 0, next_cursor: null };
+  state.comparisonRevision = null;
+  state.selectedProposalPageLoading = false;
+}
+
 function clearSourceState() {
   state.sourceListVersion++;
   state.sourceOperationVersion++;
-  state.sources = { sources: [] };
+  state.sources = { sources: [], next_cursor: null };
   state.sourceDetail = null;
   state.sourceManifest = null;
   state.sourceFiles = new Map();
@@ -211,6 +238,9 @@ function clearSourceState() {
   el('source-detail')?.replaceChildren();
   text(el('source-status'), '');
   text(el('source-count'), '—');
+  text(el('source-list-status'), '');
+  el('more-sources')?.toggleAttribute('hidden', true);
+  el('more-sources')?.toggleAttribute('disabled', false);
   el('source-import')?.toggleAttribute('disabled', true);
   if (el('source-manifest-file')) el('source-manifest-file').disabled = false;
   if (el('source-folder')) el('source-folder').disabled = false;
@@ -224,6 +254,8 @@ function renderSources() {
   list.replaceChildren();
   const sources = state.sources.sources || [];
   text(el('source-count'), sources.length);
+  text(el('source-list-status'), sources.length ? `${sources.length}개 저장소를 불러왔습니다.${state.sources.next_cursor ? ' 더 불러올 수 있습니다.' : ''}` : '저장소 목록을 불러왔습니다.');
+  el('more-sources')?.toggleAttribute('hidden', !state.sources.next_cursor);
   if (!sources.length) { const empty = document.createElement('li'); empty.className = 'empty-state'; empty.textContent = '가져온 저장소가 없습니다.'; list.append(empty); return; }
   sources.forEach((source) => {
     const item = document.createElement('li'); const button = document.createElement('button'); button.type = 'button'; button.className = 'source-item';
@@ -233,14 +265,20 @@ function renderSources() {
   });
 }
 
-async function loadSources() {
+async function loadSources(append = false) {
   if (!state.session?.actor || !apiBase) { renderSources(); return; }
   const session = state.session; const version = ++state.sourceListVersion;
+  const cursor = append ? state.sources.next_cursor : null;
+  if (append && !cursor) return;
+  el('more-sources')?.toggleAttribute('disabled', true);
   try {
-    const page = await request(`${apiBase}/sources`, { sessionGuard: session });
+    const page = await request(`${apiBase}/sources?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
     if (session !== state.session || version !== state.sourceListVersion) return;
-    state.sources = page; renderSources();
+    const sources = append ? [...state.sources.sources, ...(page.sources || [])] : (page.sources || []);
+    state.sources = { ...page, sources: [...new Map(sources.map((source) => [source.source_id, source])).values()] };
+    renderSources();
   } catch (error) { if (session === state.session && version === state.sourceListVersion) text(el('source-status'), `저장소 목록을 불러오지 못했습니다. ${error.message}`); }
+  finally { if (session === state.session && version === state.sourceListVersion) el('more-sources')?.toggleAttribute('disabled', false); }
 }
 
 async function loadSourceDetail(sourceId) {
@@ -257,8 +295,9 @@ async function loadSourceDetail(sourceId) {
 
 function renderSourceDetail() {
   const detail = el('source-detail');
-  if (!detail || !state.sourceDetail) return;
+  if (!detail) return;
   detail.replaceChildren();
+  if (!state.sourceDetail) return;
   const heading = document.createElement('h3'); heading.textContent = `${state.sourceDetail.source_id} · 버전 ${state.sourceDetail.version}`; detail.append(heading);
   (state.sourceDetail.entries || []).forEach((entry) => { const row = document.createElement('button'); row.type = 'button'; row.className = 'source-entry'; row.textContent = `${entry.path} · ${entry.title || '제목 없음'} · ${sourceStatusLabel(entry.status)}`; row.addEventListener('click', () => { if (entry.draft_id) openSavedDraft(entry.draft_id); }); detail.append(row); });
 }
@@ -266,11 +305,11 @@ function renderSourceDetail() {
 function selectedManifestFile() { return el('source-manifest-file')?.files?.[0] || null; }
 
 async function readSourceManifest() {
+  const version = ++state.sourceOperationVersion; const session = state.session;
+  state.sourceManifest = null; state.sourceDetail = null; state.sourceFiles = new Map(); renderSourcePreview(); renderSourceDetail(); el('source-import')?.toggleAttribute('disabled', true);
   const file = selectedManifestFile();
   if (!file) { text(el('source-status'), 'manifest JSON 파일을 선택하세요.'); return; }
   if (file.size > 131072) { text(el('source-status'), 'manifest JSON은 128 KiB 이하여야 합니다.'); return; }
-  const version = ++state.sourceOperationVersion; const session = state.session;
-  state.sourceManifest = null; state.sourceDetail = null; state.sourceFiles = new Map(); renderSourcePreview(); renderSourceDetail(); el('source-import')?.toggleAttribute('disabled', true);
   try {
     const manifestJson = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
     if (version !== state.sourceOperationVersion || session !== state.session) return;
@@ -580,8 +619,38 @@ function applyDraftPolicy(policy, { preserveBase = true } = {}) {
   setValue(el('draft-scope'), policy.scope_id);
   setValue(el('draft-usage'), policy.usage_scope);
   const existing = currentDocuments().find((doc) => slotKeyFor(doc.payload) === slotKeyFor({ channel_id: policy.channel_id, document_id: policy.document_id, context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope }));
-  if (preserveBase) state.draftBaseDigest = existing?.revision_digest || null;
+  if (preserveBase) {
+    const policyKey = slotKeyFor(policy);
+    const lookupInProgress = state.draftBaseLookupPolicyKey === policyKey && (state.draftBaseLookupPending || state.draftBaseLookupComplete);
+    if (existing) {
+      ++state.draftBaseLookupVersion; state.draftBaseLookupPending = false; state.draftBaseLookupError = null; state.draftBaseLookupPolicyKey = policyKey; state.draftBaseLookupComplete = true; state.draftBaseDigest = existing.revision_digest;
+    } else if (!lookupInProgress) {
+      const lookupVersion = ++state.draftBaseLookupVersion;
+      state.draftBaseLookupPending = false; state.draftBaseLookupError = null; state.draftBaseLookupPolicyKey = policyKey; state.draftBaseLookupComplete = false; state.draftBaseDigest = null;
+      void loadPolicyBase(policy, lookupVersion);
+    }
+  }
   return true;
+}
+
+async function loadPolicyBase(policy, version) {
+  const session = state.session;
+  state.draftBaseLookupPending = true;
+  try {
+    let cursor = null;
+    while (true) {
+      const page = await request(`${apiBase}/documents/${encodeURIComponent(policy.document_id)}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
+      if (session !== state.session || version !== state.draftBaseLookupVersion) return;
+      const base = (page.revisions || []).find((revision) => sameRevisionSlot(revision.payload, policy));
+      if (base) { state.draftBaseDigest = base.revision_digest; return; }
+      if (!page.next_cursor) return;
+      cursor = page.next_cursor;
+    }
+  } catch (error) {
+    if (error.status !== 404 && session === state.session && version === state.draftBaseLookupVersion) { state.draftBaseLookupError = `문서의 최신 개정본을 확인하지 못했습니다. ${error.message}`; text(el('draft-status'), state.draftBaseLookupError); }
+  } finally {
+    if (session === state.session && version === state.draftBaseLookupVersion) { state.draftBaseLookupPending = false; state.draftBaseLookupComplete = !state.draftBaseLookupError; }
+  }
 }
 
 function enterSavedDraftMode(draft) {
@@ -616,29 +685,76 @@ async function openSavedDraft(id) {
   }
 }
 
-async function loadOverview({ preserveSelection = true } = {}) {
+async function loadOverview({ preserveSelection = true, append = false, appendProposals = false } = {}) {
   const session = state.session;
   const previous = preserveSelection ? state.selectedDocumentKey : null;
-  const overview = await request(`${apiBase}/overview`, { sessionGuard: session });
-  if (session !== state.session) return;
-  state.overview = overview;
+  if ((append || appendProposals) && state.overviewLoading) return;
+  const previousOverview = state.overview || {};
+  const cursor = append ? previousOverview.next_cursor : null;
+  const proposalCursor = appendProposals ? previousOverview.proposals_next_cursor : null;
+  if ((append && !cursor) || (appendProposals && !proposalCursor)) return;
+  const version = ++state.overviewRequestVersion;
+  state.overviewLoading = true;
+  const params = new URLSearchParams({ limit: '20', proposal_limit: '20' });
+  if (cursor) params.set('cursor', cursor);
+  if (proposalCursor) params.set('proposal_cursor', proposalCursor);
+  for (const id of ['more-documents', 'more-proposals']) el(id)?.toggleAttribute('disabled', true);
+  let overview;
+  try { overview = await request(`${apiBase}/overview?${params}`, { sessionGuard: session }); }
+  finally {
+    if (session === state.session && version === state.overviewRequestVersion) {
+      state.overviewLoading = false;
+      for (const id of ['more-documents', 'more-proposals']) el(id)?.toggleAttribute('disabled', false);
+    }
+  }
+  if (session !== state.session || version !== state.overviewRequestVersion) return;
+  const documents = append || appendProposals ? [...(previousOverview.documents || []), ...(overview.documents || [])] : (overview.documents || []);
+  const proposals = appendProposals ? [...(previousOverview.proposals || []), ...(overview.proposals || [])] : (append ? (previousOverview.proposals || []) : (overview.proposals || []));
+  const nextOverview = { ...overview, documents: [...new Map(documents.map((doc) => [doc.revision_digest, doc])).values()], proposals: [...new Map(proposals.map((proposal) => [proposal.proposal_id, proposal])).values()] };
+  if (append && !appendProposals) Object.assign(nextOverview, { proposals: previousOverview.proposals || [], proposals_total: previousOverview.proposals_total, proposals_next_cursor: previousOverview.proposals_next_cursor });
+  if (appendProposals && !append) Object.assign(nextOverview, { documents: previousOverview.documents || [], documents_total: previousOverview.documents_total, next_cursor: previousOverview.next_cursor });
+  state.overview = nextOverview;
   renderMode(overview.mode, state.session?.auth_mode);
   const docs = currentDocuments();
   state.selectedDocumentKey = docs.some((doc) => slotKeyFor(doc.payload) === previous) ? previous : slotKeyFor(docs[0]?.payload) || null;
-  if (state.selectedRevisionDigest && !(overview.documents || []).some((doc) => doc.revision_digest === state.selectedRevisionDigest)) state.selectedRevisionDigest = null;
-  if (state.selectedProposalId && !(overview.proposals || []).some((proposal) => proposal.proposal_id === state.selectedProposalId)) state.selectedProposalId = null;
+  if (state.selectedRevisionDigest && !(state.overview.documents || []).some((doc) => doc.revision_digest === state.selectedRevisionDigest) && state.selectedDocumentSnapshot?.revision_digest !== state.selectedRevisionDigest) state.selectedRevisionDigest = null;
+  let selected = findSelectedDocument();
+  const refreshDetail = !append && !appendProposals;
+  if (refreshDetail || !selected || selected.revision_digest !== state.selectedRevisionView?.revision_digest) {
+    if (selected) { const { body_markdown, ...payload } = selected.payload; selected = { ...selected, payload }; }
+    clearSelectedRevisionState();
+    if (selected && state.selectedRevisionDigest === selected.revision_digest) state.selectedDocumentSnapshot = selected;
+  }
   renderOverview();
+  if (selected && (refreshDetail || !Object.hasOwn(selected.payload || {}, 'body_markdown'))) void loadSelectedRevision(selected, session);
+}
+
+async function loadMoreOverview(kind) {
+  try {
+    await loadOverview(kind === 'proposals' ? { appendProposals: true } : { append: true });
+  } catch (error) {
+    const invalidCursor = error.api?.code === 'INVALID_CURSOR';
+    if (invalidCursor) {
+      if (kind === 'proposals' && state.overview) state.overview.proposals_next_cursor = null;
+      if (kind === 'documents' && state.overview) state.overview.next_cursor = null;
+      try { await loadOverview(); } catch (retryError) { showStatus(`목록을 새로 불러오지 못했습니다. ${retryError.message}`, 'error'); }
+      return;
+    }
+    showStatus(`${kind === 'proposals' ? '검토 제안' : '문서'} 목록을 불러오지 못했습니다. ${error.message}`, 'error');
+  }
 }
 
 function renderOverview() {
   const overview = state.overview || {};
   const docs = currentDocuments();
   const proposals = overview.proposals || [];
-  const active = (overview.documents || []).filter((doc) => doc.eligible && doc.agreement?.status === 'active').length;
+  const active = (overview.documents || []).filter((doc) => doc.eligible && (doc.active_agreement || doc.agreement)?.status === 'active').length;
   text(el('metric-agreements'), active);
   text(el('metric-proposals'), proposals.filter((proposal) => !proposal.agreement_id).length);
   text(el('metric-documents'), docs.length);
   text(el('document-count'), docs.length);
+  text(el('document-list-status'), docs.length ? `${docs.length}개 문서 표시 중${Number.isSafeInteger(overview.documents_total) ? ` · 전체 ${overview.documents_total}개` : ''}${overview.next_cursor ? ' · 더 불러올 수 있습니다.' : ''}` : '공유된 문서가 없습니다.');
+  el('more-documents')?.toggleAttribute('hidden', !overview.next_cursor);
   text(el('metric-epoch'), overview.channel?.membership_epoch ?? '—');
   text(el('metric-config'), overview.channel?.config_version ? `config ${overview.channel.config_version}` : 'config 확인 불가');
   const checkpoint = overview.checkpoint;
@@ -694,8 +810,97 @@ function compareDocumentOrder(left, right) {
 }
 
 function findSelectedDocument() {
-  if (state.selectedRevisionDigest) return (state.overview?.documents || []).find((doc) => doc.revision_digest === state.selectedRevisionDigest) || null;
-  return currentDocuments().find((doc) => slotKeyFor(doc.payload) === state.selectedDocumentKey) || null;
+  const compact = state.selectedRevisionDigest
+    ? (state.overview?.documents || []).find((doc) => doc.revision_digest === state.selectedRevisionDigest) || state.selectedDocumentSnapshot
+    : currentDocuments().find((doc) => slotKeyFor(doc.payload) === state.selectedDocumentKey) || null;
+  if (!compact) return null;
+  return state.selectedRevisionView?.revision_digest === compact.revision_digest
+    ? { ...compact, ...state.selectedRevisionView, payload: state.selectedRevisionView.payload || compact.payload }
+    : compact;
+}
+
+function selectDocument(doc) {
+  state.selectedDocumentKey = slotKeyFor(doc?.payload);
+  state.selectedRevisionDigest = null;
+  state.selectedDocumentSnapshot = null;
+  state.selectedProposalId = null;
+  state.compareRevisionDigest = null;
+  clearSelectedRevisionState();
+  renderOverview();
+  if (doc && !Object.hasOwn(doc.payload || {}, 'body_markdown')) void loadSelectedRevision(doc, state.session);
+  el('document-title')?.focus?.();
+}
+
+async function loadSelectedRevision(compact, session) {
+  if (!compact?.revision_digest || session !== state.session) return;
+  const digest = compact.revision_digest;
+  const version = ++state.selectedRevisionViewVersion;
+  state.selectedRevisionView = null;
+  state.selectedDocumentSnapshot = compact;
+  state.selectedHistory = { revisions: compact.history || [], total: compact.history?.length || 0, next_cursor: null };
+  renderDocumentDetail(compact);
+  try {
+    const response = await request(`${apiBase}/revisions/${encodeURIComponent(digest)}/view?proposal_limit=20`, { sessionGuard: session });
+    if (session !== state.session || version !== state.selectedRevisionViewVersion || state.selectedRevisionDigest && state.selectedRevisionDigest !== digest) return;
+    if (response.revision_digest !== digest || !Object.hasOwn(response.payload || {}, 'body_markdown')) throw new Error('선택한 개정본의 원문 응답이 올바르지 않습니다.');
+    state.selectedRevisionView = response;
+    if (Array.isArray(response.proposals)) state.selectedRevisionView.proposals = response.proposals;
+    if (state.selectedProposalId && !state.selectedRevisionView.proposals?.some(proposal => proposal.proposal_id === state.selectedProposalId)) {
+      const proposalId = state.selectedProposalId;
+      const proposal = await request(`${apiBase}/agreement-proposals/${encodeURIComponent(proposalId)}`, { sessionGuard: session });
+      if (session !== state.session || version !== state.selectedRevisionViewVersion || state.selectedProposalId !== proposalId) return;
+      if (proposal.revision_digest !== digest) throw new Error('선택한 제안의 개정본이 다릅니다.');
+      state.selectedRevisionView.proposals = [proposal, ...(state.selectedRevisionView.proposals || [])];
+    }
+    state.selectedDocumentSnapshot = state.selectedRevisionView;
+    renderOverview();
+    if (!Array.isArray(response.history) && !compact.history?.length) await loadRevisionHistory(digest, session, version);
+  } catch (error) {
+    if (session === state.session && version === state.selectedRevisionViewVersion) text(el('document-detail-content'), `개정본을 불러오지 못했습니다. ${error.message}`);
+  }
+}
+
+async function loadRevisionHistory(digest, session, version = state.selectedRevisionViewVersion, append = false) {
+  try {
+    const cursor = append ? state.selectedHistory.next_cursor : null;
+    if (append && !cursor) return;
+    const history = await request(`${apiBase}/revisions/${encodeURIComponent(digest)}/history?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
+    if (session !== state.session || version !== state.selectedRevisionViewVersion || state.selectedRevisionView?.revision_digest !== digest) return;
+    const revisions = append ? [...state.selectedHistory.revisions, ...(history.revisions || [])] : (history.revisions || []);
+    state.selectedHistory = { ...history, revisions: [...new Map(revisions.map((revision) => [revision.revision_digest, revision])).values()] };
+    renderOverview();
+  } catch (error) {
+    if (session === state.session && version === state.selectedRevisionViewVersion) text(el('document-detail-content'), `개정 이력을 불러오지 못했습니다. ${error.message}`);
+  }
+}
+
+function digestForDocument(doc) { return doc?.revision_digest || ''; }
+
+async function loadSelectedProposals(doc, session) {
+  const view = state.selectedRevisionView;
+  const digest = doc?.revision_digest;
+  const cursor = view?.revision_digest === digest ? view.proposals_next_cursor : null;
+  if (!digest || !cursor || state.selectedProposalPageLoading) return;
+  const version = state.selectedRevisionViewVersion;
+  state.selectedProposalPageLoading = true;
+  try {
+    const response = await request(`${apiBase}/revisions/${encodeURIComponent(digest)}/view?proposal_limit=20&proposal_cursor=${encodeURIComponent(cursor)}`, { sessionGuard: session });
+    if (session !== state.session || version !== state.selectedRevisionViewVersion || state.selectedRevisionView?.revision_digest !== digest) return;
+    const proposals = [...(state.selectedRevisionView.proposals || []), ...(response.proposals || [])];
+    state.selectedRevisionView = { ...state.selectedRevisionView, proposals: [...new Map(proposals.map((proposal) => [proposal.proposal_id, proposal])).values()], proposals_total: response.proposals_total, proposals_next_cursor: response.proposals_next_cursor };
+    renderOverview();
+  } catch (error) {
+    if (session === state.session && version === state.selectedRevisionViewVersion) showStatus(`개정 제안을 더 불러오지 못했습니다. ${error.message}`, 'error');
+  } finally {
+    if (session === state.session && version === state.selectedRevisionViewVersion) state.selectedProposalPageLoading = false;
+  }
+}
+
+function appendSelectedProposalPager(target, doc) {
+  const view = state.selectedRevisionView?.revision_digest === doc?.revision_digest ? state.selectedRevisionView : null;
+  if (!view?.proposals_next_cursor) return;
+  const more = document.createElement('button'); more.id = 'more-selected-proposals'; more.type = 'button'; more.className = 'outline-button full-width'; more.disabled = state.selectedProposalPageLoading; more.textContent = state.selectedProposalPageLoading ? '검토 제안 불러오는 중…' : `검토 제안 더 보기 (${view.proposals?.length || 0}/${view.proposals_total || '—'})`;
+  more.addEventListener('click', () => { void loadSelectedProposals(doc, state.session); }); target.append(more);
 }
 
 function renderDocumentList(documents) {
@@ -716,7 +921,7 @@ function renderDocumentList(documents) {
     const presentation = statusForDocument(doc);
     const status = document.createElement('span'); status.className = `status-chip ${presentation.className}`; status.textContent = presentation.label;
     meta.append(context, status); button.append(title, meta); list.append(button);
-    button.addEventListener('click', () => { state.selectedDocumentKey = key; state.selectedRevisionDigest = null; state.selectedProposalId = null; state.compareRevisionDigest = null; renderOverview(); el('document-title')?.focus?.(); });
+    button.addEventListener('click', () => selectDocument(doc));
   });
 }
 
@@ -726,12 +931,13 @@ function contextLabel(contextId) {
 
 function statusForDocument(doc) {
   if (!doc) return { label: '문서 선택 필요', className: 'state-chip-neutral' };
-  if (doc.eligible && doc.agreement?.status === 'active') return { label: '합의 활성', className: 'state-chip-active' };
-  if (doc.agreement?.status === 'suspended') return { label: '정지됨', className: 'state-chip-blocked' };
-  if (doc.agreement?.status === 'withdrawn') return { label: '철회됨', className: 'state-chip-blocked' };
-  if (doc.agreement?.status === 'superseded') return { label: '대체됨', className: 'state-chip-neutral' };
-  if (doc.agreement?.status === 'active') return { label: '합의 활성 · 현재 사용 보류', className: 'state-chip-withheld' };
-  const proposed = (state.overview?.proposals || []).some(proposal => proposal.revision_digest === doc.revision_digest);
+  const agreement = doc.active_agreement || doc.agreement;
+  if (doc.eligible && agreement?.status === 'active') return { label: '합의 활성', className: 'state-chip-active' };
+  if (agreement?.status === 'suspended') return { label: '정지됨', className: 'state-chip-blocked' };
+  if (agreement?.status === 'withdrawn') return { label: '철회됨', className: 'state-chip-blocked' };
+  if (agreement?.status === 'superseded') return { label: '대체됨', className: 'state-chip-neutral' };
+  if (agreement?.status === 'active') return { label: '합의 활성 · 현재 사용 보류', className: 'state-chip-withheld' };
+  const proposed = doc.proposed || (state.overview?.proposals || []).some(proposal => proposal.revision_digest === doc.revision_digest);
   return proposed ? { label: '합의 검토 중', className: 'state-chip-review' } : { label: '공유 게시됨 · 합의 전', className: 'state-chip-neutral' };
 }
 
@@ -753,6 +959,7 @@ function renderDocumentDetail(doc) {
   const container = el('document-detail-content');
   container.replaceChildren();
   if (!doc) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '표시할 문서가 없습니다.'; container.append(empty); return; }
+  if (!Object.hasOwn(doc.payload || {}, 'body_markdown')) { const loading = document.createElement('p'); loading.className = 'empty-state'; loading.textContent = '선택한 개정본의 본문을 불러오는 중…'; container.append(loading); return; }
   const payload = doc.payload || {}; const status = statusForDocument(doc);
   const top = document.createElement('div'); top.className = 'detail-topline';
   const type = document.createElement('span'); type.textContent = `${contextLabel(payload.context_id)}  /  ${payload.usage_scope || 'scope 미지정'}`;
@@ -767,17 +974,24 @@ function renderDocumentDetail(doc) {
   const pre = document.createElement('pre'); pre.className = 'markdown-source'; pre.textContent = payload.body_markdown || ''; source.append(sourceHead, pre);
   const detailActions = document.createElement('div'); detailActions.className = 'detail-actions'; const revise = document.createElement('button'); revise.type = 'button'; revise.className = 'outline-button'; revise.textContent = '이 문서의 새 개정본 작성'; revise.addEventListener('click', () => openComposer('revise', doc)); detailActions.append(revise);
   body.append(title, description, evidence, source, detailActions);
-  if (doc.history?.length) {
+  const historyItems = state.selectedHistory.revisions?.length ? state.selectedHistory.revisions : doc.history;
+  if (historyItems?.length) {
     const history = document.createElement('div'); history.className = 'history-section'; const heading = document.createElement('h3'); heading.className = 'subheading'; heading.textContent = '개정 이력'; const list = document.createElement('div'); list.className = 'history-list';
-    doc.history.forEach((item) => { const row = document.createElement('div'); row.className = 'history-item'; const name = document.createElement('strong'); name.textContent = item.title || '제목 없음'; const date = document.createElement('span'); date.textContent = `${shortDigest(item.revision_digest)} · ${formatDate(item.created_at)}`; row.append(name, date); list.append(row); }); history.append(heading, list); body.append(history);
+    historyItems.forEach((item) => { const row = document.createElement('button'); row.type = 'button'; row.className = 'history-item'; const name = document.createElement('strong'); name.textContent = item.title || item.payload?.title || '제목 없음'; const date = document.createElement('span'); date.textContent = `${shortDigest(item.revision_digest)} · ${formatDate(item.created_at || item.payload?.metadata?.created_at)}`; row.append(name, date); row.addEventListener('click', () => { state.selectedRevisionDigest = item.revision_digest; state.selectedDocumentSnapshot = { ...item, payload: item.payload || { ...doc.payload, title: item.title, metadata: { ...doc.payload.metadata, created_at: item.created_at } } }; state.selectedProposalId = null; state.compareRevisionDigest = null; state.selectedRevisionView = null; void loadSelectedRevision(state.selectedDocumentSnapshot, state.session); renderOverview(); }); list.append(row); });
+    history.append(heading, list); if (state.selectedHistory.next_cursor) { const more = document.createElement('button'); more.type = 'button'; more.className = 'outline-button full-width'; more.textContent = '개정 이력 더 보기'; more.addEventListener('click', () => { void loadRevisionHistory(digestForDocument(doc), state.session, state.selectedRevisionViewVersion, true); }); history.append(more); } body.append(history);
   }
   const note = document.createElement('div'); note.className = 'eligibility-note'; const noteStrong = document.createElement('strong'); noteStrong.textContent = doc.eligible ? '✓ 조회 시점에 유효한 합의' : '· 이 개정본은 검토 필요'; const noteText = document.createElement('span'); noteText.textContent = doc.eligible ? '실제 사용 전 아래에서 실행 컨텍스트를 확인해 주세요.' : (!doc.reason && activeAgreementForSlot(doc) ? '새 개정본을 채택하기 전까지 조회에는 기존 채택본이 사용됩니다.' : reasonLabel(doc.reason)); note.append(noteStrong, noteText); body.append(note);
   container.append(top, body);
 }
 
 function getSelectedProposal(doc) {
-  if (state.selectedProposalId) return (state.overview?.proposals || []).find((proposal) => proposal.proposal_id === state.selectedProposalId && proposal.revision_digest === doc?.revision_digest) || null;
-  return (state.overview?.proposals || []).filter((proposal) => proposal.revision_digest === doc?.revision_digest).sort((left, right) => {
+  const overviewProposals = state.overview?.proposals || [];
+  const viewProposals = state.selectedRevisionView?.revision_digest === doc?.revision_digest && Array.isArray(state.selectedRevisionView.proposals)
+    ? state.selectedRevisionView.proposals : [];
+  const proposals = [...viewProposals];
+  for (const proposal of overviewProposals) if (!proposals.some((candidate) => candidate.proposal_id === proposal.proposal_id)) proposals.push(proposal);
+  if (state.selectedProposalId) return proposals.find((proposal) => proposal.proposal_id === state.selectedProposalId && proposal.revision_digest === doc?.revision_digest) || null;
+  return proposals.filter((proposal) => proposal.revision_digest === doc?.revision_digest).sort((left, right) => {
     const leftDate = left.created_at || left.proposed_at || '';
     const rightDate = right.created_at || right.proposed_at || '';
     return String(leftDate).localeCompare(String(rightDate));
@@ -819,18 +1033,23 @@ function renderReviewInbox() {
   const reviews = outstandingReviews();
   text(count, reviews.length);
   list.replaceChildren();
+  el('more-proposals')?.toggleAttribute('hidden', !state.overview?.proposals_next_cursor);
   if (!reviews.length) {
     const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '지금 처리할 검토가 없습니다.'; list.append(empty); return;
   }
   reviews.forEach((proposal) => {
     const doc = (state.overview?.documents || []).find((candidate) => candidate.revision_digest === proposal.revision_digest);
+    const summary = proposal.revision_summary || {};
+    const summaryPayload = summary.payload || summary;
+    const proposalDoc = doc || { revision_digest: proposal.revision_digest, payload: { channel_id: summaryPayload.channel_id, document_id: summaryPayload.document_id, context_id: summaryPayload.context_id, scope_id: summaryPayload.scope_id, usage_scope: summaryPayload.usage_scope, title: summaryPayload.title } };
     const button = document.createElement('button'); button.type = 'button'; button.className = 'review-inbox-item';
-    const title = document.createElement('strong'); title.textContent = doc?.payload?.title || proposal.proposal_id || '검토 제안';
-    const meta = document.createElement('span'); meta.textContent = `${metadataLabel('contexts', doc?.payload?.context_id)} · 검토 정책`;
+    const title = document.createElement('strong'); title.textContent = proposalDoc.payload?.title || proposal.proposal_id || '검토 제안';
+    const meta = document.createElement('span'); meta.textContent = `${metadataLabel('contexts', proposalDoc.payload?.context_id)} · 검토 정책`;
     button.append(title, meta);
     button.addEventListener('click', () => {
-      if (doc) { state.selectedDocumentKey = slotKeyFor(doc.payload); state.selectedRevisionDigest = doc.revision_digest; state.selectedProposalId = proposal.proposal_id; state.compareRevisionDigest = null; }
-      setWorkspace('review'); renderOverview(); el('review-title')?.focus?.();
+      state.selectedDocumentKey = slotKeyFor(proposalDoc.payload); state.selectedRevisionDigest = proposal.revision_digest; state.selectedProposalId = proposal.proposal_id; state.compareRevisionDigest = null;
+      clearSelectedRevisionState(); state.selectedDocumentSnapshot = proposalDoc;
+      setWorkspace('review'); renderOverview(); void loadSelectedRevision(proposalDoc, state.session); el('review-title')?.focus?.();
     });
     list.append(button);
   });
@@ -845,23 +1064,25 @@ async function proposeCurrentRevision(doc) {
 
 function renderReview(doc) {
   const target = el('review-content'); target.replaceChildren();
+  if (doc && !Object.hasOwn(doc.payload || {}, 'body_markdown')) { const loading = document.createElement('p'); loading.className = 'empty-state'; loading.textContent = '선택한 원문과 제안 상태를 확인하는 중…'; target.append(loading); return; }
   const reviewChip = el('review-state-chip');
   if (!doc) { text(reviewChip, '문서 선택 필요'); reviewChip.className = 'state-chip state-chip-neutral'; const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '문서를 선택하면 이 문서에 연결된 제안과 대표자 응답이 표시됩니다.'; target.append(empty); return; }
   const proposal = getSelectedProposal(doc); const status = proposal ? proposalStatus(proposal) : statusForDocument(doc).label; text(reviewChip, proposal ? proposalStatusLabel(status) : status); reviewChip.className = `state-chip ${status === 'active' ? 'state-chip-active' : status === 'suspended' || status === 'withdrawn' ? 'state-chip-blocked' : 'state-chip-review'}`;
-  if (!proposal) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '이 개정본에 대한 검토 제안이 아직 없습니다. 새 개정본을 공유한 뒤 합의를 제안하세요.'; target.append(empty); return; }
+  if (!proposal) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = '이 개정본에 대한 검토 제안이 아직 없습니다. 새 개정본을 공유한 뒤 합의를 제안하세요.'; target.append(empty); appendSelectedProposalPager(target, doc); return; }
+  if (state.reviewDraft?.proposalId !== proposal.proposal_id) state.reviewDraft = { proposalId: proposal.proposal_id, rationale: '', reason: '' };
   const card = document.createElement('article'); card.className = 'proposal-card';
   const head = document.createElement('div'); head.className = 'proposal-head'; const title = document.createElement('div'); const id = document.createElement('p'); id.className = 'proposal-id'; id.textContent = '검토 제안'; const meta = document.createElement('p'); meta.className = 'proposal-meta'; meta.textContent = `검토 정책 · 응답 순서 ${proposal.review_counter ?? '—'}`; title.append(id, meta); const proposalChip = document.createElement('span'); proposalChip.className = `status-chip ${status === 'active' ? 'state-chip-active' : status === 'suspended' || status === 'withdrawn' ? 'state-chip-blocked' : 'state-chip-review'}`; proposalChip.textContent = proposalStatusLabel(status); head.append(title, proposalChip);
   const reps = document.createElement('ul'); reps.className = 'representative-list'; (proposal.required_representatives || []).forEach((rep) => { const row = document.createElement('li'); row.className = 'representative-row'; const role = document.createElement('span'); role.textContent = roleLabel(rep.domain_role); const actor = document.createElement('span'); actor.textContent = `${rep.actor_org_id} · ${rep.actor_id}`; const decision = (proposal.decisions || []).find((item) => item.actor_id === rep.actor_id && item.actor_org_id === rep.actor_org_id && item.actor_domain_role === rep.domain_role); row.append(role); if (decision) { const chip = document.createElement('span'); chip.className = `status-chip ${decision.decision === 'approve' ? 'state-chip-active' : decision.decision === 'object' ? 'state-chip-blocked' : 'state-chip-neutral'}`; chip.textContent = decision.decision; row.append(chip); } else row.append(actor); reps.append(row); });
   const actions = document.createElement('div'); actions.className = 'decision-actions';
   if (status === 'open') {
-    const rationaleLabel = document.createElement('label'); rationaleLabel.className = 'decision-rationale'; rationaleLabel.textContent = '이번 결정의 근거'; const rationaleInput = document.createElement('input'); rationaleInput.id = `rationale-${proposal.proposal_id}`; rationaleInput.type = 'text'; rationaleInput.maxLength = 1000; rationaleInput.placeholder = '대표자의 판단 근거를 남기세요'; rationaleLabel.append(rationaleInput); card.append(head, reps, rationaleLabel);
+    const rationaleLabel = document.createElement('label'); rationaleLabel.className = 'decision-rationale'; rationaleLabel.textContent = '이번 결정의 근거'; const rationaleInput = document.createElement('input'); rationaleInput.id = `rationale-${proposal.proposal_id}`; rationaleInput.type = 'text'; rationaleInput.maxLength = 1000; rationaleInput.placeholder = '대표자의 판단 근거를 남기세요'; rationaleInput.value = state.reviewDraft.rationale; rationaleInput.addEventListener('input', () => { if (state.reviewDraft?.proposalId === proposal.proposal_id) state.reviewDraft.rationale = rationaleInput.value; }); rationaleLabel.append(rationaleInput); card.append(head, reps, rationaleLabel);
     ['approve', 'object', 'abstain', 'retract'].forEach((decision) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'decision-button'; button.dataset.decision = decision; button.textContent = decisionLabel(decision); button.addEventListener('click', () => submitDecision(proposal, decision)); actions.append(button); });
   }
   const controls = document.createElement('div'); controls.className = 'proposal-controls'; const helper = document.createElement('small'); helper.textContent = '대표자의 명시적 응답만 합의 상태에 반영됩니다.'; controls.append(helper);
   if (status === 'open') { const activate = document.createElement('button'); activate.type = 'button'; activate.className = 'primary-button'; activate.textContent = '합의 활성화'; activate.addEventListener('click', () => activateProposal(proposal)); controls.append(activate); }
-  if (status === 'active' && proposal.agreement_id) { const reasonLabel = document.createElement('label'); reasonLabel.className = 'decision-rationale'; reasonLabel.textContent = '상태 변경 사유'; const reasonInput = document.createElement('input'); reasonInput.id = `agreement-reason-${proposal.agreement_id}`; reasonInput.type = 'text'; reasonInput.maxLength = 1000; reasonInput.placeholder = '정지 또는 철회 사유를 남기세요'; reasonLabel.append(reasonInput); card.append(reasonLabel); const agreementActions = document.createElement('span'); ['suspend', 'withdraw'].forEach((action) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'decision-button'; button.textContent = action === 'suspend' ? '일시 정지' : '사용 철회'; button.addEventListener('click', () => changeAgreement(proposal, action)); agreementActions.append(button); }); controls.append(agreementActions); }
+  if (status === 'active' && proposal.agreement_id) { const reasonLabel = document.createElement('label'); reasonLabel.className = 'decision-rationale'; reasonLabel.textContent = '상태 변경 사유'; const reasonInput = document.createElement('input'); reasonInput.id = `agreement-reason-${proposal.agreement_id}`; reasonInput.type = 'text'; reasonInput.maxLength = 1000; reasonInput.placeholder = '정지 또는 철회 사유를 남기세요'; reasonInput.value = state.reviewDraft.reason; reasonInput.addEventListener('input', () => { if (state.reviewDraft?.proposalId === proposal.proposal_id) state.reviewDraft.reason = reasonInput.value; }); reasonLabel.append(reasonInput); card.append(reasonLabel); const agreementActions = document.createElement('span'); ['suspend', 'withdraw'].forEach((action) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'decision-button'; button.textContent = action === 'suspend' ? '일시 정지' : '사용 철회'; button.addEventListener('click', () => changeAgreement(proposal, action)); agreementActions.append(button); }); controls.append(agreementActions); }
   if (status === 'suspended' || status === 'withdrawn') { const fresh = document.createElement('button'); fresh.type = 'button'; fresh.className = 'primary-button'; fresh.textContent = '새 합의 검토 제안'; fresh.addEventListener('click', () => proposeCurrentRevision(doc)); controls.append(fresh); }
-  if (actions.childElementCount) card.append(actions); card.append(controls); target.append(card);
+  if (actions.childElementCount) card.append(actions); card.append(controls); target.append(card); appendSelectedProposalPager(target, doc);
 }
 
 function roleLabel(role) { return metadataLabel('roles', role); }
@@ -872,7 +1093,8 @@ function sameRevisionSlot(left, right) {
 }
 
 function revisionCandidates(current) {
-  const all = (state.overview?.documents || []).filter((candidate) => candidate.revision_digest !== current?.revision_digest && sameRevisionSlot(candidate.payload, current?.payload) && compareDocumentOrder(candidate, current) < 0);
+  const history = state.selectedHistory.revisions?.length ? state.selectedHistory.revisions : (state.overview?.documents || []);
+  const all = history.filter((candidate) => candidate.revision_digest !== current?.revision_digest && sameRevisionSlot(candidate.payload || candidate, current?.payload) && compareDocumentOrder(candidate, current) < 0);
   const parents = new Set(current?.payload?.parents || []);
   return all.sort((left, right) => {
     const parentOrder = Number(parents.has(right.revision_digest)) - Number(parents.has(left.revision_digest));
@@ -902,8 +1124,20 @@ function renderRevisionComparison(current) {
   const select = document.createElement('select'); select.setAttribute('aria-label', '비교할 이전 개정본');
   candidates.forEach((candidate) => { const option = document.createElement('option'); option.value = candidate.revision_digest; option.textContent = `${candidate.payload?.title || '제목 없음'} · ${formatDate(candidate.payload?.metadata?.created_at)} · ${shortDigest(candidate.revision_digest)}`; option.selected = candidate.revision_digest === preferred; select.append(option); });
   label.append(select); controls.append(label); container.append(controls);
-  select.addEventListener('change', () => { state.compareRevisionDigest = select.value || null; renderRevisionComparison(current); });
-  const previous = candidates.find((candidate) => candidate.revision_digest === preferred) || null;
+  select.addEventListener('change', () => { state.compareRevisionDigest = select.value || null; state.comparisonRevision = null; renderRevisionComparison(current); });
+  let previous = candidates.find((candidate) => candidate.revision_digest === preferred) || null;
+  if (previous && !Object.hasOwn(previous.payload || {}, 'body_markdown')) {
+    if (state.comparisonRevision?.revision_digest === preferred && state.comparisonRevision.payload) previous = state.comparisonRevision;
+    else {
+      const loading = document.createElement('p'); loading.className = 'form-hint'; loading.textContent = '비교할 이전 개정본을 불러오는 중…'; container.append(loading);
+      if (state.comparisonRevision?.revision_digest === preferred && state.comparisonRevision.error) { loading.textContent = `이전 개정본을 불러오지 못했습니다. ${state.comparisonRevision.error}`; return; }
+      if (state.comparisonRevision?.revision_digest !== preferred || !state.comparisonRevision.loading) {
+        state.comparisonRevision = { revision_digest: preferred, loading: true };
+        void loadComparisonRevision(preferred, current, state.session, state.comparisonRevisionVersion);
+      }
+      return;
+    }
+  }
   let comparison;
   try { comparison = compareRevisions(current, previous); }
   catch (error) { const message = document.createElement('p'); message.className = 'review-error'; message.textContent = error instanceof RevisionComparisonError ? error.message : '개정본을 비교할 수 없습니다.'; container.append(message); return; }
@@ -933,6 +1167,20 @@ function renderRevisionComparison(current) {
   }
 }
 
+async function loadComparisonRevision(digest, current, session, version) {
+  try {
+    const revision = await request(`${apiBase}/revisions/${encodeURIComponent(digest)}`, { sessionGuard: session });
+    if (session !== state.session || version !== state.comparisonRevisionVersion || state.compareRevisionDigest !== digest) return;
+    state.comparisonRevision = revision;
+    renderRevisionComparison(current);
+  } catch (error) {
+    if (session === state.session && version === state.comparisonRevisionVersion && state.compareRevisionDigest === digest) {
+      state.comparisonRevision = { revision_digest: digest, loading: false, error: error.message };
+      renderRevisionComparison(current);
+    }
+  }
+}
+
 function renderResolverDocuments(documents) {
   const select = el('resolve-documents'); const previous = select.value; select.replaceChildren();
   documents.forEach((doc) => { const option = document.createElement('option'); option.value = slotKeyFor(doc.payload); option.dataset.documentId = doc.payload?.document_id || ''; option.textContent = `${doc.payload?.title || '제목 없음'} · ${contextLabel(doc.payload?.context_id)}`; option.selected = slotKeyFor(doc.payload) === state.selectedDocumentKey; select.append(option); });
@@ -950,16 +1198,11 @@ function syncResolverFields(doc) {
 
 function activeAgreementForSlot(document) {
   if (!document?.payload) return null;
-  const slot = document.payload;
-  return (state.overview?.documents || []).find((candidate) => {
-    const payload = candidate.payload || {};
-    return candidate.agreement?.status === 'active'
-      && payload.document_id === slot.document_id
-      && payload.context_id === slot.context_id
-      && payload.scope_id === slot.scope_id
-      && payload.usage_scope === slot.usage_scope
-      && payload.channel_id === slot.channel_id;
-  })?.agreement?.agreement_id || null;
+  // An explicit null from the selected full view is authoritative for that
+  // observation; an older overview must not resurrect a withdrawn agreement.
+  if (Object.hasOwn(document, 'active_agreement')) return document.active_agreement?.status === 'active' ? document.active_agreement.agreement_id : null;
+  const candidate = (state.overview?.documents || []).find(item => sameRevisionSlot(item.payload, document.payload));
+  return candidate?.active_agreement?.status === 'active' ? candidate.active_agreement.agreement_id : null;
 }
 
 function jsonBody(value) { return JSON.stringify(value); }
@@ -1010,7 +1253,8 @@ async function submitDecision(proposal, decision) {
   if (!rationale) { showStatus('결정의 근거를 입력하세요.', 'error'); return; }
   const payload = { decision, rationale, command_id: nowCommand() };
   if (decision === 'retract') { const own = (proposal.decisions || []).find((item) => item.actor_id === state.session?.actor?.actor_id && item.actor_org_id === state.session?.actor?.org_id && item.decision !== 'retract'); if (!own) { showStatus('철회할 본인 결정이 없습니다.', 'error'); return; } payload.retracts_decision_id = own.decision_id; }
-  await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/decisions`, payload, `결정 ${decisionLabel(decision)}`, { command_type: 'decide', target_id: proposal.proposal_id });
+  const result = await executeMutation(`/agreement-proposals/${encodeURIComponent(proposal.proposal_id)}/decisions`, payload, `결정 ${decisionLabel(decision)}`, { command_type: 'decide', target_id: proposal.proposal_id });
+  if (result?.status === 'committed' && state.reviewDraft?.proposalId === proposal.proposal_id) { state.reviewDraft.rationale = ''; setValue(el(`rationale-${proposal.proposal_id}`), ''); }
 }
 
 async function activateProposal(proposal) {
@@ -1026,6 +1270,7 @@ async function changeAgreement(proposal, action) {
 
 async function onDraftSubmit(event) {
   event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); text(el('draft-status'), '비공개 저장소에 저장 중…');
+  if (state.draftBaseLookupPending || state.draftBaseLookupError) { text(el('draft-status'), state.draftBaseLookupError || '문서의 최신 개정본을 확인하는 중입니다. 잠시 후 다시 저장하세요.'); return; }
   const version = ++state.composerVersion; const session = state.session;
   setDraftBusy(true);
   const payload = Object.fromEntries(data.entries());
@@ -1038,8 +1283,7 @@ async function onDraftSubmit(event) {
     payload.usage_scope = policy.usage_scope;
   }
   delete payload.policy_id;
-  const base = state.draftBaseDigest ? (state.overview?.documents || []).find((doc) => doc.revision_digest === state.draftBaseDigest) : null;
-  if (base?.payload) { payload.base_revision_digest = base.revision_digest; payload.document_id = base.payload.document_id; }
+  if (state.draftBaseDigest) payload.base_revision_digest = state.draftBaseDigest;
   try {
     let path = `${apiBase}/drafts`; let input = payload;
     if (state.draftSourceId) {
@@ -1077,6 +1321,7 @@ async function importMarkdown() {
   const policy = selectedDraftPolicy();
   if (!policy) { text(el('draft-status'), '먼저 가져올 문서 범위를 선택하세요.'); return; }
   applyDraftPolicy(policy);
+  if (state.draftBaseLookupPending || state.draftBaseLookupError) { text(el('draft-status'), state.draftBaseLookupError || '문서의 최신 개정본을 확인하는 중입니다. 잠시 후 다시 가져오세요.'); return; }
   for (const id of ['draft-title', 'draft-context', 'draft-scope', 'draft-usage']) if (!el(id).reportValidity()) return;
   if (!/\.(md|markdown)$/i.test(file.name) || file.size === 0 || file.size > 262144) {
     text(el('draft-status'), '비어 있지 않은 .md 또는 .markdown 파일을 선택하세요. 최대 크기는 256 KiB입니다.'); return;
@@ -1179,12 +1424,17 @@ async function switchPersona(event) {
   try { selected = JSON.parse(event.target.value); } catch { return; }
   if (!selected?.org_id || !selected?.actor_id || (selected.org_id === state.session?.actor?.org_id && selected.actor_id === state.session?.actor?.actor_id)) return;
   event.target.disabled = true;
-  resetComposer(); clearPrivateDrafts(); clearCommands(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null;
+  resetComposer(); clearPrivateDrafts(); clearCommands(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null; clearSelectedRevisionState();
   clearSourceState();
   try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); await loadCommands(); await loadSources(); }
 }
 
 function resetComposer() {
+  state.draftBaseLookupVersion++;
+  state.draftBaseLookupPending = false;
+  state.draftBaseLookupError = null;
+  state.draftBaseLookupPolicyKey = null;
+  state.draftBaseLookupComplete = false;
   invalidateDraftPreview();
   state.draft = null; state.draftBaseDigest = null;
   state.draftSourceId = null;
@@ -1221,6 +1471,8 @@ function openComposer(mode, doc = null) {
 
 function bindEvents() {
   el('refresh-overview').addEventListener('click', async () => { clearStatus(); try { await loadOverview(); showStatus('원장 체크포인트에서 최신 상태를 읽었습니다.', 'success'); } catch (error) { showStatus(error.message, 'error'); } });
+  el('more-documents')?.addEventListener('click', () => { void loadMoreOverview('documents'); });
+  el('more-proposals')?.addEventListener('click', () => { void loadMoreOverview('proposals'); });
   el('refresh-drafts').addEventListener('click', () => loadPrivateDrafts());
   el('more-drafts').addEventListener('click', () => loadPrivateDrafts(true));
   el('refresh-commands')?.addEventListener('click', () => loadCommands());
@@ -1228,6 +1480,7 @@ function bindEvents() {
   el('source-manifest-file')?.addEventListener('change', () => { void readSourceManifest(); });
   el('source-folder')?.addEventListener('change', () => { state.sourceOperationVersion++; state.sourceFolderSelected = true; renderSelectedSourceFiles(); });
   el('source-import')?.addEventListener('click', () => { void importSourceFiles(); });
+  el('more-sources')?.addEventListener('click', () => { void loadSources(true); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (state.commandPollTimer) window.clearTimeout(state.commandPollTimer); state.commandPollTimer = null; }
     else scheduleCommandPoll();

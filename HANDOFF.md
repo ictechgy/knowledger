@@ -1,29 +1,53 @@
 # Handoff
 
-_Last updated: 2026-09-16 11:55 KST by Codex_
+_Last updated: 2026-09-16 13:00 KST by Codex_
 
 ## Goal
 
 MIT 지식 합의 원장. 사용자는 남은 코드 작업을 중간 재승인 없이 진행하길 원한다.
-오픈소스 제품이므로 영업·이행·정산은 선택형 예제이고 제품 조직 구성이 아니다.
-**Markdown KB/저장소 adapter, 지식 SDK, guarded generation**까지 구현·검증했다.
-최신 요청은 Claude와 성능·보안·구조·사용성 리뷰다. `419a26d`를 검토했고 아래 개선 항목을 발견했다.
-이번에는 리뷰 문서만 기록하며 런타임 수정은 하지 않았다.
-운영 SSO/KMS 업체 선택을 개발 blocker로 다시 요구하지 않는다.
+오픈소스 제품이므로 영업·이행·정산은 선택형 예제이며 제품의 필수 조직 구성이 아니다.
+최신 요청은 **Claude 리뷰에서 확인한 R1–R6 수정**이다. 모두 구현·검증했고 아래 제한은 명시했다.
+운영 SSO/KMS/모델 업체 선택을 코드 작업 blocker로 다시 요구하지 않는다.
 
 ## Current Status
 
-- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`. 구현/리뷰 기준은 `419a26d`; 최종 문서 커밋은 `git log -1` 확인.
-- **기본 제품 앱 http://127.0.0.1:4317**, Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local`.
-  별도 가상 승인/문서를 만들지 않는2조직 설정이다. 최신 코드 재기동 후 health200/block1.
-- 예제 앱도 최신 코드:4318 Fabric 가상 역할,4319 OIDC 통합/IdP4320,
-  4321 영업/4322,4331 이행/4332,4341 정산/4342. health200/Fabric block206.
-  `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement` 보존.
-  재시작으로 개발 로그인 세션은 초기화됐다.
-- 실제 네트워크는 Colima `colima`의3 peer·3 Raft orderer. 테스트 인증서 **2026-09-22 만료**.
+- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`.
+  리뷰 대상 구현은 `419a26d`, 리뷰 문서는 `399f78b`. 이번 수정 커밋은 `git log -1`로 확인한다.
+- **기본 앱 http://127.0.0.1:4317**, Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local`.
+  초기 문서 없는2조직 제품 설정을 보존했다. 최신 앱 health/readiness200, local block1·문서0개.
+- 예제 앱도 최신 코드로 graceful restart:4318 Fabric 개발 계정,4319 OIDC 통합/IdP4320,
+  4321 영업/4322,4331 이행/4332,4341 정산/4342. 전부 health/readiness200.
+  4318의 실제 Fabric block206·최신 슬롯4개. OIDC 앱4개는 익명 overview401.
+  개발 로그인 세션은 재시작으로 초기화됐다.
+- `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement` 보존.
+- 네트워크는 Colima `colima`의3 peer·3 Raft orderer. 테스트 인증서 **2026-09-22 만료**.
   chaincode0.1.0/sequence2, package `kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157` 유지.
-  이번에는 chaincode 재배포·네트워크 초기화를 하지 않았다.
-- UI 시험은 매번 임시 DB/포트에서 실행·종료한다. 이전4351 테스트 데이터는 `.data/configured-ui-20260916`에 보존.
+  이번에는 새 Fabric 거래 제출·peer 정지·네트워크 초기화·chaincode 재배포를 하지 않았다.
+- 사용자 `.serena/`는 보존하고 커밋에서 제외했다. 원격 push는 하지 않았다.
+
+## Latest Delivery
+
+- **R1:** overview는 full slot별 최신 게시본 요약과 별도 제안 페이지다. 검색/이력도 기본20·최대50.
+  본문/누적 history를 목록에 반복하지 않는다. 정확한 원문 SDK 계약은 유지한다.
+  `GET /revisions/{digest}/view`, `/history`, `GET /agreement-proposals/{id}`로 정확한 상세를 조회한다.
+  `GET /documents/{id}`도 요약 페이지로 바뀌었다. 외부 browse 호출자는 [API 변경](docs/11-RUNTIME.md)을 따른다.
+- cursor는 actor·조회조건·원장 snapshot에 HMAC 결속, 새 게시에도 페이지가 밀리지 않는다.
+  계정/조건 변경·변조·서버 재시작에는400 `INVALID_CURSOR`, 첫 페이지부터 재조회한다.
+  원장 최신 사용 가능 여부는 계속 strict resolver/fence가 판단한다.
+- **R2:** `/healthz`는 원장 RPC 없는 liveness. `/readyz`는 단일 비동기 probe·1초 간격·5초 최대 샘플 나이.
+  첫 확인/실패/정체에는503. 준비 상태 캐시는 지식의 최신성 근거가 아니다.
+- **R3:** private 쓰기는 fresh 인가 뒤 동기적인 CAS/SQLite 구간에서 처리해 public transport를 기다리지 않는다.
+  service 원장 대기32개, Fabric 명령 대기 기본64개. 혼잡은 retryable503/429이며 영구 rejected로 기록하지 않는다.
+  Fabric은 projection 순서를 보존하고 외부 transport 대기 중 refresh를 허용한다.
+  동시 refresh를 합치되 제출 완료 뒤에는 이전 세대 refresh를 사용하지 않는다.
+- **R4:** raw journal 순차 replay, 현재 상태 유지, 과거 snapshot/검증 block 결과 각각8개 LRU.
+  현재 key당 최초 VALID 쓰기의 checkpoint·값/거래/raw digest를 독립 anchor로 유지한다.
+  SQL은 파생값/locator일 뿐이며 최초 쓰기·원래 receipt를 검증한다. cold replay는 현재 상태와
+  검증 당시 원시 journal 누적 digest까지 대조한다. durable 이력을 삭제하지 않는다.
+- **R5/R6:** manifest 선택 직후 이전 상태와 늦은 응답을 무효화. source 목록 더 보기/개수 표시.
+  문서·제안·이력 페이지를 연결했고, 페이지 밖 부모·정확한 과거 제안·기존 활성 합의 ID를 보존한다.
+  새 상세 상태를 옛 목록으로 덮지 않고, 늦은 이력 응답으로 입력한 승인 근거가 지워지지 않는다.
+- [리뷰/수정 근거](docs/25-CLAUDE-REVIEW.md), [실행 API](docs/11-RUNTIME.md), [검증 기록](docs/VALIDATION.md).
 
 ## Commands
 
@@ -32,103 +56,69 @@ Node24를 사용한다. 기본 로그인 셸의 Node22는 프로젝트 실행용
 ```sh
 export PATH="/Users/jinhongan/.nvm/versions/node/v24.18.0/bin:$PATH"
 npm start
-npm run demo:kb
-npm run kb:sync -- --server http://127.0.0.1:4317 --workspace knowledge --org OrgOneMSP --actor maintainer --root examples/markdown-kb --manifest examples/markdown-kb/manifest.json
 npm run check
 npm run check:types
 npm run test:browser
+npm run test:history-performance
+node --expose-gc --test test/fabric/sqlite-projection.test.ts
+npm run demo
+npm run demo:kb
 ```
 
-- `config:init`은 새 설정 파일 생성, `npm start`는 `--config FILE` 또는 `kcl.config.json` 필요.
-- 명시적인 예제는 `demo:web`, `demo:fabric`, `demo:login`; 기존 `start:fabric`/`start:login` 옵션 호환.
-- configured Fabric 실행은 `--organization ORG_ID` 필수. 앱 개인키 없음, 외부 Unix signer 참조 사용.
-- optional 브라우저 패키지 설치: `npm ci --prefix packages/browser-tests --ignore-scripts --no-fund` 후
+- `npm start`는 명시적 `--config FILE` 또는 `kcl.config.json` 필요. Fabric은 `--organization ORG_ID` 필수.
+- 예제 실행은 `demo:web`, `demo:fabric`, `demo:login`; `start:fabric`/`start:login` 호환 별칭 유지.
+- optional 브라우저 패키지: `npm ci --prefix packages/browser-tests --ignore-scripts --no-fund`,
   `node packages/browser-tests/node_modules/playwright/cli.js install chromium`.
-- `test:performance -- --documents 1000 --samples 5 --body-bytes 1024`, `test:resilience`로 독립 로컬 실험.
-
-## Latest Delivery
-
-- `packages/connectors/source-contract.ts`, `filesystem-markdown.ts`: strict allowlist manifest,
-  명시된 Markdown만 읽기. 링크/특수 파일/상위 경로/파일 교체·크기·UTF-8 검사.
-  원본 내용을 정규화하지 않고 BOM·CRLF를 보존한다. 악의적인 동일 OS 프로세스의 완전한 sandbox를 뜻하지 않는다.
-- `source-store.ts`, `PrivateStore`: actor별 source state, global version CAS, stable operation receipt,
-  draft/state/receipt의 SQLite atomic write. present100개/합계16MiB, 파일256KiB, metadata 총200개 상한.
-  원본 누락은 private 상태만 바꾸고 shared agreement를 철회하지 않는다.
-- `apps/api/service.ts`, `server.ts`: manifest validation, sources list/detail/import/reconcile,
-  shared `GET /revisions/{digest}`. 원본 path/hash는 private record에만 남고 게시 payload에는 넣지 않는다.
-- `sync-markdown.ts`, `development-client.ts`, `tools/kb-sync.ts`: handshake 이후 파일 읽기,
-  전체 snapshot 검사→누락 원본 표시→순차 변경 import→최종 reconcile. CLI는 counts만 출력.
-  각 요청은 원자적이고 batch 전체 rollback은 아니다. 실패/CAS 충돌 때 자동 재시도하지 않는다.
-- CLI handshake는 local-simulation만 허용한다. OIDC에는 로그인한 브라우저 업로드 또는 caller-owned
-  authenticated transport를 사용한다. 개인 auth 파일·환경 토큰을 탐색하지 않는다.
-- `packages/client/knowledge-client.ts`: Node24 client. origin/workspace 고정, 호출 측의 cookie/CSRF transport,
-  strict JSON·2MiB·10초 기본 요청 한도·30초 신선도. full revision/digest/slot/manifest 확인.
-- `guarded-generation.ts`: generate/release authorization 필수, 두 단계 직전 fresh revalidation,
-  권한 거부·철회·변경·timeout이면 output 미반환. 기본120초/최대600초. 외부 모델/도구를 자동 호출하지 않는다.
-  이미 모델에 전달된 본문을 회수하거나 callback의 외부 부작용을 취소하는 기능이 아니다.
-- `tools/kb-demo.ts`, `examples/markdown-kb/`: 임시 로컬2조직 + 실제 HTTP + 허구의 담당자 승인 + callback stub 예제.
-- `apps/web`: manifest/폴더 미리보기, allowlist 파일만 private sync, source 상세→초안 재개,
-  업로드 전 형식 검사와 계정 변경/늦은 응답 차단. 현재 표시는 마지막 동기화 기준이다.
-- [KB 가이드](docs/23-KB-SOURCE-CONNECTOR.md), [Node 클라이언트](docs/24-KNOWLEDGE-CLIENT.md), [검증 기록](docs/VALIDATION.md).
-
-## Established Foundation
-
-- 공통 결정적 엔진의 불변 본문·정확한 proposal/revision/slot/policy/epoch 승인·CAS·이의/철회·dependency·fence.
-- Fabric VALID full-block projection·명령 outbox, OIDC 현재 인가·별도 signer·조직별 runtime scope.
-- 설정 기반2/4조직 제품과 `examples/order-workflow` 분리, explicit seed, source/actor metadata.
-- Markdown 단일 import·비공개 초안 재개·offline snapshot v1/v2/v3. 기존 DB에 source records를 추가했으며 파일 프로필 변경 없음.
-- 내 요청 상태/polling/정확한 ID 재시도, exact revision 비교, 브라우저·성능·복원력 자동 검사.
-- Claude Sonnet5 실제 디자인 검토는 완료된 상태다. [논의](docs/18-DESIGN-REVIEW.md), [DESIGN.md](DESIGN.md).
-  전용키가 없을 때 scrubbed packet을 기존 구독 CLI에 전달했고 개인 인증파일·전역 설정을 건드리지 않았다.
-  이 논의를 미완료로 되돌리거나 전용키를 다시 요구하지 않는다.
+- `test:performance -- --documents 1000 --samples 5 --body-bytes 1024`는 모든 요약 페이지 순회 시간이다.
+- `test:resilience`는 격리 로컬 복구 실험. 기존 네트워크에 최초 `fabric:smoke`를 반복하지 않는다.
 
 ## Verification
 
-- `npm run check`: **227 passed /0 failed /0 skipped**, `check:types`·`demo`·`demo:kb` 통과.
-- 별도 source copy: **192 passed /0 failed /35 optional skipped**. 최종 SDK12개도 해당 copy에서 통과.
-- `test:browser`: **Chromium9개 통과**. 기존 계정/원문/복구7개 + source allowlist/반복/변경/계정 전환 검사.
-- `.data/configured-smoke-zv1THX/evidence.json`: 실제 VALID 게시192·승인194, source 상태·SDK exact revision,
-  release authorization 중 철회 후 output 차단, v3 restore 뒤 source/draft/명령 보존.
-- `.artifacts/kb-integration/{final-check,browser,no-optional-check}.log`, `demo.json.log`가 이번 근거.
-- 이전 `.artifacts/experiments/performance-1000.json`:1KiB×1,000문서, search/overview p95 약247.59/249.07ms,
-  replay 약262.15ms. 현재 장비의 로컬 측정이며 SLA가 아니다.
-- 이전 `.artifacts/experiments/resilience.json`: 자식 process SIGKILL 복원/멱등성, snapshot, fixture503 회복.
-- 실제 회사 source/SSO·모델 공급자·독립 호스트 장애/재해 복구·원격 CI는 검증하지 않았다.
-  SDK의 binding 검증은 독립적인 Fabric quorum proof가 아니다.
+- `npm run check`: **249 passed /0 failed /1 GC 전용 skipped**.
+- 별도 `--expose-gc` projection 검사 **12 passed /0 skipped**, `check:types`·`demo`·`demo:kb` 통과.
+- `test:browser`: **Chromium18개 통과**. 새 페이지 계약과 actor/늦은 응답/원문·합의 선택까지 포함한다.
+- 외부 패키지 없는 source copy: **208 passed /0 failed /42 skipped**. 기본 로컬 실행에 새 외부 의존성 없음.
+- 동일 슬롯200개 개정 overview JSON **16,811,761→2,820 bytes**, 새5회 계산 약7.33–9.70ms.
+  이력20개 페이지22,176 bytes, 원문/총200개 이력 보존. 로컬 측정이며 Fabric SLA가 아니다.
+- 64→512블록 고정 key 실험: raw29,527,920 bytes 추가, GC 뒤 ArrayBuffer 증가9 bytes.
+  growing key 집합의 전체 메모리가 일정하다는 뜻은 아니다.
+- 1,000개 문서 전 페이지 순회/재시작 전후 총개수 일치. 이전 단일 전체 응답과 latency를 직접 비교하지 않는다.
+- `.artifacts/review-fixes/`: 최종 check/types/browser/no-optional/projection-memory 로그,
+  history-after/performance-1000 JSON, runtime-health/live-fabric-browse JSON.
+- 실제4318에서 새 summary와 정확한 revision view/history200 확인, block206 유지. 이번에는 읽기 전용 검증이다.
+- 이전 `.data/configured-smoke-zv1THX/evidence.json`의 실제 VALID 게시192·승인194, source/SDK/release 철회 차단,
+  v3 restore 검증은 이전 구현 근거로 유지한다. 이번에 같은 네트워크 쓰기를 반복했다고 주장하지 않는다.
+
+## Established Foundation
+
+- 공통 결정적 엔진: 불변 본문, 정확한 proposal/revision/slot/policy/epoch 승인, CAS·이의·철회·dependency·fence.
+- Fabric VALID full-block projection, outbox, OIDC 현재 인가, 별도 signer, 조직별 runtime scope.
+- 설정 기반2/4조직 제품과 order-workflow 예제 분리, private 초안/Markdown import, offline snapshot v1/v2/v3.
+- Markdown source connector: 명시적 allowlist, actor-private path/hash, global version CAS,
+  파일256KiB·present100개/16MiB·metadata200개. 원본 누락은 shared agreement를 자동 철회하지 않는다.
+- Node 지식 SDK: 정확한 revision·strict manifest 검증, 생성/반환 전 권한과 freshness 재검증.
+  callback의 외부 부작용 취소나 이미 모델에 전달한 본문 회수를 보장하지 않는다.
+- Claude Sonnet5 실제 디자인/4관점 리뷰는 완료했다. 전용키 없이 scrubbed packet을 구독 CLI에 전달했고
+  개인 인증파일·전역 설정을 건드리지 않았다. 원본은 Git 제외 `.artifacts/claude-review-419a26d/`에 있다.
 
 ## Authorization & Avoid
 
-- 네트워크·공식 의존성·`.data/fabric-smoke/crypto` 테스트 키 생성/서명/사용 승인 재사용.
-  개인 auth/.env/회사 키를 읽지 않는다. KB 테스트는 생성한 합성 파일과 저장소의 공개 예제만 사용했다.
-- 사용자 `.serena/` 보존·커밋 제외. 원격 push/공개에는 명시적 요청 필요.
-- 원장·인증서·genesis 재생성 금지. 최초 `fabric:smoke` 반복 금지. 후속 smoke는 새 합의 이력을 남기고 철회한다.
-- DB backup은 앱 종료 후, restore는 새 폴더. WAL/SHM을 삭제해 검사를 우회하지 않는다.
-- 서버 종료 전 PID와 실제 command를 대조한다. 개인 브라우저/세션을 탐색하지 않는다.
+- 기존 네트워크·공식 의존성·`.data/fabric-smoke/crypto` 테스트 키 생성/서명/사용 승인 재사용.
+  개인 auth/.env/회사 키는 읽지 않는다. 테스트는 합성 입력·격리 DB/포트/브라우저를 사용한다.
+- `.serena/`, 기존 키·원장·genesis를 보존. 강제 Git 명령/원격 공개는 별도 명시적 요청 없이 하지 않는다.
+- DB backup은 앱 종료 후, restore는 새 폴더. WAL/SHM 삭제로 검사를 우회하지 않는다.
+- 서버 종료 전 PID/command/cwd를 확인하고 graceful shutdown한다. 개인 브라우저·로그인 세션을 탐색하지 않는다.
+- R4의 단순 LRU+SQL 자기 대조, 모든 read마다 full replay 방식은 채택하지 않는다.
+  불변식과 현재 읽기 성능을 함께 검사해야 한다.
 
 ## Remaining / Resume
 
-기능 구현 뒤 [Claude 공동 리뷰](docs/25-CLAUDE-REVIEW.md)에서 실제 코드 개선 항목을 확인했다.
-**남은 일이 운영 설정뿐이라는 이전 요약은 더 이상 맞지 않는다.** 아직 고치지 않은 순서는 다음과 같다.
+요청한 R1–R6 코드 수정은 완료했다. 범위를 임의로 확장하거나 운영 업체 결정을 다시 blocker로 삼지 않는다.
+남는 명시적 한계는 페이지당 O(N) browse 계산, 현재 key 수에 비례하는 상태/anchor,
+최대8개 과거 snapshot과 cold replay/시작 replay 비용이다. 운영 부하/독립 인프라 검증은 별도 목표다.
 
-1. **R1/P1:** overview/search의 개정별 전체 history 중복·페이지 제한 없음. 같은 슬롯 200개 개정에서
-   history 40,000개·JSON 16,811,761 bytes를 로컬 service로 재현했다. 요약/페이지/상세 분리가 필요하다.
-2. **R2/P2:** 인증 전 healthz가 매번 Fabric refresh 큐를 사용. 모의 peer 40ms에서 익명 동시 8건이
-   peer RPC 8회·순차 339ms였다. 외부 노출 시 제한, liveness/readiness 분리가 필요하다.
-3. **R5/R6/P2:** 큰 manifest 선택 시 이전 선택으로 import 가능, source 21개부터 목록의 다음 페이지 접근 불가.
-   실제 격리 Chromium에서 재현했다. 상태 무효화 순서와 source cursor UI가 필요하다.
-4. **R3/P2:** service 명령 큐가 private sync도 기다리게 하고 Fabric은 별도 전역 큐를 사용.
-   지연된 게시 뒤 private import 대기를 재현했다. CAS·멱등성·블록 순서를 지키며 잠금 범위를 줄여야 한다.
-5. **R4/P2:** raw blocks/results/history를 전체 메모리 보관. 구조는 확인, 장기 heap/OOM은 미측정.
-   이력/무결성 검사를 삭제하지 말고 순차 replay·디스크 검증 조회·제한된 캐시를 검토한다.
+실제 기관 SSO·모델 egress 정책/공급자 설정, 파일럿 운영, 독립 호스트 장애/재해 복구, 원격 공개/CI는 별도 도입 단계다.
+SaaS별 connector·벡터 검색·운영 대시보드는 별도 확장 기능이다.
 
-Claude의 requestTimeout 15초/handler 충돌, committed retry 재제출 주장은 오탐으로 제외했다.
-Node24 국소 실험과 멱등성/재시작 테스트 2개 재실행 통과. `.artifacts/claude-review-419a26d/`에
-정리된 패킷·실제 Claude 응답·probe·실행 JSON을 보관한다. 리뷰는 전체 침투 시험이나 운영 성능 인증이 아니다.
-
-별도 도입 단계는 실제 기관의 인증 transport·모델 egress 정책/공급자 설정, 파일럿 운영과
-독립 인프라 검증, 원격 공개/CI 확인이다.
-SaaS별 KB connector·벡터 검색·운영 대시보드는 별도 확장 기능이며 이번 완료 주장에 포함하지 않는다.
-
-재개: AGENTS.md/HANDOFF.md와 리뷰 문서를 읽고 요청한 수정 범위를 진행해.
-KB/source/guarded-generation의 이전227개 검사·Chromium9개·실제Fabric 검증은 완료됐지만 위 리뷰 항목은 미수정이다.
-기존 키·원장·.serena를 보존하고 운영 공급자 선택을 개발 blocker로 다시 요구하지 마. 원격 push는 명시적 요청이 있어야 한다.
+재개: 이 저장소의 AGENTS.md/HANDOFF.md와 docs/25-CLAUDE-REVIEW.md 후속 수정을 읽고 새 요청 범위부터 진행해.
+기존 데이터·키·.serena를 보존하고, 리뷰의6개 항목을 미수정으로 되돌리지 마. 원격 push에는 명시적 요청이 필요하다.

@@ -37,24 +37,40 @@ export class FabricApplicationLedger implements ApplicationLedger {
   readonly mode: 'fabric-test-network' | 'fabric';
   readonly channelId: string;
   private queue: Promise<unknown> = Promise.resolve();
+  private projectionQueue: Promise<unknown> = Promise.resolve();
+  private pendingCommands = 0;
+  private refreshGeneration = 0;
+  private refreshInFlight: { generation: number; promise: Promise<void> } | undefined;
   private available = false;
   private closed = false;
   private readonly routes: FabricSigningRoute[];
-  private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number };
+  private readonly maxPendingCommands: number;
+  private readonly options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number };
 
-  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; mode?: 'fabric-test-network' | 'fabric' }) {
+  constructor(options: { projection: Projection; source: PeerBlockSource; routes: FabricSigningRoute[]; catchupTimeoutMs?: number; maxPendingCommands?: number; mode?: 'fabric-test-network' | 'fabric' }) {
     this.mode = options.mode ?? 'fabric-test-network';
     this.options = options;
     this.channelId = options.projection.channelId;
     if (options.catchupTimeoutMs !== undefined && (!Number.isSafeInteger(options.catchupTimeoutMs) || options.catchupTimeoutMs <= 0)) throw new Error('Catch-up timeout must be positive integer milliseconds');
+    this.maxPendingCommands = options.maxPendingCommands ?? 64;
+    if (!Number.isSafeInteger(this.maxPendingCommands) || this.maxPendingCommands <= 0) throw new Error('Maximum pending command count must be positive integer');
     this.routes = options.routes.map(route => ({ ...route, actor: { ...route.actor } }));
     if (!this.routes.length || new Set(this.routes.map(route => JSON.stringify(route.actor))).size !== this.routes.length) throw new Error('Distinct authenticated Fabric signing routes are required');
   }
 
   private serial<T>(run: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new FabricLedgerError('LEDGER_CLOSED', '원장 연결이 종료되었습니다.'));
+    if (this.pendingCommands >= this.maxPendingCommands) return Promise.reject(new FabricLedgerError('LEDGER_BUSY', '원장 요청이 처리 중입니다. 잠시 후 다시 시도해 주세요.', 429));
+    this.pendingCommands += 1;
     const operation = this.queue.then(run);
     this.queue = operation.catch(() => undefined);
+    return operation.finally(() => { this.pendingCommands -= 1; });
+  }
+
+  /** Projection application is a single ordered writer, independent of external command transport. */
+  private project<T>(run: () => Promise<T>): Promise<T> {
+    const operation = this.projectionQueue.then(run);
+    this.projectionQueue = operation.catch(() => undefined);
     return operation;
   }
 
@@ -85,7 +101,26 @@ export class FabricApplicationLedger implements ApplicationLedger {
     if (performance.now() - started > (this.options.catchupTimeoutMs ?? 5000)) throw new FabricLedgerError('PROJECTION_BEHIND', '블록 반영 대기 시간을 초과했습니다.');
   }
 
-  refresh(): Promise<void> { return this.serial(() => this.synchronize()); }
+  private refreshAt(generation: number): Promise<void> {
+    const active = this.refreshInFlight;
+    if (active && active.generation >= generation) return active.promise;
+    const previous = active?.promise;
+    const promise = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      await this.project(() => this.synchronize());
+    })();
+    const tracked = { generation, promise };
+    this.refreshInFlight = tracked;
+    void promise.finally(() => {
+      if (this.refreshInFlight === tracked) this.refreshInFlight = undefined;
+    }).catch(() => undefined);
+    return promise;
+  }
+
+  refresh(): Promise<void> {
+    if (this.closed) return Promise.reject(new FabricLedgerError('LEDGER_CLOSED', '원장 연결이 종료되었습니다.'));
+    return this.refreshAt(this.refreshGeneration);
+  }
 
   private ready(): void {
     if (this.closed || !this.available) throw new FabricLedgerError('FRESHNESS_UNAVAILABLE', '최신 peer 상태를 확인한 뒤 다시 시도해 주세요.');
@@ -112,20 +147,34 @@ export class FabricApplicationLedger implements ApplicationLedger {
     return this.serial(async () => {
       const route = this.routes.find(route => sameActor(route.actor, actor));
       if (!route) throw new FabricLedgerError('SIGNER_FORBIDDEN', '인증된 서명 신원이 없는 사용자입니다.', 403, false);
-      await this.synchronize();
-      const prior = this.committed(actor, command);
+      let prior: CommittedReceipt | undefined;
+      await this.project(async () => {
+        await this.synchronize();
+        prior = this.committed(actor, command);
+        if (prior) return;
+        // Preflight protects publication boundaries and provides domain errors.
+        // Only the chaincode execution and subsequent VALID peer block are authoritative.
+        const staged = new Map<string, unknown>();
+        await validateCommand({ actor, channel_id: this.channelId, tx_id: 'preflight', timestamp: new Date().toISOString(),
+          get: async key => staged.has(key) ? structuredClone(staged.get(key)) : this.options.projection.read(key),
+          put: async (key, value) => { staged.set(key, structuredClone(value)); },
+        }, command);
+      });
       if (prior) return prior;
-      // Preflight protects publication boundaries and provides domain errors.
-      // Only the chaincode execution and subsequent VALID peer block are authoritative.
-      const staged = new Map<string, unknown>();
-      await validateCommand({ actor, channel_id: this.channelId, tx_id: 'preflight', timestamp: new Date().toISOString(),
-        get: async key => staged.has(key) ? structuredClone(staged.get(key)) : this.options.projection.read(key),
-        put: async (key, value) => { staged.set(key, structuredClone(value)); },
-      }, command);
-      const submitted = await route.transport.execute({ ...command, actor_org_id: actor.org_id });
+      let submitted;
+      let writeGeneration: number;
+      try {
+        // The command queue still protects route ordering, while the projection gate
+        // is free to catch up during this external, potentially slow operation.
+        submitted = await route.transport.execute({ ...command, actor_org_id: actor.org_id });
+      } finally {
+        // Any settled transport call may have reached the ordering service. Force a
+        // refresh created after this call to wait for the latest peer tip.
+        writeGeneration = ++this.refreshGeneration;
+      }
       const pending: PendingReceipt = { status: 'pending', command_id: command.command_id, tx_id: submitted.tx_id, payload_digest: submitted.payload_digest };
       if (submitted.status === 'invalid') throw new FabricLedgerError('LEDGER_CONFLICT', '거래가 VALID로 커밋되지 않았습니다. 최신 상태를 확인해 주세요.', 409);
-      try { await this.synchronize(); }
+      try { await this.refreshAt(writeGeneration); }
       catch (error) {
         if (error instanceof FabricLedgerError && error.code === 'PROJECTION_INVALID') throw error;
         return pending;
@@ -136,8 +185,12 @@ export class FabricApplicationLedger implements ApplicationLedger {
 
   recoverPending(): Promise<void> {
     return this.serial(async () => {
-      for (const route of this.routes) await route.transport.recoverPending();
-      await this.synchronize();
+      try {
+        for (const route of this.routes) await route.transport.recoverPending();
+      } finally {
+        this.refreshGeneration += 1;
+      }
+      await this.refreshAt(this.refreshGeneration);
     });
   }
 
@@ -145,12 +198,18 @@ export class FabricApplicationLedger implements ApplicationLedger {
     return this.serial(async()=>{
       const route=this.routes.find(route=>sameActor(route.actor,actor));
       if(!route) throw new FabricLedgerError('SIGNER_FORBIDDEN','인증된 서명 신원이 없는 사용자입니다.',403,false);
-      this.ready();
-      const prior=this.committed(actor,command);
+      let prior: CommittedReceipt | undefined;
+      await this.project(async () => {
+        this.ready();
+        prior=this.committed(actor,command);
+      });
       if(prior)return prior;
       const observed=await route.transport.observeCommand?.({...command,actor_org_id:actor.org_id},queryPeer);
-      if(queryPeer)await this.synchronize();
-      return this.committed(actor,command)??observed;
+      if(queryPeer) {
+        const generation=++this.refreshGeneration;
+        await this.refreshAt(generation);
+      }
+      return this.project(async () => this.committed(actor,command) ?? observed);
     });
   }
 
@@ -158,6 +217,10 @@ export class FabricApplicationLedger implements ApplicationLedger {
     if (this.closed) return;
     this.closed = true;
     await this.queue;
+    await this.projectionQueue;
+    const refresh = this.refreshInFlight?.promise;
+    if (refresh) await refresh.catch(() => undefined);
+    await this.projectionQueue;
     try { for (const route of this.routes) await route.close?.(); }
     finally { try { await this.options.source.close?.(); } finally { this.options.projection.close(); } }
   }

@@ -15,6 +15,11 @@ import { sha256Digest } from "./canonical.ts";
 import type { Checkpoint, LedgerEvent } from "../storage/local-ledger.ts";
 
 const SCHEMA_VERSION = 1;
+const MAX_HISTORICAL_SNAPSHOT_CACHE = 8;
+const EMPTY_JOURNAL_DIGEST = '0'.repeat(64);
+function appendJournalDigest(previous: string, rawBlockDigest: string): string {
+  return rawDigest(Buffer.from(previous + rawBlockDigest, 'hex'));
+}
 
 type BlockRow = {
   block_number: number;
@@ -25,7 +30,23 @@ type BlockRow = {
   bytes: Uint8Array;
 };
 
-type HistoryEntry = { block_number: number; transaction_index: number; transaction_id: string; block_hash: string; value: unknown };
+type HistoricalReplay = {
+  before: Map<string, unknown>;
+  raw_digest: string;
+  result: ProjectBlockResult;
+};
+
+type VerifiedBlockResult = {
+  raw_digest: string;
+  result: ProjectBlockResult;
+};
+
+type StateCreationAnchor = {
+  block_raw_digest: string;
+  checkpoint: Checkpoint;
+  transaction_digest: string;
+  value_digest: string;
+};
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -74,19 +95,30 @@ function checkpointFromRow(row: { channel_id: string; block_number: number; tran
 /**
  * A single-writer durable projection for peer-delivered Fabric blocks.
  *
- * Raw blocks are the journal. On open, every raw block is replayed through
+ * Raw blocks are the journal. On open, every raw block is streamed through
  * FabricBlockProjector. The state/history/cursor tables are derived views and
  * are rebuilt from that replay in one SQL transaction, so a damaged derived
  * view is recoverable while a damaged or forged raw journal stops startup.
+ * Historical reads replay the journal on demand instead of retaining all
+ * blocks, results, or per-key history in process memory.
  */
 export class SqliteFabricProjection {
   readonly channelId: string;
   private readonly db: DatabaseSync;
   private readonly options: FabricBlockProjectorOptions;
   private projector!: FabricBlockProjector;
-  private results = new Map<number, ProjectBlockResult>();
-  private blocks: BlockRow[] = [];
-  private history = new Map<string, HistoryEntry[]>();
+  /** Only the latest result is cached; raw blocks and historical results are on disk. */
+  private latestResult: ProjectBlockResult | null = null;
+  /** At most eight point-in-time snapshots; worst case is eight copies of current state. */
+  private readonly historicalSnapshots = new Map<string, HistoricalReplay>();
+  /** A bounded LRU avoids replaying the journal for repeated historical receipts. */
+  private readonly verifiedBlockResults = new Map<number, VerifiedBlockResult>();
+  /** Compact first-write proofs grow with current keys, not with update history. */
+  private stateCreationAnchors = new Map<string, StateCreationAnchor>();
+  private latestRawDigest: string | null = null;
+  // One process-trusted digest covers VALID metadata too, which Fabric's header
+  // hash does not bind. Cold replay must match the complete verified byte journal.
+  private journalDigest = EMPTY_JOURNAL_DIGEST;
   private closed = false;
 
   constructor(path: string, options: FabricBlockProjectorOptions) {
@@ -144,6 +176,14 @@ export class SqliteFabricProjection {
           value_json TEXT NOT NULL,
           PRIMARY KEY (state_key, block_number, transaction_index)
         );
+        CREATE TABLE IF NOT EXISTS fabric_projection_state_creation (
+          state_key TEXT PRIMARY KEY,
+          block_number INTEGER NOT NULL,
+          transaction_index INTEGER NOT NULL,
+          transaction_id TEXT NOT NULL,
+          block_hash TEXT NOT NULL,
+          value_json TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS fabric_projection_cursor (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           block_number INTEGER NOT NULL,
@@ -152,20 +192,13 @@ export class SqliteFabricProjection {
         );
       `);
       this.ensureBinding();
-      const blocks = this.loadBlocks();
-      const replayed = this.replay(blocks);
+      const replayed = this.replayAndRebuild();
       this.projector = replayed.projector;
-      this.results = replayed.results;
-      this.blocks = blocks;
-      this.history = this.buildHistory(replayed.results, blocks);
-      this.db.exec("BEGIN IMMEDIATE");
-      try {
-        this.rebuildDerived(blocks, replayed.results);
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
+      this.latestResult = replayed.latestResult;
+      this.latestRawDigest = replayed.latestRawDigest;
+      this.journalDigest = replayed.journalDigest;
+      this.stateCreationAnchors = replayed.stateCreationAnchors;
+      if (replayed.latestResult && replayed.latestRawDigest) this.rememberBlockResult(replayed.latestResult, replayed.latestRawDigest);
     } catch (error) {
       this.db.close();
       throw error;
@@ -201,21 +234,13 @@ export class SqliteFabricProjection {
     if (!header) throw new Error("Fabric block header is required");
     const blockNumber = header.getNumber();
     if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) throw new Error("Fabric block number is outside the supported range");
-    const existing = this.blocks.find(block => block.block_number === blockNumber);
+    const existing = this.loadBlock(blockNumber);
     if (existing) {
+      if (rawDigest(existing.bytes) !== existing.raw_digest) throw new Error("Fabric raw block digest mismatch");
       if (!sameBytes(incoming, existing.bytes)) throw new Error("A different Fabric block occupies this block number");
-      const result = this.results.get(blockNumber);
-      if (!result) throw new Error("Verified Fabric block result is missing");
-      return clone(result);
+      return clone(this.replayBlock(blockNumber));
     }
-    const block: BlockRow = {
-      block_number: blockNumber,
-      block_hash: fabricBlockHeaderHash(header),
-      data_hash: Buffer.from(header.getDataHash_asU8()).toString("hex"),
-      previous_hash: Buffer.from(header.getPreviousHash_asU8()).toString("hex"),
-      raw_digest: rawDigest(incoming),
-      bytes: incoming,
-    };
+    const block = this.blockFromHeader(incoming, header);
     const candidate = this.projector.fork();
     const result = candidate.applyBlock(incoming);
     if (result.checkpoint.block_number !== blockNumber || result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash) throw new Error("Fabric candidate result does not match block header");
@@ -233,24 +258,27 @@ export class SqliteFabricProjection {
       throw error;
     }
     this.projector = candidate;
-    this.results.set(blockNumber, result);
-    this.blocks.push(block);
-    for (const tx of result.transactions) {
-      if (!tx.valid) continue;
-      for (const write of tx.writeset) {
-        const entries = this.history.get(write.key) ?? [];
-        entries.push({ block_number: blockNumber, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash, value: clone(write.value) });
-        this.history.set(write.key, entries);
-      }
-    }
+    this.latestResult = result;
+    this.latestRawDigest = block.raw_digest;
+    this.journalDigest = appendJournalDigest(this.journalDigest, block.raw_digest);
+    this.recordStateCreationAnchors(this.stateCreationAnchors, block, result);
+    this.rememberBlockResult(result, block.raw_digest);
     return clone(result);
   }
 
   read(key: string, at?: Checkpoint | null): unknown | undefined {
     this.ensureOpen();
-    if (at === undefined || at === null) this.verifyCurrentCursor();
-    if (at !== undefined && at !== null) this.assertCheckpoint(at);
-    const expected = at ? this.historyValue(key, at) : this.projector.read(key);
+    let expected: unknown | undefined;
+    if (at === undefined || at === null) {
+      this.verifyCurrentCursor();
+      expected = this.projector.read(key);
+    } else if (this.isCurrentCheckpoint(at)) {
+      this.verifyCurrentCheckpoint(at);
+      expected = this.projector.read(key);
+    } else {
+      const replayed = this.replayCheckpoint(at);
+      expected = this.valueAtCheckpoint(key, at, replayed.before, replayed.result);
+    }
     const row = at
       ? this.db.prepare(`SELECT value_json FROM fabric_projection_history
           WHERE state_key = ? AND (block_number < ? OR (block_number = ? AND transaction_index <= ?))
@@ -263,71 +291,105 @@ export class SqliteFabricProjection {
 
   entries(prefix = "", at?: Checkpoint | null): [string, unknown][] {
     this.ensureOpen();
-    if (at === undefined || at === null) this.verifyCurrentCursor();
-    if (at !== undefined && at !== null) this.assertCheckpoint(at);
-    const expectedKeys = at
-      ? [...this.history.keys()].filter(key => this.historyValue(key, at) !== undefined).sort()
-      : this.projector.entries().map(([key]) => key).sort();
-    const actualKeys = (this.db.prepare(at
-      ? `SELECT DISTINCT state_key FROM fabric_projection_history
-         WHERE block_number < ? OR (block_number = ? AND transaction_index <= ?) ORDER BY state_key`
-      : "SELECT state_key FROM fabric_projection_state ORDER BY state_key").all(...(at ? [at.block_number, at.block_number, at.transaction_index] : [])) as any[]).map(row => row.state_key);
-    const expectedFiltered = expectedKeys.filter(key => key.startsWith(prefix));
-    const actualFiltered = actualKeys.filter(key => key.startsWith(prefix));
-    if (JSON.stringify(expectedFiltered) !== JSON.stringify(actualFiltered)) throw new Error("Fabric projection integrity check failed; rebuild the derived view");
-    return expectedFiltered.map(key => [key, this.read(key, at)] as [string, unknown]);
+    let expected: [string, unknown][];
+    let actualRows: any[];
+    if (at === undefined || at === null) {
+      this.verifyCurrentCursor();
+      expected = this.projector.entries(prefix);
+      actualRows = this.db.prepare("SELECT state_key, value_json FROM fabric_projection_state WHERE substr(state_key, 1, length(?)) = ? ORDER BY state_key").all(prefix, prefix) as any[];
+    } else if (this.isCurrentCheckpoint(at)) {
+      this.verifyCurrentCheckpoint(at);
+      expected = this.projector.entries(prefix);
+      actualRows = this.db.prepare("SELECT state_key, value_json FROM fabric_projection_state WHERE substr(state_key, 1, length(?)) = ? ORDER BY state_key").all(prefix, prefix) as any[];
+    } else {
+      const replayed = this.replayCheckpoint(at);
+      expected = this.entriesAtCheckpoint(prefix, at, replayed.before, replayed.result);
+      actualRows = this.db.prepare(`SELECT state_key, value_json FROM (
+          SELECT state_key, value_json, ROW_NUMBER() OVER (PARTITION BY state_key ORDER BY block_number DESC, transaction_index DESC) AS latest
+          FROM fabric_projection_history
+          WHERE (block_number < ? OR (block_number = ? AND transaction_index <= ?))
+            AND substr(state_key, 1, length(?)) = ?
+        ) WHERE latest = 1 ORDER BY state_key`).all(at.block_number, at.block_number, at.transaction_index, prefix, prefix) as any[];
+    }
+    const actual = new Map<string, unknown>();
+    for (const row of actualRows) actual.set(row.state_key, JSON.parse(row.value_json));
+    if (expected.length !== actual.size || expected.some(([key, value]) => !actual.has(key) || !sameJson(actual.get(key), value))) throw new Error("Fabric projection integrity check failed; rebuild the derived view");
+    return expected.map(([key, value]) => [key, clone(value)]);
   }
 
   checkpoint(): Checkpoint | null {
     this.ensureOpen();
-    const block = this.blocks.at(-1);
-    if (!block) return null;
-    const result = this.results.get(block.block_number);
-    if (!result) throw new Error("Verified Fabric block result is missing");
+    this.verifyCurrentCursor();
+    const result = this.latestResult;
+    if (!result) return null;
     const transactions = result.transactions;
     const last = transactions.at(-1);
-    const checkpoint = checkpointFromRow({ channel_id: this.channelId, block_number: block.block_number, transaction_index: last?.transaction_index ?? -1, transaction_id: last?.tx_id ?? "", block_hash: result.checkpoint.block_hash });
-    this.assertCheckpoint(checkpoint);
+    const checkpoint = checkpointFromRow({ channel_id: this.channelId, block_number: result.checkpoint.block_number, transaction_index: last?.transaction_index ?? -1, transaction_id: last?.tx_id ?? "", block_hash: result.checkpoint.block_hash });
+    if (last) this.verifyStoredTransaction(last, checkpoint);
     return checkpoint;
   }
 
   checkpointForTransaction(transactionId: string): Checkpoint {
     this.ensureOpen();
-    for (const block of this.blocks) {
-      const result = this.results.get(block.block_number)!;
-      const tx = result.transactions.find(candidate => candidate.valid && candidate.tx_id === transactionId);
-      if (tx) {
-        const checkpoint = checkpointFromRow({ channel_id: this.channelId, block_number: block.block_number, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash });
-        this.assertCheckpoint(checkpoint);
-        return checkpoint;
-      }
+    this.verifyCurrentCursor();
+    const locator = this.db.prepare(`SELECT block_number, transaction_index FROM fabric_raw_transactions
+      WHERE transaction_id = ? AND valid = 1 ORDER BY block_number, transaction_index LIMIT 1`).get(transactionId) as any;
+    if (locator) {
+      if (!Number.isSafeInteger(locator.block_number) || locator.block_number < 0 || !Number.isSafeInteger(locator.transaction_index) || locator.transaction_index < 0) throw new Error("Fabric transaction index integrity check failed");
+      const result = this.replayBlock(locator.block_number);
+      const tx = result.transactions[locator.transaction_index];
+      if (!tx || !tx.valid || tx.tx_id !== transactionId) throw new Error("Fabric transaction index integrity check failed");
+      const checkpoint = checkpointFromRow({ channel_id: this.channelId, block_number: locator.block_number, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash });
+      this.verifyStoredTransaction(tx, checkpoint);
+      return checkpoint;
     }
+
+    // A missing derived locator must not hide a transaction present in the
+    // independently verified journal. This fail-closed path is intentionally
+    // slower than successful receipt lookup.
+    const projector = new FabricBlockProjector(this.options);
+    let foundInJournal = false;
+    let journalDigest = EMPTY_JOURNAL_DIGEST;
+    for (const block of this.iterateRawBlocks()) {
+      journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+      const result = this.verifyAndApply(projector, block);
+      if (result.transactions.some(candidate => candidate.valid && candidate.tx_id === transactionId)) foundInJournal = true;
+    }
+    this.verifyReplayTip(projector, journalDigest);
+    if (foundInJournal) throw new Error("Fabric transaction index integrity check failed");
     throw new Error("Committed transaction checkpoint is missing");
   }
 
   checkpointForStateCreation(key: string): Checkpoint {
     this.ensureOpen();
-    const entry = this.history.get(key)?.[0];
-    if (!entry) throw new Error("State creation checkpoint is missing");
-    const checkpoint = checkpointFromRow({ channel_id: this.channelId, ...entry });
-    this.assertCheckpoint(checkpoint);
-    return checkpoint;
+    this.verifyCurrentCursor();
+    const anchor = this.stateCreationAnchors.get(key);
+    const row = this.db.prepare(`SELECT block_number, transaction_index, transaction_id, block_hash, value_json
+      FROM fabric_projection_state_creation WHERE state_key = ?`).get(key) as any;
+    if (!anchor) {
+      if (row) throw new Error("Fabric state creation integrity check failed");
+      throw new Error("State creation checkpoint is missing");
+    }
+    if (!row) throw new Error("Fabric state creation integrity check failed");
+    const checkpoint = checkpointFromRow({ channel_id: this.channelId, ...row });
+    let value: unknown;
+    try { value = JSON.parse(row.value_json); } catch { throw new Error("Fabric state creation integrity check failed"); }
+    if (!sameJson(checkpoint, anchor.checkpoint) || sha256Digest(value) !== anchor.value_digest) throw new Error("Fabric state creation integrity check failed");
+    const transactionRow = this.db.prepare(`SELECT transaction_id, validation_code, valid, timestamp, writes_json
+      FROM fabric_raw_transactions WHERE block_number = ? AND transaction_index = ?`).get(checkpoint.block_number, checkpoint.transaction_index) as any;
+    const storedTransaction = this.transactionFromStoredRow(transactionRow, checkpoint.transaction_index);
+    if (sha256Digest(storedTransaction) !== anchor.transaction_digest) throw new Error("Fabric transaction index integrity check failed");
+    this.verifyStoredBlock(anchor.checkpoint, undefined, anchor.block_raw_digest);
+    return { ...anchor.checkpoint };
   }
 
   assertCheckpoint(at: Checkpoint): void {
     this.ensureOpen();
-    if (!at || at.channel_id !== this.channelId || !Number.isSafeInteger(at.block_number) || at.block_number < 0 || !Number.isSafeInteger(at.transaction_index) || at.transaction_index < -1 || typeof at.transaction_id !== "string" || typeof at.block_hash !== "string") throw new Error("Invalid checkpoint");
-    this.verifyCursor(at.block_number);
-    const block = this.blocks.find(candidate => candidate.block_number === at.block_number);
-    const result = block ? this.results.get(block.block_number) : undefined;
-    if (!block || !result || result.checkpoint.block_hash !== at.block_hash) throw new Error("Untrusted checkpoint");
-    const tx = result.transactions[at.transaction_index];
-    if (at.transaction_index === -1) {
-      if (result.transactions.length !== 0 || at.transaction_id !== "") throw new Error("Untrusted checkpoint");
+    if (this.isCurrentCheckpoint(at)) {
+      this.verifyCurrentCheckpoint(at);
       return;
     }
-    if (!tx || tx.tx_id !== at.transaction_id) throw new Error("Untrusted checkpoint");
-    this.verifyStoredTransaction(tx, at);
+    this.replayCheckpoint(at);
   }
 
   events(afterBlock = 0, limitBlocks = 100): LedgerEvent[] {
@@ -335,8 +397,14 @@ export class SqliteFabricProjection {
     this.verifyCurrentCursor();
     if (!Number.isSafeInteger(afterBlock) || afterBlock < 0 || !Number.isSafeInteger(limitBlocks) || limitBlocks < 1 || limitBlocks > 1000) throw new Error("Invalid event range");
     const events: LedgerEvent[] = [];
-    for (const block of this.blocks.filter(candidate => candidate.block_number > afterBlock).slice(0, limitBlocks)) {
-      const result = this.results.get(block.block_number)!;
+    const projector = new FabricBlockProjector(this.options);
+    let selectedBlocks = 0;
+    let journalDigest = EMPTY_JOURNAL_DIGEST;
+    for (const block of this.iterateRawBlocks()) {
+      journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+      const result = this.verifyAndApply(projector, block);
+      if (block.block_number <= afterBlock || selectedBlocks >= limitBlocks) continue;
+      selectedBlocks += 1;
       for (const tx of result.transactions) {
         if (!tx.valid) continue;
         this.verifyStoredTransaction(tx, checkpointFromRow({ channel_id: this.channelId, block_number: block.block_number, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash }));
@@ -351,6 +419,7 @@ export class SqliteFabricProjection {
         });
       }
     }
+    this.verifyReplayTip(projector, journalDigest);
     return events;
   }
 
@@ -374,33 +443,209 @@ export class SqliteFabricProjection {
       VALUES (1, ?, ?, ?, ?, ?)`).run(expected.schema_version, expected.channel_id, expected.chaincode_name, expected.chaincode_version, expected.genesis_digest);
   }
 
-  private loadBlocks(): BlockRow[] {
-    return (this.db.prepare(`SELECT block_number, block_hash, data_hash, previous_hash, raw_digest, block_bytes
-      FROM fabric_raw_blocks ORDER BY block_number`).all() as any[]).map(row => ({
+  private blockFromRow(row: any): BlockRow {
+    if (!Number.isSafeInteger(row.block_number) || row.block_number < 0) throw new Error("Fabric raw block number is invalid");
+    return {
       block_number: row.block_number,
       block_hash: row.block_hash,
       data_hash: row.data_hash,
       previous_hash: row.previous_hash,
       raw_digest: row.raw_digest,
       bytes: new Uint8Array(asBytes(row.block_bytes)),
-    }));
+    };
   }
 
-  private replay(blocks: BlockRow[]): { projector: FabricBlockProjector; results: Map<number, ProjectBlockResult> } {
-    const projector = new FabricBlockProjector(this.options);
-    const results = new Map<number, ProjectBlockResult>();
-    for (const block of blocks) {
-      const decoded = decodeBlock(block.bytes);
-      const header = decoded.getHeader();
-      if (!header || header.getNumber() !== block.block_number) throw new Error("Fabric raw block number mismatch");
-      if (rawDigest(block.bytes) !== block.raw_digest) throw new Error("Fabric raw block digest mismatch");
-      const result = projector.applyBlock(block.bytes);
-      const previousHash = Buffer.from(header.getPreviousHash_asU8()).toString("hex");
-      const dataHash = Buffer.from(header.getDataHash_asU8()).toString("hex");
-      if (result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash || previousHash !== block.previous_hash || dataHash !== block.data_hash) throw new Error("Fabric raw block journal metadata mismatch");
-      results.set(block.block_number, result);
+  private blockFromHeader(serialized: Uint8Array, header: common.BlockHeader): BlockRow {
+    return {
+      block_number: header.getNumber(),
+      block_hash: fabricBlockHeaderHash(header),
+      data_hash: Buffer.from(header.getDataHash_asU8()).toString("hex"),
+      previous_hash: Buffer.from(header.getPreviousHash_asU8()).toString("hex"),
+      raw_digest: rawDigest(serialized),
+      bytes: serialized,
+    };
+  }
+
+  private loadBlock(blockNumber: number): BlockRow | null {
+    const row = this.db.prepare(`SELECT block_number, block_hash, data_hash, previous_hash, raw_digest, block_bytes
+      FROM fabric_raw_blocks WHERE block_number = ?`).get(blockNumber) as any;
+    return row ? this.blockFromRow(row) : null;
+  }
+
+  /** Iterate one journal row at a time so raw blocks never accumulate in heap. */
+  private *iterateRawBlocks(): Generator<BlockRow> {
+    const statement = this.db.prepare(`SELECT block_number, block_hash, data_hash, previous_hash, raw_digest, block_bytes
+      FROM fabric_raw_blocks WHERE block_number > ? ORDER BY block_number LIMIT 1`);
+    let after = -1;
+    while (true) {
+      const row = statement.get(after) as any;
+      if (!row) return;
+      const block = this.blockFromRow(row);
+      yield block;
+      after = block.block_number;
     }
-    return { projector, results };
+  }
+
+  private verifyAndApply(projector: FabricBlockProjector, block: BlockRow): ProjectBlockResult {
+    const decoded = decodeBlock(block.bytes);
+    const header = decoded.getHeader();
+    if (!header || header.getNumber() !== block.block_number) throw new Error("Fabric raw block number mismatch");
+    if (rawDigest(block.bytes) !== block.raw_digest) throw new Error("Fabric raw block digest mismatch");
+    const result = projector.applyBlock(block.bytes);
+    const previousHash = Buffer.from(header.getPreviousHash_asU8()).toString("hex");
+    const dataHash = Buffer.from(header.getDataHash_asU8()).toString("hex");
+    if (result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash || previousHash !== block.previous_hash || dataHash !== block.data_hash) throw new Error("Fabric raw block journal metadata mismatch");
+    return result;
+  }
+
+  private replayAndRebuild(): { projector: FabricBlockProjector; latestResult: ProjectBlockResult | null; latestRawDigest: string | null; stateCreationAnchors: Map<string, StateCreationAnchor>; journalDigest: string } {
+    const projector = new FabricBlockProjector(this.options);
+    let latestResult: ProjectBlockResult | null = null;
+    let latestRawDigest: string | null = null;
+    const stateCreationAnchors = new Map<string, StateCreationAnchor>();
+    let journalDigest = EMPTY_JOURNAL_DIGEST;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec("DELETE FROM fabric_raw_transactions; DELETE FROM fabric_projection_state; DELETE FROM fabric_projection_history; DELETE FROM fabric_projection_state_creation; DELETE FROM fabric_projection_cursor;");
+      for (const block of this.iterateRawBlocks()) {
+        journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+        const result = this.verifyAndApply(projector, block);
+        this.db.prepare("UPDATE fabric_raw_blocks SET result_json = ? WHERE block_number = ?").run(json(result), block.block_number);
+        this.insertTransactions(block.block_number, result);
+        this.appendDerived(block, result);
+        this.recordStateCreationAnchors(stateCreationAnchors, block, result);
+        latestResult = result;
+        latestRawDigest = block.raw_digest;
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return { projector, latestResult, latestRawDigest, stateCreationAnchors, journalDigest };
+  }
+
+  private replayBlock(blockNumber: number): ProjectBlockResult {
+    const cached = this.verifiedBlockResults.get(blockNumber);
+    if (cached) {
+      this.verifyStoredBlock(checkpointFromRow({ channel_id: this.channelId, block_number: blockNumber, transaction_index: -1, transaction_id: "", block_hash: cached.result.checkpoint.block_hash }), cached.result, cached.raw_digest);
+      this.verifiedBlockResults.delete(blockNumber);
+      this.verifiedBlockResults.set(blockNumber, cached);
+      return cached.result;
+    }
+    const projector = new FabricBlockProjector(this.options);
+    let selected: VerifiedBlockResult | null = null;
+    let journalDigest = EMPTY_JOURNAL_DIGEST;
+    for (const block of this.iterateRawBlocks()) {
+      journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+      const result = this.verifyAndApply(projector, block);
+      if (block.block_number === blockNumber) selected = { raw_digest: block.raw_digest, result };
+    }
+    this.verifyReplayTip(projector, journalDigest);
+    if (!selected) throw new Error("Verified Fabric block is missing");
+    this.rememberBlockResult(selected.result, selected.raw_digest);
+    return selected.result;
+  }
+
+  private replayCheckpoint(at: Checkpoint): HistoricalReplay {
+    this.validateCheckpoint(at);
+    this.verifyCursor(at.block_number);
+    const cacheKey = this.checkpointKey(at);
+    const cached = this.historicalSnapshots.get(cacheKey);
+    if (cached) {
+      this.verifyCachedCheckpoint(at, cached);
+      this.historicalSnapshots.delete(cacheKey);
+      this.historicalSnapshots.set(cacheKey, cached);
+      return cached;
+    }
+    const projector = new FabricBlockProjector(this.options);
+    let selected: HistoricalReplay | null = null;
+    let journalDigest = EMPTY_JOURNAL_DIGEST;
+    for (const block of this.iterateRawBlocks()) {
+      journalDigest = appendJournalDigest(journalDigest, block.raw_digest);
+      if (block.block_number === at.block_number) {
+        const before = new Map(projector.entries());
+        const result = this.verifyAndApply(projector, block);
+        if (result.checkpoint.block_hash !== at.block_hash) throw new Error("Untrusted checkpoint");
+        if (at.transaction_index === -1) {
+          if (result.transactions.length !== 0 || at.transaction_id !== "") throw new Error("Untrusted checkpoint");
+          selected = { before, raw_digest: block.raw_digest, result };
+          continue;
+        }
+        const tx = result.transactions[at.transaction_index];
+        if (!tx || tx.tx_id !== at.transaction_id) throw new Error("Untrusted checkpoint");
+        this.verifyStoredTransaction(tx, at);
+        selected = { before, raw_digest: block.raw_digest, result };
+        continue;
+      }
+      this.verifyAndApply(projector, block);
+    }
+    this.verifyReplayTip(projector, journalDigest);
+    if (!selected) throw new Error("Untrusted checkpoint");
+    this.rememberHistoricalSnapshot(cacheKey, selected);
+    return selected;
+  }
+
+  private valueAtCheckpoint(key: string, at: Checkpoint, before: Map<string, unknown>, result: ProjectBlockResult): unknown | undefined {
+    let value = before.get(key);
+    if (at.transaction_index >= 0) {
+      for (const tx of result.transactions) {
+        if (tx.transaction_index > at.transaction_index) break;
+        if (!tx.valid) continue;
+        for (const write of tx.writeset) if (write.key === key) value = write.value;
+      }
+    }
+    return value === undefined ? undefined : clone(value);
+  }
+
+  private entriesAtCheckpoint(prefix: string, at: Checkpoint, before: Map<string, unknown>, result: ProjectBlockResult): [string, unknown][] {
+    const state = new Map(before);
+    if (at.transaction_index >= 0) {
+      for (const tx of result.transactions) {
+        if (tx.transaction_index > at.transaction_index) break;
+        if (!tx.valid) continue;
+        for (const write of tx.writeset) state.set(write.key, clone(write.value));
+      }
+    }
+    return [...state.entries()].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b));
+  }
+
+  private validateCheckpoint(at: Checkpoint): void {
+    if (!at || at.channel_id !== this.channelId || !Number.isSafeInteger(at.block_number) || at.block_number < 0 || !Number.isSafeInteger(at.transaction_index) || at.transaction_index < -1 || typeof at.transaction_id !== "string" || typeof at.block_hash !== "string") throw new Error("Invalid checkpoint");
+  }
+
+  private checkpointKey(at: Checkpoint): string {
+    return `${at.block_number}:${at.transaction_index}:${at.transaction_id}:${at.block_hash}`;
+  }
+
+  private rememberHistoricalSnapshot(key: string, replayed: HistoricalReplay): void {
+    this.historicalSnapshots.delete(key);
+    this.historicalSnapshots.set(key, replayed);
+    while (this.historicalSnapshots.size > MAX_HISTORICAL_SNAPSHOT_CACHE) this.historicalSnapshots.delete(this.historicalSnapshots.keys().next().value!);
+  }
+
+  private rememberBlockResult(result: ProjectBlockResult, rawDigest: string): void {
+    const blockNumber = result.checkpoint.block_number;
+    this.verifiedBlockResults.delete(blockNumber);
+    this.verifiedBlockResults.set(blockNumber, { raw_digest: rawDigest, result });
+    while (this.verifiedBlockResults.size > MAX_HISTORICAL_SNAPSHOT_CACHE) this.verifiedBlockResults.delete(this.verifiedBlockResults.keys().next().value!);
+  }
+
+  private recordStateCreationAnchors(target: Map<string, StateCreationAnchor>, block: BlockRow, result: ProjectBlockResult): void {
+    for (const tx of result.transactions) {
+      if (!tx.valid) continue;
+      let transactionDigest: string | undefined;
+      for (const write of tx.writeset) {
+        if (target.has(write.key)) continue;
+        transactionDigest ??= sha256Digest(tx);
+        target.set(write.key, {
+          block_raw_digest: block.raw_digest,
+          checkpoint: checkpointFromRow({ channel_id: this.channelId, block_number: block.block_number, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash }),
+          transaction_digest: transactionDigest,
+          value_digest: sha256Digest(write.value),
+        });
+      }
+    }
   }
 
   private insertTransactions(blockNumber: number, result: ProjectBlockResult): void {
@@ -418,6 +663,9 @@ export class SqliteFabricProjection {
         this.db.prepare(`INSERT INTO fabric_projection_history
           (state_key, block_number, transaction_index, transaction_id, block_hash, value_json)
           VALUES (?, ?, ?, ?, ?, ?)`).run(write.key, block.block_number, tx.transaction_index, tx.tx_id, result.checkpoint.block_hash, json(write.value));
+        this.db.prepare(`INSERT OR IGNORE INTO fabric_projection_state_creation
+          (state_key, block_number, transaction_index, transaction_id, block_hash, value_json)
+          VALUES (?, ?, ?, ?, ?, ?)`).run(write.key, block.block_number, tx.transaction_index, tx.tx_id, result.checkpoint.block_hash, json(write.value));
         this.db.prepare(`INSERT INTO fabric_projection_state (state_key, value_json) VALUES (?, ?)
           ON CONFLICT(state_key) DO UPDATE SET value_json = excluded.value_json`).run(write.key, json(write.value));
       }
@@ -425,33 +673,6 @@ export class SqliteFabricProjection {
     this.db.prepare(`INSERT INTO fabric_projection_cursor (singleton, block_number, block_hash, data_hash)
       VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET block_number = excluded.block_number, block_hash = excluded.block_hash, data_hash = excluded.data_hash`)
       .run(block.block_number, result.checkpoint.block_hash, result.checkpoint.data_hash);
-  }
-
-  private buildHistory(results: Map<number, ProjectBlockResult>, blocks: BlockRow[]): Map<string, HistoryEntry[]> {
-    const history = new Map<string, HistoryEntry[]>();
-    for (const block of blocks) {
-      const result = results.get(block.block_number);
-      if (!result) throw new Error("Fabric projection result is missing");
-      for (const tx of result.transactions) {
-        if (!tx.valid) continue;
-        for (const write of tx.writeset) {
-          const entries = history.get(write.key) ?? [];
-          entries.push({ block_number: block.block_number, transaction_index: tx.transaction_index, transaction_id: tx.tx_id, block_hash: result.checkpoint.block_hash, value: clone(write.value) });
-          history.set(write.key, entries);
-        }
-      }
-    }
-    return history;
-  }
-
-  private historyValue(key: string, at: Checkpoint): unknown | undefined {
-    const entries = this.history.get(key) ?? [];
-    let selected: HistoryEntry | undefined;
-    for (const entry of entries) {
-      if (entry.block_number < at.block_number || (entry.block_number === at.block_number && entry.transaction_index <= at.transaction_index)) selected = entry;
-      else break;
-    }
-    return selected ? clone(selected.value) : undefined;
   }
 
   private verifyCursor(blockNumber: number): void {
@@ -470,33 +691,83 @@ export class SqliteFabricProjection {
     if (!row || row.block_number !== expected.block_number || row.block_hash !== expected.block_hash || row.data_hash !== expected.data_hash) throw new Error("Fabric projection cursor integrity check failed");
   }
 
+  private isCurrentCheckpoint(at: Checkpoint): boolean {
+    if (!at || typeof at !== "object") return false;
+    const current = this.projector.checkpoint();
+    const result = this.latestResult;
+    if (!current || !result) return false;
+    const last = result.transactions.at(-1);
+    return at.channel_id === this.channelId && at.block_number === current.block_number && at.block_hash === current.block_hash
+      && at.transaction_index === (last?.transaction_index ?? -1) && at.transaction_id === (last?.tx_id ?? "");
+  }
+
+  private verifyCurrentCheckpoint(at: Checkpoint): void {
+    this.validateCheckpoint(at);
+    if (!this.isCurrentCheckpoint(at)) throw new Error("Untrusted checkpoint");
+    this.verifyCursor(at.block_number);
+    const result = this.latestResult;
+    if (!result) throw new Error("Verified Fabric block result is missing");
+    this.verifyStoredBlock(at, result, this.latestRawDigest ?? undefined);
+    const last = result.transactions.at(-1);
+    if (last) this.verifyStoredTransaction(last, at);
+  }
+
+  private verifyCachedCheckpoint(at: Checkpoint, replayed: HistoricalReplay): void {
+    this.verifyStoredBlock(at, replayed.result, replayed.raw_digest);
+    if (at.transaction_index === -1) {
+      if (replayed.result.transactions.length !== 0 || at.transaction_id !== "") throw new Error("Untrusted checkpoint");
+      return;
+    }
+    const tx = replayed.result.transactions[at.transaction_index];
+    if (!tx || tx.tx_id !== at.transaction_id) throw new Error("Untrusted checkpoint");
+    this.verifyStoredTransaction(tx, at);
+  }
+
+  private verifyStoredBlock(at: Checkpoint, result?: ProjectBlockResult, expectedRawDigest?: string): void {
+    const block = this.loadBlock(at.block_number);
+    const actualRawDigest = block ? rawDigest(block.bytes) : "";
+    if (!block || actualRawDigest !== block.raw_digest || (expectedRawDigest !== undefined && actualRawDigest !== expectedRawDigest)) throw new Error("Fabric raw block digest mismatch");
+    const decoded = decodeBlock(block.bytes);
+    const header = decoded.getHeader();
+    const data = decoded.getData();
+    if (!header || !data || header.getNumber() !== block.block_number) throw new Error("Fabric raw block number mismatch");
+    const blockHash = fabricBlockHeaderHash(header);
+    const dataHash = Buffer.from(header.getDataHash_asU8()).toString("hex");
+    const computedDataHash = rawDigest(Buffer.concat(data.getDataList_asU8().map(entry => Buffer.from(entry))));
+    const previousHash = Buffer.from(header.getPreviousHash_asU8()).toString("hex");
+    if (computedDataHash !== dataHash || blockHash !== block.block_hash || dataHash !== block.data_hash || previousHash !== block.previous_hash || blockHash !== at.block_hash || (result && (result.checkpoint.block_hash !== blockHash || result.checkpoint.data_hash !== dataHash))) throw new Error("Fabric raw block journal metadata mismatch");
+  }
+
+  private verifyReplayTip(projector: FabricBlockProjector, journalDigest: string): void {
+    if (journalDigest !== this.journalDigest) throw new Error("Fabric raw block journal no longer matches the verified bytes");
+    const replayed = projector.checkpoint();
+    const trusted = this.projector.checkpoint();
+    if (!sameJson(replayed, trusted) || !sameJson(projector.entries(), this.projector.entries())) throw new Error("Fabric raw block journal no longer matches the verified tip");
+  }
+
   private verifyStoredTransaction(tx: ProjectedTransaction, checkpoint: Checkpoint): void {
     const row = this.db.prepare(`SELECT transaction_id, validation_code, valid, timestamp, writes_json
       FROM fabric_raw_transactions WHERE block_number = ? AND transaction_index = ?`).get(checkpoint.block_number, checkpoint.transaction_index) as any;
-    if (!row || row.transaction_id !== tx.tx_id || row.validation_code !== tx.validation_code || row.valid !== (tx.valid ? 1 : 0) || row.timestamp !== tx.timestamp || !sameJson(JSON.parse(row.writes_json), tx.writeset)) throw new Error("Fabric transaction index integrity check failed");
+    let stored: ProjectedTransaction;
+    try { stored = this.transactionFromStoredRow(row, checkpoint.transaction_index); }
+    catch { throw new Error("Fabric transaction index integrity check failed"); }
+    if (!sameJson(stored, tx)) throw new Error("Fabric transaction index integrity check failed");
   }
 
-  private rebuildDerived(blocks: BlockRow[], results: Map<number, ProjectBlockResult>): void {
-    this.db.exec("DELETE FROM fabric_raw_transactions; DELETE FROM fabric_projection_state; DELETE FROM fabric_projection_history; DELETE FROM fabric_projection_cursor;");
-    const state = new Map<string, unknown>();
-    for (const block of blocks) {
-      const result = results.get(block.block_number);
-      if (!result) throw new Error("Fabric projection result is missing");
-      this.db.prepare("UPDATE fabric_raw_blocks SET result_json = ? WHERE block_number = ?").run(json(result), block.block_number);
-      this.insertTransactions(block.block_number, result);
-      for (const tx of result.transactions) {
-        if (!tx.valid) continue;
-        for (const write of tx.writeset) {
-          state.set(write.key, clone(write.value));
-          this.db.prepare(`INSERT INTO fabric_projection_history
-            (state_key, block_number, transaction_index, transaction_id, block_hash, value_json)
-            VALUES (?, ?, ?, ?, ?, ?)`).run(write.key, block.block_number, tx.transaction_index, tx.tx_id, result.checkpoint.block_hash, json(write.value));
-        }
-      }
-    }
-    for (const [key, value] of state) this.db.prepare("INSERT INTO fabric_projection_state (state_key, value_json) VALUES (?, ?)").run(key, json(value));
-    const last = blocks.at(-1);
-    if (last) this.db.prepare(`INSERT INTO fabric_projection_cursor (singleton, block_number, block_hash, data_hash) VALUES (1, ?, ?, ?)`)
-      .run(last.block_number, last.block_hash, results.get(last.block_number)?.checkpoint.data_hash ?? last.data_hash);
+  private transactionFromStoredRow(row: any, transactionIndex: number): ProjectedTransaction {
+    if (!row || typeof row.transaction_id !== "string" || !Number.isSafeInteger(row.validation_code) || (row.valid !== 0 && row.valid !== 1) || typeof row.timestamp !== "string") throw new Error("Fabric transaction index integrity check failed");
+    let writeset: unknown;
+    try { writeset = JSON.parse(row.writes_json); } catch { throw new Error("Fabric transaction index integrity check failed"); }
+    if (!Array.isArray(writeset)) throw new Error("Fabric transaction index integrity check failed");
+    return {
+      tx_id: row.transaction_id,
+      transaction_index: transactionIndex,
+      validation_code: row.validation_code,
+      valid: row.valid === 1,
+      writes: writeset.length,
+      writeset: writeset as Array<{ key: string; value: unknown }>,
+      timestamp: row.timestamp,
+    };
   }
+
 }

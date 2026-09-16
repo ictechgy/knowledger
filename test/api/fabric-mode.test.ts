@@ -134,15 +134,17 @@ test('resolve withholds a fence superseded after full block refresh', async t =>
   assert.deepEqual((await response.json()).reason, 'FENCE_SUPERSEDED');
 });
 
-test('healthz reports peer refresh failures without exposing internals', async t => {
+test('readiness reports peer refresh failures while liveness stays available', async t => {
   const port = await preparedPort();
   const api = await appFixture(t, port);
   port.failRefresh = true;
-  const response = await fetch(`${api.url}/healthz`);
+  assert.equal((await fetch(`${api.url}/healthz`)).status, 200);
+  await fetch(`${api.url}/readyz`); // Start one nonblocking, shared readiness probe.
+  const response = await fetch(`${api.url}/readyz`);
   assert.equal(response.status, 503);
   const body = await response.json() as any;
   assert.equal(body.healthy, false);
-  assert.equal(body.mode, 'fabric-test-network');
-  assert.equal(body.state, 'peer-unavailable');
+  assert.equal(body.state, 'not-ready');
+  assert.equal('channel_id' in body, false);
   assert.equal('message' in body, false);
 });

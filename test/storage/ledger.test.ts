@@ -85,6 +85,11 @@ test('current reads detect projection divergence from the historical write-set v
   external.prepare('UPDATE projection SET value_json = ? WHERE state_key = ?').run('999', keyFor.eligibilityEpoch());
   external.close();
   assert.throws(() => ledger.read(keyFor.eligibilityEpoch()), /projection.*integrity/i);
+  assert.throws(() => ledger.entries('kcl:v1:eligibility'), /projection.*integrity/i);
   ledger.rebuildProjection();
   assert.equal(ledger.read(keyFor.eligibilityEpoch()), 1);
+  assert.deepEqual(ledger.entries('kcl:v1:eligibility'), [[keyFor.eligibilityEpoch(), 1]]);
+  const removed = new DatabaseSync(path);
+  removed.prepare('DELETE FROM projection WHERE state_key = ?').run(keyFor.eligibilityEpoch()); removed.close();
+  assert.throws(() => ledger.entries('kcl:v1:eligibility'), /projection.*integrity/i);
 });

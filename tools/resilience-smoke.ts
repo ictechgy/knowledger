@@ -153,7 +153,8 @@ export async function runResilienceSmoke(options: ResilienceSmokeOptions): Promi
       const outageStarted = performance.now();
       const unavailable = await fetch(`${origin}/v1/workspaces/demo/overview`, { headers: { Cookie: cookie } });
       const health = await fetch(`${origin}/healthz`);
-      if (unavailable.status !== 503 || health.status !== 503) throw new Error('peer outage did not fail closed with HTTP 503');
+      const readiness = await fetch(`${origin}/readyz`);
+      if (unavailable.status !== 503 || readiness.status !== 503 || health.status !== 200) throw new Error('peer outage did not distinguish unavailable knowledge from process liveness');
       peer.unavailable = false;
       const recovered = await fetch(`${origin}/v1/workspaces/demo/overview`, { headers: { Cookie: cookie } });
       const recoveryMs = performance.now() - outageStarted;

@@ -36,6 +36,7 @@
     "configured:smoke": "node tools/configured-smoke.ts",
     "test:browser": "npm --prefix packages/browser-tests test --",
     "test:performance": "node tools/performance-smoke.ts",
+    "test:history-performance": "node tools/history-performance.ts",
     "test:resilience": "node tools/resilience-smoke.ts",
     "kb:sync": "node tools/kb-sync.ts",
     "demo:kb": "node tools/kb-demo.ts"
