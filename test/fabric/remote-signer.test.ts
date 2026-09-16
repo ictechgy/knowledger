@@ -7,6 +7,8 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { startSigningService } from "../../infra/fabric/signing-service.ts";
 import { createRemoteSigner, RemoteSignerError } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
@@ -14,6 +16,25 @@ const requireFabric = createRequire(new URL("../../packages/fabric/package.json"
 let sdkAvailable = true;
 try { requireFabric.resolve('@hyperledger/fabric-gateway'); }
 catch (error) { const e = error as NodeJS.ErrnoException; if (e.code !== 'MODULE_NOT_FOUND' || !e.message.startsWith("Cannot find module '@hyperledger/fabric-gateway'")) throw error; sdkAvailable = false; }
+
+test('running signer rejects a certificate at its expiration boundary', async t => {
+  if (!sdkAvailable || spawnSync('openssl', ['version']).status !== 0) { t.skip('Fabric SDK and OpenSSL are required'); return; }
+  const directory = mkdtempSync('/tmp/kcl-signer-expiry-');
+  const keyPath = join(directory, 'key.pem');
+  const certificatePath = join(directory, 'certificate.pem');
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  fs.writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  const issued = spawnSync('openssl', ['req', '-new', '-x509', '-key', keyPath, '-subj', '/CN=synthetic-expiry-test', '-days', '1', '-out', certificatePath], { stdio: 'ignore' });
+  assert.equal(issued.status, 0, 'synthetic certificate issuance succeeds');
+  const certificate = readFileSync(certificatePath);
+  const service = await startSigningService({ socketPath: join(directory, 'sign.sock'), keys: [{ key_id: 'synthetic-owner', certificate_path: certificatePath, private_key_path: keyPath }] });
+  try {
+    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: 'synthetic-owner', certificate });
+    assert.ok((await signer(Buffer.alloc(32, 19))).byteLength > 0);
+    t.mock.method(Date, 'now', () => Date.parse(new X509Certificate(certificate).validTo));
+    await assert.rejects(signer(Buffer.alloc(32, 20)), (error: unknown) => error instanceof RemoteSignerError && error.code === 'rejected');
+  } finally { t.mock.restoreAll(); await service.close(); fs.rmSync(directory, { recursive: true }); }
+});
 
 function frame(value: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(value), "utf8");

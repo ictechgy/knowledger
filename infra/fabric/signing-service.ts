@@ -27,6 +27,8 @@ interface FabricGatewayModule {
 
 interface LoadedKey {
   certificate: Buffer;
+  validFrom: number;
+  validTo: number;
   sign: (digest: Uint8Array) => Promise<Uint8Array>;
 }
 
@@ -123,10 +125,10 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       const x509 = new X509Certificate(certificate);
       const validFrom = Date.parse(x509.validFrom);
       const validTo = Date.parse(x509.validTo);
-      if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || Date.now() < validFrom || Date.now() > validTo) throw new Error("expired certificate");
+      if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || Date.now() < validFrom || Date.now() >= validTo) throw new Error("expired certificate");
       const privateKey = createPrivateKey(readFileSync(reference.private_key_path));
       if (!x509.checkPrivateKey(privateKey)) throw new Error("certificate and key do not match");
-      loaded.set(reference.key_id, { certificate, sign: sdk.signers.newPrivateKeySigner(privateKey) });
+      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey) });
     } catch { throw new Error("Configured signing identity is invalid"); }
   }
   return loaded;
@@ -172,10 +174,10 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
     void (async () => {
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
-        if (!compareCertificate(certificate, key.certificate)) { response(socket, { ok: false, error: "rejected" }); return; }
+        if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) { response(socket, { ok: false, error: "rejected" }); return; }
         const digest = base64(request.digest, 32);
         const signature = await signWithTimeout(key.sign, digest);
-        if (!(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
+        if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           response(socket, { ok: false, error: "rejected" }); return;
         }
         response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url") });

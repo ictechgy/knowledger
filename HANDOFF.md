@@ -1,28 +1,44 @@
 # Handoff
 
-_Last updated: 2026-09-16 14:27 KST by Codex_
+_Last updated: 2026-09-16 15:41 KST by Codex_
 
 ## Goal
 
 MIT 지식 합의 원장. 사용자는 승인된 코드 작업을 중간 재승인 없이 구현·검증하길 원한다.
-조직/업무는 설정으로 정하고 영업·이행·정산은 선택형 예제다. 최신 요청인 **조회 참조 인덱스 최적화**를 완료했다.
-목록/검색 HTTP, cursor, SDK 원문, strict resolver 계약은 유지한다. 운영 업체 선택을 개발 blocker로 다시 요구하지 않는다.
+조직/업무는 설정으로 정하고 영업·이행·정산은 선택형 예제다. 최신 요청인 **테스트 사용자 인증서 갱신**을 완료했다.
+기존 키·CA·TLS·genesis·원장은 보존했고 세 사용자 인증서만 갱신했다. 운영 업체 선택을 개발 blocker로 다시 요구하지 않는다.
 
 ## Current Status
 
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`. 최신 커밋은 `git log -1` 확인.
-  이전 리뷰 구현 `419a26d`, 리뷰 `399f78b`, R1–R6 수정 `90bdcda`, 실제 Fabric 검증 `de3e953`.
+  직전 조회 인덱스 `5173527`. 이전 리뷰 구현 `419a26d`, 리뷰 `399f78b`, R1–R6 수정 `90bdcda`, 실제 Fabric 검증 `de3e953`.
 - **기본 앱 http://127.0.0.1:4317**. Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local` 보존.
   2조직 빈 제품 workspace이며 local block1·문서0개다.
 - 예제 앱4318/4319/4321/4331/4341도 최신 코드로 graceful restart했다. 개발 로그인 세션은 초기화됐다.
-  앱6개 모두 health/readiness200, OIDC 앱4개는 익명 overview401.4318은 실제 Fabric block246·최신 슬롯4개.
+  앱6개 모두 health/probe 후 readiness200, OIDC 앱4개는 익명 overview401.4318은 실제 Fabric block265·최신 슬롯4개.
+  readiness는5초보다 오래된 표본에서503 후 비동기 probe로 갱신된다.
 - `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement` 보존.
-- Colima `colima`:3 peer·3 Raft orderer 모두 running. 테스트 인증서 **2026-09-22 만료**.
+- Colima `colima`:3 peer·3 Raft orderer 모두 running. 사용자 인증서3개 **2026-12-15 15:29:11 KST 만료**. CA·peer/orderer는2036년까지 유효.
   chaincode0.1.0/sequence2, package `kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157` 유지.
   네트워크 초기화·chaincode 재배포를 하지 않았다.
 - 사용자 `.serena/` 보존·커밋 제외. 원격 push/CI는 실행하지 않았다.
 
-## Latest Delivery — 조회 인덱스
+## Latest Delivery — 테스트 인증서
+
+- `infra/fabric/certificates.ts` + 예제 CLI: 공개 만료 점검, 기존 키를 이용한90일 갱신 준비/적용.
+  actor·SPKI·subject·issuer·CA·MSP/genesis 검증, 전체 preflight, 개별 atomic replace와 실패 롤백,
+  변조·경로·유효기간 검사, 만료 후 복구·부분 적용 재개·재실행. 운영 CA/TLS rotation은 범위 밖이다.
+- signer는 요청 전/서명 후 유효기간을 확인하고 정확한 만료 경계부터 거부한다.
+  신규 테스트 네트워크의 User1 인증서도90일로 발급한다.
+- 실제 plan: `.data/fabric-smoke/certificate-renewals/renewal-20260916062911-ba83c15935beb018/plan.json`.
+  사용자 cert3개만 변경, 전체 공개키 동일, 대상 외130개 파일 내용·inode·mtime 및 genesis 유지.
+  앱4318/4319/4321/4331/4341과 signer 정상 재시작. 기본4317은 그대로다.
+- 이전 cert 거래의 outbox를 새 cert로 재제출 없이 복구(VALID247), 각 조직 신규 fence VALID248/249/250.
+  이전 cert가 아직 유효한 기간의 실제 복구 시험이며 이미 만료된 cert의 peer 복구 증거는 아니다.
+- [사용/복구 절차](docs/27-TEST-CERTIFICATES.md), [검증 기록](docs/VALIDATION.md).
+  maintenance는 한 번에 하나만 실행한다. apply 성공 후 changed0이어도 app/signer 재시작 여부를 확인한다.
+
+## Previous Delivery — 조회 인덱스
 
 - `packages/storage/browse-index.ts`: 검증된 journal write에서 key/ID/digest/full slot/최초 CP/정렬 시각만 보관.
   Local/Fabric이 같은 인덱스를 사용한다. SQL 커밋 전 준비, 성공 후 공개. mutable indexed identity 변경은 거부한다.
@@ -41,22 +57,19 @@ MIT 지식 합의 원장. 사용자는 승인된 코드 작업을 중간 재승�
 
 ## Verification
 
-- `npm run check`: **264 passed /0 failed /1 GC 전용 skipped**.
-- `node --expose-gc --test test/fabric/sqlite-projection.test.ts`: **14 passed /0 skipped**.
-- `check:types`, `demo`, `demo:kb`, `test:history-performance` 통과. Chromium **18개 통과**.
-- 외부 패키지 없는 source copy: **221 passed /0 failed /44 skipped**. 새 외부 의존성을 추가하지 않았다.
-- 페이지의 전체 prefix scan 제거/읽는 row 수, scan 호환 응답 동일성, full slot·과거 cursor,
-  검색 scope/Unicode/cache eviction, rollback·replay·SQL 변조·INVALID/다중 거래/빈 블록을 검사했다.
-- 10,000개 문서도 전체 목록/검색/재시작 후 개수 일치. 단일 전 페이지 순회 목록1.71초·검색2.05초, replay2.69초.
-  이1회 표본을 p95/SLA로 주장하지 않는다.
-- `.artifacts/browse-index/`: 비교 JSON, check/types/browser/memory/no-optional 로그,
-  query-plan.json, history.log, runtime-health.json, configured-smoke.log.
-- 실제 설정 기반 Fabric 재검증: VALID 게시232·승인234·활성235·철회243, 최종 block246.
-  OIDC/SDK/결과 반환 직전 철회 차단/v3 복원 뒤 index·source·초안·원래 receipt 유지.
-  `.data/configured-smoke-X8z08j/evidence.json`; 시험 합의는 withdrawn으로 재확인했다.
-- 이번에는 peer 중단을 반복하지 않았다. 이전 `de3e953` 검증에서206→231 동안
-  동시 게시3건→VALID1건, private2건→초안1개, peer 중단/복구, 앱 재시작, 시험 합의2건 철회를 확인했다.
-  `.data/fabric-http-smoke-Z7z3wH/http-evidence.json`, `.data/configured-smoke-1R4sjZ/evidence.json`.
+- `npm run check`: **274 passed /0 failed /1 GC 전용 skipped**. `check:types`, `demo` 통과.
+- 인증서/signing 집중19개 통과: 키·genesis 유지, 정확한 raw attrs, 잘못된 actor/CA/key,
+  만료 경계·늦은 갱신, 변조·stale·symlink, rename/fsync rollback, partial resume/idempotency.
+- 공개 인증서81개를 optional 패키지/개인키 없는 source copy에서 점검해 exit0 확인.
+- `.artifacts/certificates/`: check/types/targeted/demo, before/after 공개 메타데이터,
+  restart.json, fabric-evidence.json, runtime-health.json, no-optional.json, configured-smoke.log.
+- 실제 configured smoke 게시251·승인253·활성254·철회262, 최종265.
+  OIDC/SDK/반환 직전 철회 차단/v3 복원 후 source·초안·원래 receipt 유지.
+  `.data/configured-smoke-LACMrn/evidence.json`; 시험 합의는 기존4318에서 withdrawn 재확인.
+- 이전 조회 인덱스의 GC14개·Chromium18개·no-optional221개, benchmark 및 peer 장애 증거는
+  해당 코드가 같아 재사용했다. 기록은 docs/VALIDATION.md와 `.artifacts/browse-index/`에 있다.
+- 실제 프로세스 SIGKILL을 끼워 넣지는 않았다. 여러 cert 중 일부만 적용된 상태와
+  rename 성공 뒤 fsync 실패는 합성 테스트로 검증했다. 원격 push/CI는 실행하지 않았다.
 
 ## Commands
 
@@ -73,6 +86,9 @@ npm run test:history-performance
 node --expose-gc --test test/fabric/sqlite-projection.test.ts
 npm run demo
 npm run demo:kb
+npm run fabric:certs:check
+# 필요 시 prepare → 앱/signer 종료 → apply → 같은 설정으로 재시작
+npm run fabric:certs:prepare -- --days 90 --renew-before-days 14
 ```
 
 - 비교 benchmark는 테스트/브라우저 부하와 동시에 실행하지 않는다.
@@ -100,7 +116,7 @@ npm run demo:kb
 
 ## Authorization & Avoid
 
-- 기존 네트워크·공식 의존성·`.data/fabric-smoke/crypto` 테스트 키 생성/서명/사용 승인 재사용.
+- 기존 네트워크·공식 의존성·`.data/fabric-smoke/crypto` 테스트 키 생성/서명/사용 및 기존 키를 보존하는 인증서 갱신 승인 재사용.
   개인 auth/.env/회사 키는 읽지 않는다. 검증은 합성 입력·격리 DB/포트/브라우저를 사용한다.
 - `.serena/`, 기존 키·원장·genesis 보존. 원격 공개에는 명시적 요청이 필요하다.
 - DB backup은 앱 종료 후, restore는 새 폴더. WAL/SHM 삭제로 검사를 우회하지 않는다.
@@ -110,12 +126,12 @@ npm run demo:kb
 
 ## Remaining / Resume
 
-리뷰6건, 실제 Fabric 통합 검증, 조회 인덱스 최적화는 완료했다. 운영 업체 선택을 코드 blocker로 다시 요구하지 않는다.
+리뷰6건, 실제 Fabric 통합 검증, 조회 인덱스 최적화, 테스트 인증서 갱신은 완료했다. 운영 업체 선택을 코드 blocker로 다시 요구하지 않는다.
 남는 비용은 cache miss의 metadata 순회, 새 substring 검색의 후보 원문 읽기, 새 ref의 COW 쓰기,
 key 수에 비례하는 상태/anchor/ref, 최대8개 과거 snapshot과 cold/시작 replay다. 더 큰 workload 최적화는 별도 목표다.
 
-테스트 인증서9월22일 만료 대응, 원격 공개/CI 실행은 남아 있다. 실제 기관 SSO·모델 egress/공급자 연결,
+기본14일 경고 창 기준 다음 사용자 인증서 점검/갱신 시점은12월1일 이후다. 원격 공개/CI 실행은 남아 있다. 실제 기관 SSO·모델 egress/공급자 연결,
 파일럿·독립 호스트 장애/재해 복구, SaaS connector·벡터 검색·운영 대시보드는 별도 도입/확장 범위다.
 
-재개: 이 저장소의 AGENTS.md/HANDOFF.md와 docs/26-BROWSE-INDEX.md를 읽고 새 요청 범위부터 진행해.
+재개: 이 저장소의 AGENTS.md/HANDOFF.md와 docs/27-TEST-CERTIFICATES.md를 읽고 새 요청 범위부터 진행해.
 기존 데이터·키·.serena를 보존하고 완료 항목을 미수정으로 되돌리지 마. 원격 push에는 명시적 요청이 있어야 한다.

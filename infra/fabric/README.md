@@ -155,10 +155,14 @@ npm run fabric:stop     # stop nodes; preserve ledgers and identities
 ```
 
 The harness uses only `.data/fabric-smoke/crypto`. `cryptogen` creates disposable
-CAs; OpenSSL issues seven-day fixture client certificates with the required
+CAs; OpenSSL issues 90-day fixture client certificates with the required
 `kcl.actor_id` and `kcl.actor_kind` attributes. This emulates fixture identities
 and does not integrate Fabric CA enrollment, SSO or a production key manager.
 Existing test identities are never overwritten by `fabric:up`.
+Use `npm run fabric:certs:check` to inspect public certificate expiration and
+`fabric:certs:prepare` / `fabric:certs:apply` to renew the three enrollment
+certificates with their existing keys. Follow the [renewal procedure](../../docs/27-TEST-CERTIFICATES.md)
+and restart affected applications and signers after applying a plan.
 `fabric:deploy` resumes deployment after identity generation. It queries existing
 channels and committed definitions, verifies each organization's exact package
 and approval, and detects initialization from the peer. A local deployment file

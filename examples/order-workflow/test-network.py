@@ -165,7 +165,7 @@ def issue_client_certificates():
         run(["openssl", "req", "-new", "-key", key, "-subj", f"/C=US/O={domain}/OU=client/CN=User1@{domain}", "-out", csr])
         run(["openssl", "x509", "-req", "-in", csr, "-CA", next((base / "ca").glob("*.pem")), "-CAkey", next((base / "ca").glob("*_sk")),
              "-set_serial", "0x" + secrets.token_hex(16),
-             "-days", "7", "-extfile", extension, "-out", msp / "signcerts" / f"User1@{domain}-cert.pem"])
+             "-days", "90", "-extfile", extension, "-out", msp / "signcerts" / f"User1@{domain}-cert.pem"])
 
 
 def peer_env(org, user="Admin"):

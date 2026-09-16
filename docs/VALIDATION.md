@@ -1,5 +1,37 @@
 # 검증 기록
 
+## 테스트 인증서 갱신 — 2026-09-16
+
+9월22일 만료 예정이던 예제 User1 인증서3개를 **2026-12-15T06:29:11Z**까지 갱신했다.
+81개 공개 인증서 중 해당3개만 교체됐고 모든 공개키는 같다. 교체 대상 외130개 파일은 내용·inode·수정시각을
+유지했다. 사용자/CA 개인키, peer/orderer TLS, MSP, genesis를 보존했으며 원장 초기화·chaincode 재배포는 없었다.
+
+- `npm run check`: **274 passed /0 failed /1 GC 전용 skipped**. 이전 GC 검증은 해당 코드가 같아 재사용했다.
+- `npm run check:types`, `npm run demo` 통과.
+- 인증서·signer 집중 검사 **19개 통과**. signer 만료 경계 테스트가 수정 전 실패하고 수정 후 통과했다.
+- 기존 키·속성 유지, 공개 점검의 키 접근 없음, tamper·actor/CA/key mismatch, CA 유효기간,
+  만료 후 갱신, 중간 rename 및 rename 후 fsync 실패 롤백, 부분 적용 재개와 재실행을 검사했다.
+- 외부 패키지 없는 source copy에서 공개 인증서81개 점검 정상 종료. 개인키는 복사하지 않았다.
+- 독립 리뷰의 raw Fabric attribute 인코딩과 재실행 시 재시작 안내 문제를 수정하고 재검토했다.
+
+기존 인증서로 서명한 실제 거래를 제출하고 acknowledged outbox를 저장한 뒤 연결을 종료했다.
+새 인증서 연결에서 commit bytes를 이용해 재제출 없이 복구했고, 전체 블록에서 **VALID247**을 확인했다.
+세 조직 각각 새 인증서·별도 signer로 인증 조회와 fence 쓰기를 실행해 **VALID248/249/250**을 확인했다.
+이는 이전 인증서가 아직 유효한 중첩 기간의 실제 복구 검증이다.
+
+설정 기반 통합 검증은 게시251·승인253·활성254·철회262, 최종 block265로 통과했다.
+OIDC, SDK exact revision, 결과 반환 직전 철회 차단, 원래 receipt 재시도와 version3 복원 후 private 데이터 유지도 확인했다.
+시험 합의는 기존4318 앱에서 다시 조회해 withdrawn을 확인했다.
+
+Fabric 앱5개와 signer를 정상 재시작했고 기본4317은 기존 local block1·문서0개를 유지했다.
+앱6개의 liveness와 probe 완료 후 readiness200, OIDC 앱4개의 익명 overview401,
+3 peer·3 orderer running을 확인했다. readiness는 기존 계약대로 오래된 표본에서503을 반환하고 비동기 probe 후200이 된다.
+
+실행 근거는 `.artifacts/certificates/`의 `check.log`, `types.log`, `targeted.log`, `demo.log`,
+`before.json`, `after.json`, `restart.json`, `fabric-evidence.json`, `runtime-health.json`, `no-optional.json`과
+`.data/configured-smoke-LACMrn/evidence.json`이다. 강제 종료 복구는 부분 적용 상태 구성으로 검증했으며 실제 SIGKILL은 주입하지 않았다.
+원격 공개/CI는 실행하지 않았다. [명령·실패 복구·제한](27-TEST-CERTIFICATES.md)을 참조한다.
+
 ## 조회 참조 인덱스 최적화 — 2026-09-16
 
 기준 `de3e953`의 별도 source copy와 수정본을 같은 Node24·1,000개1KiB 문서·5회·모든50개 요약 페이지
