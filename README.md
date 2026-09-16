@@ -98,6 +98,9 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로�
 [개정본 비교·브라우저 검사](docs/21-BROWSER-AND-REVISION-TESTS.md)와
 [성능·장애 실험](docs/22-AUTOMATED-EXPERIMENTS.md)을 로컬과 CI에서 반복 실행할 수 있다.
 
+[Claude 공동 리뷰](docs/25-CLAUDE-REVIEW.md)에서 개정 이력 조회 비용, health 요청 제한,
+원장 대기열·메모리 보관 구조, 저장소 가져오기·페이지 이동의 후속 수정 항목을 확인했다.
+
 ## KB·모델 연결
 
 [Markdown 저장소 연결](docs/23-KB-SOURCE-CONNECTOR.md)은 manifest에 지정한 파일만 비공개 초안으로 동기화한다.

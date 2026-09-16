@@ -1,17 +1,19 @@
 # Handoff
 
-_Last updated: 2026-09-16 11:25 KST by Codex_
+_Last updated: 2026-09-16 11:55 KST by Codex_
 
 ## Goal
 
 MIT 지식 합의 원장. 사용자는 남은 코드 작업을 중간 재승인 없이 진행하길 원한다.
 오픈소스 제품이므로 영업·이행·정산은 선택형 예제이고 제품 조직 구성이 아니다.
-이번에는 **Markdown KB/저장소 adapter, 지식 SDK, guarded generation**까지 구현·검증했다.
+**Markdown KB/저장소 adapter, 지식 SDK, guarded generation**까지 구현·검증했다.
+최신 요청은 Claude와 성능·보안·구조·사용성 리뷰다. `419a26d`를 검토했고 아래 개선 항목을 발견했다.
+이번에는 리뷰 문서만 기록하며 런타임 수정은 하지 않았다.
 운영 SSO/KMS 업체 선택을 개발 blocker로 다시 요구하지 않는다.
 
 ## Current Status
 
-- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`. 이번 기준은 `9203e18`; 최종 커밋은 `git log -1` 확인.
+- 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`, `main`. 구현/리뷰 기준은 `419a26d`; 최종 문서 커밋은 `git log -1` 확인.
 - **기본 제품 앱 http://127.0.0.1:4317**, Git 제외 `kcl.config.json`, `.data/workspaces/knowledge/local`.
   별도 가상 승인/문서를 만들지 않는2조직 설정이다. 최신 코드 재기동 후 health200/block1.
 - 예제 앱도 최신 코드:4318 Fabric 가상 역할,4319 OIDC 통합/IdP4320,
@@ -105,9 +107,28 @@ npm run test:browser
 
 ## Remaining / Resume
 
-요청한 source connector와 generation client 코드는 완료했다. 남은 도입 단계는 실제 기관의
-인증 transport·모델 egress 정책/공급자 설정, 파일럿 운영과 독립 인프라 검증, 원격 공개/CI 확인이다.
+기능 구현 뒤 [Claude 공동 리뷰](docs/25-CLAUDE-REVIEW.md)에서 실제 코드 개선 항목을 확인했다.
+**남은 일이 운영 설정뿐이라는 이전 요약은 더 이상 맞지 않는다.** 아직 고치지 않은 순서는 다음과 같다.
+
+1. **R1/P1:** overview/search의 개정별 전체 history 중복·페이지 제한 없음. 같은 슬롯 200개 개정에서
+   history 40,000개·JSON 16,811,761 bytes를 로컬 service로 재현했다. 요약/페이지/상세 분리가 필요하다.
+2. **R2/P2:** 인증 전 healthz가 매번 Fabric refresh 큐를 사용. 모의 peer 40ms에서 익명 동시 8건이
+   peer RPC 8회·순차 339ms였다. 외부 노출 시 제한, liveness/readiness 분리가 필요하다.
+3. **R5/R6/P2:** 큰 manifest 선택 시 이전 선택으로 import 가능, source 21개부터 목록의 다음 페이지 접근 불가.
+   실제 격리 Chromium에서 재현했다. 상태 무효화 순서와 source cursor UI가 필요하다.
+4. **R3/P2:** service 명령 큐가 private sync도 기다리게 하고 Fabric은 별도 전역 큐를 사용.
+   지연된 게시 뒤 private import 대기를 재현했다. CAS·멱등성·블록 순서를 지키며 잠금 범위를 줄여야 한다.
+5. **R4/P2:** raw blocks/results/history를 전체 메모리 보관. 구조는 확인, 장기 heap/OOM은 미측정.
+   이력/무결성 검사를 삭제하지 말고 순차 replay·디스크 검증 조회·제한된 캐시를 검토한다.
+
+Claude의 requestTimeout 15초/handler 충돌, committed retry 재제출 주장은 오탐으로 제외했다.
+Node24 국소 실험과 멱등성/재시작 테스트 2개 재실행 통과. `.artifacts/claude-review-419a26d/`에
+정리된 패킷·실제 Claude 응답·probe·실행 JSON을 보관한다. 리뷰는 전체 침투 시험이나 운영 성능 인증이 아니다.
+
+별도 도입 단계는 실제 기관의 인증 transport·모델 egress 정책/공급자 설정, 파일럿 운영과
+독립 인프라 검증, 원격 공개/CI 확인이다.
 SaaS별 KB connector·벡터 검색·운영 대시보드는 별도 확장 기능이며 이번 완료 주장에 포함하지 않는다.
 
-재개: AGENTS.md/HANDOFF.md를 읽고 새 요청 범위만 진행해. KB/source/guarded-generation과227개 검사·Chromium9개·실제Fabric 검증은 완료됐다.
+재개: AGENTS.md/HANDOFF.md와 리뷰 문서를 읽고 요청한 수정 범위를 진행해.
+KB/source/guarded-generation의 이전227개 검사·Chromium9개·실제Fabric 검증은 완료됐지만 위 리뷰 항목은 미수정이다.
 기존 키·원장·.serena를 보존하고 운영 공급자 선택을 개발 blocker로 다시 요구하지 마. 원격 push는 명시적 요청이 있어야 한다.
