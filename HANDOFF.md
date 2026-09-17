@@ -1,19 +1,22 @@
 # Handoff
 
-_Last updated: 2026-09-17 06:30 KST by Devin_
+_Last updated: 2026-09-17 18:05 KST by Devin_
 
 ## Goal
 
 MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Knowledger로 확정**했다(기존 `knowledge-consensus-ledger`/`kcl`에서 리네임).
 조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
-합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임은 완료했다. 다음 우선순위는 공개 준비와 원격 CI 확인이다.
-이번 요청은 제품 이름 확정과 리네임이다. 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
+합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임·공개 게시·
+대규모 확장성 수정은 완료했다. 다음 우선순위는 선택 도입/확장과 유지보수다.
+상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
 
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`.
   **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
+  **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
+  블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
 - 리네임 전 추적 파일은 clean, 사용자 `.serena/`와 `scorpionfish/`만 untracked. 둘 다 보존·커밋 제외.
 - **마지막 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
@@ -48,6 +51,16 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   10,000개1KiB 전체 순회 기준 검색2,307→628ms, 목록1,951→716ms, 재생3,318→1,885ms.
   무결성 교차 검증·체크포인트 단언·JS substring 의미는 유지한다. 측정 근거는
   [검증 기록](docs/VALIDATION.md) 최신 항목.
+- 10만 문서 확장성(PR #2, squash `1249f1e`): 100k 측정에서 발견한 O(N²) 세 곳을 수정했다.
+  브라우즈 개정본 캐시·검색 매치 캐시는 상한 초과 결과를 하드 바이트 상한(16MiB/64MiB) 아래
+  단일 대형 항목으로 유지해 오프셋 페이지네이션의 전체 재필터/재스캔을 없앴고,
+  `VerifiedBrowseIndex`는 쓰기 델타 커밋으로 커밋당 비용을 평탄화했으며, 블록 프로젝터의
+  `fork()`는 얕은 복사다. 결과 local 100k overview 9.2s·search 11.4s·재생21.3s,
+  fabric-adapter 합성 재생 search 11.0s·overview 12.6s. 비순차 커밋 강등·캐시 무효화·
+  대형 상한은 회귀 테스트로 고정했다. 상세 수치와 알려진 한계는 [검증 기록](docs/VALIDATION.md).
+- `tools/performance-fabric.ts`: 로컬 저널 이벤트를 실제 해시 체인의 합성 블록으로 변환해
+  `SqliteFabricProjection.applyBlock`→`FabricApplicationLedger`로 동일 읽기 workload를 측정한다.
+  `--journal`은 단일 읽기 트랜잭션 스냅샷에서 검증·재생한다. 네트워크 커밋 증명이 아니다.
 - 제품 리네임 `knowledger`: 패키지명·`knowledger.config.json` 기본값·`@knowledger/*` 범위·`Knowledger*` 클래스·
   `X-KNOWLEDGER-CSRF`·OIDC 쿠키/client_id·`KNOWLEDGER_SNAPSHOT_*` env·스키마 `$id`·테스트 접두사·문서 표기.
   실행 중인 배포 계약은 `kcl` 그대로 유지한다 — `kcl:` 원장 state 키, `kcl.actor_*` 인증서 속성,
@@ -60,6 +73,10 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 - `infra/fabric/certificates.ts`, `examples/order-workflow/client-certificates.ts`: 갱신 core와 고정 예제 CLI.
   적용 plan: `.data/fabric-smoke/certificate-renewals/renewal-20260916062911-ba83c15935beb018/plan.json`.
 - `packages/storage/browse-index.ts`, `apps/api/service.ts`: 조회 인덱스 및 canonical 대조·페이지 계약.
+  `apps/api/search-matches.ts`는 검색 매치 스냅샷 캐시(일반+상주 대형 1개, 상한 생성자 주입 가능).
+- `tools/performance-smoke.ts`(로컬 workload, `--slot-groups`·100k 상한)와
+  `tools/performance-fabric.ts`(합성 블록→실제 projector·adapter 재생, `--journal` 재사용)가
+  성능 측정 도구다. 결과는 `.artifacts/`에 JSON으로 남는다.
 - 보존할 local 설정/데이터: Git 제외 `knowledger.config.json`, `.data/workspaces/knowledge/local`.
   예제 데이터: `.data/fabric-web`, `.data/fabric-login`, `.data/fabric-sales`, `.data/fabric-fulfillment`, `.data/fabric-settlement`.
 - 네트워크: `.data/fabric-smoke/compose.json`, 같은 폴더의 `crypto/`·`channel.block`.
@@ -67,7 +84,14 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Verification
 
-리네임 변경의 실행 근거다(2026-09-16 22:1x KST 재실행).
+PR #2까지 포함한 최신 실행 근거다(2026-09-17 재실행).
+
+- `npm run check`: **300 tests / 299 passed / 0 failed / 1 GC 전용 skipped**. `npm run check:types` 통과.
+- PR #2 원격 CI 8/8 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments.
+- 리뷰 루프(claude×2·codex×2·grok 게이트, 3라운드) — 최종 라운드의 MEDIUM·LOW 지적 전부 수정 후 머지.
+- performance-fabric e2e: `--documents 20` 생성 경로와 `--journal` 재사용 경로 모두 기능 단언 통과.
+
+이전(리네임 시점, 2026-09-16 22:1x KST) 근거:
 
 - `npm run check`: **274 passed /0 failed /1 GC 전용 skipped** — 리네임 후 동일. `npm run check:types`, `npm run demo` 통과.
 - `npm run config:init -- --output /tmp/...`으로 새 기본 설정 파일명 동작 확인. `kcl.config` 추적 파일 참조 0.
@@ -123,12 +147,11 @@ python3 -B tools/check_docs.py
 2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
    런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
 3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·파일럿.
-   운영 대시보드는 `e69a228`로, 대규모 읽기 최적화는 `f4113a1`+`7e6b46a`로 구현했다.
-   10만 문서 측정에서 찾은 페이지네이션·인제스트 O(N²) 결함은 PR #2(`1249f1e`,
-   squash)로 main에 머지됐다 — 브라우즈 개정본 캐시·검색 매치 캐시의 상한 초과 결과를
-   하드 바이트 상한 아래 단일 대형 항목으로 유지하고, 브라우즈 인덱스는 쓰기 델타
-   커밋으로 바뀌었으며, 블록 프로젝터의 fork는 얕은 복사다. 혼합 슬롯·Fabric 어댑터
-   측정 도구(`tools/performance-fabric.ts`)도 함께 들어갔다.
+   운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
+   확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
+   알려진 잔여 한계(차단 아님, [검증 기록](docs/VALIDATION.md) 참조): 상주 대형 캐시 항목은
+   캐시당 하나라 교차 대형 질의 시 재계산으로 돌아가고, `fork()` 얕은 복사는 블록당
+   O(상태) Map 복사가 남는다(포인터 복사라 측정상 39배 개선).
    이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
 4. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
@@ -136,6 +159,7 @@ python3 -B tools/check_docs.py
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
 공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
+10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다 — 대기 중인 성능 브랜치는 없다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
