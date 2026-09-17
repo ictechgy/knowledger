@@ -106,13 +106,11 @@ function sameSlot(left: Slot, right: Slot): boolean { return slotKey(left) === s
 function visible(checkpoint: Checkpoint, at: Checkpoint): boolean { return checkpointOrder(checkpoint, at) <= 0; }
 
 
-function cloneState(value: BrowseState): BrowseState {
-  return {
-    revisionsByKey: new Map(value.revisionsByKey), revisions: [...value.revisions],
-    revisionsBySlot: new Map(value.revisionsBySlot), revisionsByDocument: new Map(value.revisionsByDocument),
-    proposalsByKey: new Map(value.proposalsByKey), proposals: [...value.proposals], proposalsByRevision: new Map(value.proposalsByRevision),
-    agreementsByKey: new Map(value.agreementsByKey), agreementsByRevision: new Map(value.agreementsByRevision),
-  };
+/** 새 항목이 기존 선두보다 모두 최신이면 정렬 없이 앞에 붙이고, 아니면 합쳐서 다시 정렬한다. */
+function prependLatest<T>(added: T[], existing: T[], compare: (left: T, right: T) => number): T[] {
+  if (!added.length) return existing;
+  if (!existing.length || compare(added[added.length - 1], existing[0]) < 0) return [...added, ...existing];
+  const merged = [...added, ...existing]; merged.sort(compare); return merged;
 }
 
 function staticRevisionMatches(existing: RevisionBrowseRef, next: RevisionBrowseRef): boolean {
@@ -155,15 +153,20 @@ export class VerifiedBrowseIndex {
   }
 
   prepare(batches: Iterable<BrowseWriteBatch>): { commit(): void } {
-    let next: BrowseState | undefined;
-    let addedRevisions = false;
-    let addedProposals = false;
-    const state = () => next ?? this.state;
-    const writable = () => next ??= cloneState(this.state);
-    const copiedSlotLists = new Set<string>();
-    const copiedDocumentLists = new Set<string>();
-    const copiedProposalLists = new Set<string>();
-    const copiedAgreementLists = new Set<string>();
+    // 커밋 전까지 this.state를 변경하지 않고 추가분만 모은다 — 블록마다 색인
+    // 전체를 복사·정렬하면 O(색인×블록)이 되므로 델타로 유지한다.
+    const addedRevisions: RevisionBrowseRef[] = [];
+    const pendingRevisions = new Map<string, RevisionBrowseRef>();
+    const addedSlotRevisions = new Map<string, RevisionBrowseRef[]>();
+    const addedDocumentRevisions = new Map<string, RevisionBrowseRef[]>();
+    const addedProposals: ProposalBrowseRef[] = [];
+    const pendingProposals = new Map<string, ProposalBrowseRef>();
+    const addedRevisionProposals = new Map<string, ProposalBrowseRef[]>();
+    const addedRevisionAgreements = new Map<string, AgreementBrowseRef[]>();
+    const pendingAgreements = new Map<string, AgreementBrowseRef>();
+    const pushTo = <T>(map: Map<string, T[]>, key: string, value: T): void => {
+      const list = map.get(key); if (list) list.push(value); else map.set(key, [value]);
+    };
 
     for (const batch of batches) {
       assertCheckpoint(batch.checkpoint, this.channelId);
@@ -176,67 +179,73 @@ export class VerifiedBrowseIndex {
           const revision = validateRevision(value);
           if (key !== keyFor.revision(revision.revision_digest) || revision.payload.channel_id !== this.channelId) throw new Error('Invalid browse revision binding');
           const ref: RevisionBrowseRef = { key, revision_digest: revision.revision_digest, slot: cloneSlot(revision.payload), published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = state().revisionsByKey.get(key);
+          const existing = this.state.revisionsByKey.get(key) ?? pendingRevisions.get(key);
           if (existing) {
             if (!staticRevisionMatches(existing, ref)) throw new Error('Browse index immutable revision fields changed');
             continue;
           }
-          const target = writable(); target.revisionsByKey.set(key, ref); target.revisions.push(ref); addedRevisions = true;
-          const fullSlot = slotKey(ref.slot);
-          let bySlot = target.revisionsBySlot.get(fullSlot);
-          if (!bySlot) { bySlot = []; target.revisionsBySlot.set(fullSlot, bySlot); copiedSlotLists.add(fullSlot); }
-          else if (!copiedSlotLists.has(fullSlot)) { bySlot = [...bySlot]; target.revisionsBySlot.set(fullSlot, bySlot); copiedSlotLists.add(fullSlot); }
-          bySlot.push(ref);
-          let byDocument = target.revisionsByDocument.get(ref.slot.document_id);
-          if (!byDocument) { byDocument = []; target.revisionsByDocument.set(ref.slot.document_id, byDocument); copiedDocumentLists.add(ref.slot.document_id); }
-          else if (!copiedDocumentLists.has(ref.slot.document_id)) { byDocument = [...byDocument]; target.revisionsByDocument.set(ref.slot.document_id, byDocument); copiedDocumentLists.add(ref.slot.document_id); }
-          byDocument.push(ref);
+          addedRevisions.push(ref); pendingRevisions.set(key, ref);
+          pushTo(addedSlotRevisions, slotKey(ref.slot), ref);
+          pushTo(addedDocumentRevisions, ref.slot.document_id, ref);
         } else if (key.startsWith('kcl:v1:proposal:')) {
           const proposal = validateProposal(value);
           if (key !== keyFor.proposal(proposal.proposal_id) || proposal.channel_id !== this.channelId) throw new Error('Invalid browse proposal binding');
           const ref: ProposalBrowseRef = { key, proposal_id: proposal.proposal_id, revision_digest: proposal.revision_digest,
             slot: cloneSlot(proposal), created_at: proposal.created_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = state().proposalsByKey.get(key);
+          const existing = this.state.proposalsByKey.get(key) ?? pendingProposals.get(key);
           if (existing) {
             if (!staticProposalMatches(existing, ref)) throw new Error('Browse index immutable proposal fields changed');
             continue;
           }
-          const target = writable(); target.proposalsByKey.set(key, ref); target.proposals.push(ref); addedProposals = true;
-          let byRevision = target.proposalsByRevision.get(ref.revision_digest);
-          if (!byRevision) { byRevision = []; target.proposalsByRevision.set(ref.revision_digest, byRevision); copiedProposalLists.add(ref.revision_digest); }
-          else if (!copiedProposalLists.has(ref.revision_digest)) { byRevision = [...byRevision]; target.proposalsByRevision.set(ref.revision_digest, byRevision); copiedProposalLists.add(ref.revision_digest); }
-          byRevision.push(ref);
+          addedProposals.push(ref); pendingProposals.set(key, ref);
+          pushTo(addedRevisionProposals, ref.revision_digest, ref);
         } else if (key.startsWith('kcl:v1:agreement:')) {
           const agreement = validateAgreement(value);
           if (key !== keyFor.agreement(agreement.agreement_id) || agreement.channel_id !== this.channelId) throw new Error('Invalid browse agreement binding');
           const ref: AgreementBrowseRef = { key, agreement_id: agreement.agreement_id, revision_digest: agreement.revision_digest,
             slot: cloneSlot(agreement), activated_at: agreement.activated_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = state().agreementsByKey.get(key);
+          const existing = this.state.agreementsByKey.get(key) ?? pendingAgreements.get(key);
           if (existing) {
             if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
             continue;
           }
-          const target = writable(); target.agreementsByKey.set(key, ref);
-          let byRevision = target.agreementsByRevision.get(ref.revision_digest);
-          if (!byRevision) { byRevision = []; target.agreementsByRevision.set(ref.revision_digest, byRevision); copiedAgreementLists.add(ref.revision_digest); }
-          else if (!copiedAgreementLists.has(ref.revision_digest)) { byRevision = [...byRevision]; target.agreementsByRevision.set(ref.revision_digest, byRevision); copiedAgreementLists.add(ref.revision_digest); }
-          byRevision.push(ref);
+          pendingAgreements.set(key, ref);
+          pushTo(addedRevisionAgreements, ref.revision_digest, ref);
         }
       }
     }
-    // A startup stream may contain the entire ledger. Append compact refs and
-    // sort touched lists once, instead of repeatedly shifting an ever larger
-    // array for each historical publication.
-    if (next) {
-      if (addedRevisions) next.revisions.sort(compareRevisions);
-      if (addedProposals) next.proposals.sort(compareProposals);
-      for (const key of copiedSlotLists) next.revisionsBySlot.get(key)!.sort(compareRevisions);
-      for (const key of copiedDocumentLists) next.revisionsByDocument.get(key)!.sort(compareRevisions);
-      for (const key of copiedProposalLists) next.proposalsByRevision.get(key)!.sort(compareProposals);
-      for (const key of copiedAgreementLists) next.agreementsByRevision.get(key)!.sort(compareAgreements);
-    }
-    const prepared = next;
-    return { commit: () => { if (prepared) this.state = prepared; } };
+    let committed = false;
+    return { commit: () => {
+      if (committed) return; committed = true;
+      const state = this.state;
+      if (addedRevisions.length) {
+        addedRevisions.sort(compareRevisions);
+        state.revisions = prependLatest(addedRevisions, state.revisions, compareRevisions);
+        for (const ref of addedRevisions) state.revisionsByKey.set(ref.key, ref);
+        for (const [key, refs] of addedSlotRevisions) {
+          refs.sort(compareRevisions);
+          state.revisionsBySlot.set(key, prependLatest(refs, state.revisionsBySlot.get(key) ?? [], compareRevisions));
+        }
+        for (const [key, refs] of addedDocumentRevisions) {
+          refs.sort(compareRevisions);
+          state.revisionsByDocument.set(key, prependLatest(refs, state.revisionsByDocument.get(key) ?? [], compareRevisions));
+        }
+      }
+      if (addedProposals.length) {
+        addedProposals.sort(compareProposals);
+        state.proposals = prependLatest(addedProposals, state.proposals, compareProposals);
+        for (const ref of addedProposals) state.proposalsByKey.set(ref.key, ref);
+        for (const [key, refs] of addedRevisionProposals) {
+          refs.sort(compareProposals);
+          state.proposalsByRevision.set(key, prependLatest(refs, state.proposalsByRevision.get(key) ?? [], compareProposals));
+        }
+      }
+      for (const [key, ref] of pendingAgreements) state.agreementsByKey.set(key, ref);
+      for (const [key, refs] of addedRevisionAgreements) {
+        refs.sort(compareAgreements);
+        state.agreementsByRevision.set(key, prependLatest(refs, state.agreementsByRevision.get(key) ?? [], compareAgreements));
+      }
+    } };
   }
 
   query<Q extends BrowseQuery>(query: Q): BrowseResult<Q> {
