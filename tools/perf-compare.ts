@@ -1,12 +1,16 @@
-#!/usr/bin/env node
 /**
  * 성능 결과 비교 헬퍼. performance-smoke와 performance-fabric이 공유하는
- * baseline 로드·검증·호환성 검사·임계값 비교 로직이다. 비교 불가능 조건
- * (mode/environment/dataset 불일치)은 명확한 오류로 거절하고, regression은
- * 임계값 대비 명시적 비율로 판정한다.
+ * baseline 로드·검증·호환성 검사·임계값 비교·CLI 결과 보고 로직이다. 비교
+ * 불가능 조건(mode/environment/dataset 불일치)은 명확한 오류로 거절하고,
+ * regression은 임계값 대비 명시적 비율로 판정한다.
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpus } from 'node:os';
+import { resolve } from 'node:path';
+
+/** 성능 결과 JSON의 스키마 버전 — 비교 대상 필드가 바뀌면 올려 구 baseline을 명확히 거절한다. */
+export const RESULT_SCHEMA_VERSION = 2;
 
 /**
  * 비교 입력 오류 — 잘못된 baseline 파일·임계값·호환성 등 사용자 입력 문제와
@@ -29,15 +33,15 @@ export function increaseRatio(current: number, baseline: number): number {
 
 /**
  * Baseline JSON이 이 도구의 결과 스키마인지 확인한다. schema_version, mode,
- * environment, dataset, metrics가 없으면 비교가 불가능하다.
+ * environment, dataset, metrics, functional_assertions가 없으면 비교가 불가능하다.
  */
 export function validateBaselineShape(baseline: unknown, expectedMode: string): void {
   if (!baseline || typeof baseline !== 'object' || Array.isArray(baseline)) {
     throw new ComparisonInputError('baseline must be a JSON object produced by the same performance tool');
   }
   const record = baseline as Record<string, unknown>;
-  if (record.schema_version !== 1) {
-    throw new ComparisonInputError(`baseline schema_version ${JSON.stringify(record.schema_version)} is not supported (expected 1); regenerate the baseline with the same tool version`);
+  if (record.schema_version !== RESULT_SCHEMA_VERSION) {
+    throw new ComparisonInputError(`baseline schema_version ${JSON.stringify(record.schema_version)} is not supported (expected ${RESULT_SCHEMA_VERSION}); regenerate the baseline with the same tool version`);
   }
   if (record.mode !== expectedMode) {
     throw new ComparisonInputError(`baseline mode ${JSON.stringify(record.mode)} does not match this run's mode ${JSON.stringify(expectedMode)}; use a baseline produced by the same tool`);
@@ -47,24 +51,47 @@ export function validateBaselineShape(baseline: unknown, expectedMode: string): 
       throw new ComparisonInputError(`baseline is missing the "${section}" section; regenerate the baseline with the same tool`);
     }
   }
-  for (const field of ['node', 'platform', 'arch', 'cpu_count'] as const) {
-    if (typeof (record.environment as Record<string, unknown>)[field] !== 'string' && typeof (record.environment as Record<string, unknown>)[field] !== 'number') {
-      throw new ComparisonInputError(`baseline environment.${field} is missing or invalid; regenerate the baseline with the same tool`);
+  const environment = record.environment as Record<string, unknown>;
+  for (const field of ['node', 'platform', 'arch'] as const) {
+    if (typeof environment[field] !== 'string') {
+      throw new ComparisonInputError(`baseline environment.${field} is missing or is not a string; regenerate the baseline with the same tool`);
     }
   }
-  if (!Number.isFinite((record.environment as Record<string, unknown>).cpu_count)) {
+  if (typeof environment.cpu_count !== 'number' || !Number.isFinite(environment.cpu_count)) {
     throw new ComparisonInputError('baseline environment.cpu_count must be a finite number');
   }
 }
 
 /**
  * 특정 메트릭 값의 유효성을 검증한다. 비교와 판정은 유한한 음수가 아닌 수에서만 의미가 있다.
+ * label은 "baseline.metrics.search"처럼 어느 쪽 값인지를 포함해 오류 원인을 오도하지 않는다.
  */
 export function validateMetricValue(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new ComparisonInputError(`baseline metric ${label} must be a finite nonnegative number, got ${JSON.stringify(value)}; regenerate the baseline`);
+    throw new ComparisonInputError(`metric value for ${label} must be a finite nonnegative number, got ${JSON.stringify(value)}; for baseline values regenerate the baseline with the same tool`);
   }
   return value;
+}
+
+/** 현재 실행 환경 정보 — baseline 호환성 검사는 측정 전에도 계산 가능한 이 값으로 한다. */
+export function currentEnvironment(): { node: string; platform: string; arch: string; cpu_count: number } {
+  return { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length };
+}
+
+/**
+ * Baseline과 현재 실행의 environment가 같은지 확인한다. 다른 머신·Node 버전에서
+ * 측정한 수치 비교는 무의미하므로 측정 전에도 호출할 수 있다.
+ */
+export function assertEnvironmentComparable(baseline: Record<string, any>, current: Record<string, any>): void {
+  const mismatches: string[] = [];
+  for (const field of ['node', 'platform', 'arch', 'cpu_count'] as const) {
+    if (baseline[field] !== current[field]) {
+      mismatches.push(`${field} ${JSON.stringify(baseline[field])} -> ${JSON.stringify(current[field])}`);
+    }
+  }
+  if (mismatches.length) {
+    throw new ComparisonInputError(`baseline environment is not comparable with this run — comparison is only valid on the same environment. Differences: ${mismatches.join('; ')}. Re-measure the baseline on this machine.`);
+  }
 }
 
 /**
@@ -76,23 +103,27 @@ export function assertComparable(
   current: { mode: string; environment: Record<string, any>; dataset: Record<string, any> },
   datasetFields: readonly string[],
 ): void {
-  const baselineEnvironment = baseline.environment as Record<string, any>;
-  const baselineDataset = baseline.dataset as Record<string, any>;
+  // compareMetrics가 validateBaselineShape를 먼저 호출하지만, 단독 호출에도 스스로 검증한다.
+  if (baseline.mode !== current.mode) {
+    throw new ComparisonInputError(`baseline mode ${JSON.stringify(baseline.mode)} does not match this run's mode ${JSON.stringify(current.mode)}; use a baseline produced by the same tool`);
+  }
+  assertEnvironmentComparable(baseline.environment as Record<string, any>, current.environment);
+  const baselineDataset = baseline.dataset;
+  if (!baselineDataset || typeof baselineDataset !== 'object' || Array.isArray(baselineDataset)) {
+    throw new ComparisonInputError('baseline is missing the "dataset" section; regenerate the baseline with the same tool');
+  }
+  const baselineRecord = baselineDataset as Record<string, any>;
   const mismatches: string[] = [];
-  if (baselineEnvironment.node !== current.environment.node) mismatches.push(`node ${baselineEnvironment.node} -> ${current.environment.node}`);
-  if (baselineEnvironment.platform !== current.environment.platform) mismatches.push(`platform ${baselineEnvironment.platform} -> ${current.environment.platform}`);
-  if (baselineEnvironment.arch !== current.environment.arch) mismatches.push(`arch ${baselineEnvironment.arch} -> ${current.environment.arch}`);
-  if (baselineEnvironment.cpu_count !== current.environment.cpu_count) mismatches.push(`cpu_count ${baselineEnvironment.cpu_count} -> ${current.environment.cpu_count}`);
   for (const field of datasetFields) {
     if (!current.dataset || !(field in current.dataset)) {
       throw new ComparisonInputError(`current result is missing dataset.${field}; this tool version is incompatible with the baseline`);
     }
-    if (baselineDataset[field] !== current.dataset[field]) {
-      mismatches.push(`dataset.${field} ${JSON.stringify(baselineDataset[field])} -> ${JSON.stringify(current.dataset[field])}`);
+    if (baselineRecord[field] !== current.dataset[field]) {
+      mismatches.push(`dataset.${field} ${JSON.stringify(baselineRecord[field])} -> ${JSON.stringify(current.dataset[field])}`);
     }
   }
   if (mismatches.length) {
-    throw new ComparisonInputError(`baseline is not comparable with this run — same mode, environment, and dataset are required. Differences: ${mismatches.join('; ')}. Re-measure the baseline on this machine with the same dataset flags.`);
+    throw new ComparisonInputError(`baseline is not comparable with this run — same mode, environment, and dataset are required. Differences: ${mismatches.join('; ')}. Re-measure both runs with identical dataset options or keep baselines separate.`);
   }
 }
 
@@ -107,11 +138,16 @@ export function loadBaselineJson(baselinePath: string): Record<string, any> {
   } catch (cause) {
     throw new ComparisonInputError(`cannot read baseline file "${baselinePath}": ${(cause as Error).message}. Create one first with the same tool and dataset flags, e.g. node tools/performance-smoke.ts --documents 8 --samples 3 --out baseline.json, then pass --baseline baseline.json`);
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (cause) {
     throw new ComparisonInputError(`baseline file "${baselinePath}" is not valid JSON: ${(cause as Error).message}. Regenerate the baseline with --out baseline.json`);
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ComparisonInputError(`baseline file "${baselinePath}" must contain a JSON object produced by the same performance tool`);
+  }
+  return parsed as Record<string, any>;
 }
 
 /**
@@ -134,7 +170,8 @@ export function parseThresholds(text: string, allowedMetrics: readonly string[])
     if (metric in thresholds) {
       throw new ComparisonInputError(`duplicate threshold metric "${metric}"`);
     }
-    const parsed = Number(ratio);
+    // 빈 문자열은 Number('')===0으로 조용히 임계값 0이 되므로 명시적으로 거절한다.
+    const parsed = ratio === '' ? Number.NaN : Number(ratio);
     if (!Number.isFinite(parsed) || parsed < 0) {
       throw new ComparisonInputError(`threshold ${metric}="${ratio}" is not a finite nonnegative ratio (e.g. 0.25 = allow up to 25% slower)`);
     }
@@ -143,12 +180,13 @@ export function parseThresholds(text: string, allowedMetrics: readonly string[])
   return thresholds;
 }
 
-/** 메트릭 하나의 비교 결과 — baseline·현재 p95/ms 값, 증가율, 적용된 임계값. */
+/** 메트릭 하나의 비교 결과 — baseline·현재 p95/ms 값, 증가율, 적용된 임계값.
+ * baseline이 0이고 현재 값이 양수면 증가율은 무한대이므로 JSON에는 null로 기록한다. */
 export interface MetricComparison {
   metric: string;
   baseline_ms: number;
   current_ms: number;
-  ratio: number;
+  ratio: number | null;
   threshold: number | null;
 }
 
@@ -180,14 +218,72 @@ export function compareMetrics(
   const regressions: string[] = [];
   const entries: MetricComparison[] = [];
   for (const metric of metricNames) {
-    const baselineMs = metricMs((baseline.metrics as Record<string, unknown>)[metric], `metrics.${metric}`);
-    const currentMs = metricMs(current.metrics[metric], `metrics.${metric}`);
+    const baselineMs = metricMs((baseline.metrics as Record<string, unknown>)[metric], `baseline.metrics.${metric}`);
+    const currentMs = metricMs(current.metrics[metric], `current.metrics.${metric}`);
     const ratio = increaseRatio(currentMs, baselineMs);
     const threshold = thresholds[metric] ?? null;
     if (threshold !== null && ratio > threshold) {
       regressions.push(`${metric}: ${baselineMs.toFixed(3)} -> ${currentMs.toFixed(3)} (${formatIncrease(ratio)} > ${(threshold * 100).toFixed(1)}% allowed)`);
     }
-    entries.push({ metric, baseline_ms: baselineMs, current_ms: currentMs, ratio, threshold });
+    entries.push({ metric, baseline_ms: baselineMs, current_ms: currentMs, ratio: Number.isFinite(ratio) ? ratio : null, threshold });
   }
   return { regressions, entries };
+}
+
+/**
+ * Baseline 파일을 로드하고 스키마·mode·environment 호환성까지 검증한다.
+ * dataset 필드는 측정 결과가 있어야 비교할 수 있지만, 파일 부재·스키마 오류·
+ * 다른 머신의 baseline은 측정 전에 잡아 긴 벤치마크 실행을 낭비하지 않는다.
+ */
+export function loadValidatedBaseline(
+  baselinePath: string,
+  expectedMode: string,
+  environment: Record<string, any> = currentEnvironment(),
+): Record<string, any> {
+  const baseline = loadBaselineJson(baselinePath);
+  validateBaselineShape(baseline, expectedMode);
+  assertEnvironmentComparable(baseline.environment as Record<string, any>, environment);
+  return baseline;
+}
+
+/** reportCliResult가 요구하는 결과 형태 — 두 성능 도구의 결과 타입이 구조적으로 만족한다. */
+interface ComparableResult {
+  mode: string;
+  environment: Record<string, any>;
+  dataset: Record<string, any>;
+  metrics: Record<string, unknown>;
+}
+
+/**
+ * 측정 결과에 baseline 비교를 붙여 stdout과 --out 파일로 보고한다.
+ * 비교 입력 오류(호환성·메트릭 값)가 나도 측정 결과는 먼저 보존한 뒤 오류를 다시 던지고,
+ * regression은 결과를 출력한 뒤 exit code 1로 보고한다.
+ */
+export function reportCliResult<T extends ComparableResult>(spec: {
+  result: T;
+  baseline?: { path: string; data: Record<string, any> };
+  thresholds: Record<string, number>;
+  datasetFields: readonly string[];
+  metricNames: readonly string[];
+  outPath?: string;
+}): void {
+  const { result, baseline, thresholds, datasetFields, metricNames, outPath } = spec;
+  let comparison: { baseline: string; regressions: string[]; metrics: MetricComparison[] } | undefined;
+  let comparisonError: unknown;
+  if (baseline) {
+    try {
+      const verdict = compareMetrics(baseline.data, result, datasetFields, metricNames, thresholds);
+      comparison = { baseline: baseline.path, regressions: verdict.regressions, metrics: verdict.entries };
+    } catch (error) {
+      comparisonError = error;
+    }
+  }
+  const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
+  if (outPath) { mkdirSync(resolve(outPath, '..'), { recursive: true, mode: 0o700 }); writeFileSync(outPath, `${output}\n`, { mode: 0o600 }); }
+  process.stdout.write(`${output}\n`);
+  if (comparisonError) throw comparisonError;
+  if (comparison && comparison.regressions.length) {
+    process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
+    process.exitCode = 1;
+  }
 }

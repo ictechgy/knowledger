@@ -89,9 +89,9 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Verification
 
-2026-09-18 성능 도구 개선 — 리뷰·보완 후 재검증 근거(아직 미커밋):
+2026-09-18 성능 도구 개선 — 리뷰·보완 후 재검증 근거(커밋 `8b96117` + 후속 리뷰 수정 커밋):
 
-- 독립 리뷰에서 확인한 초안 결함과 수정:
+- 1차 자체 리뷰에서 확인한 초안 결함과 수정:
   - `search_cold`가 samples>1에서 실제로 cold가 아니었다 — 매치 캐시는 서비스 인스턴스별이라
     샘플 1만 cache-miss였다. 샘플마다 새 `KnowledgerService`를 만들도록 수정했다
     (열린 원장 재사용, `initialize()`는 tail 확인뿐이라 저널 재생 없음).
@@ -103,15 +103,31 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
     `--threshold` 단독 사용은 `--baseline` 요구 오류로 거절한다. baseline=0이면 `+Infinity%` 대신
     명시 문구를 출력한다.
   - dead export `RegressionThresholds`·`validateThreshold`를 제거했다.
+- 커밋·푸시 후 ultra-review 1라운드(claude 트랙 2/2 유효, codex·grok·대부분의 agy 샤드는
+  러너 권한/타임아웃으로 무효)에서 추가로 확인한 결함과 수정:
+  - **HIGH**: `measureSearchQueryMatches`가 10개 질의를 상한 있는 매치 캐시에 채워 marker
+    엔트리를 축출한 뒤 `search_warm` 루프가 시작돼, 첫 warm 샘플이 실제로는 cache-miss였다.
+    warm 루프를 복수 검색어 측정보다 앞으로 옮겨 모든 샘플이 cache-hit를 타게 했다.
+  - baseline 로드·스키마·environment 검증이 전체 측정 뒤에 실행되던 것을
+    `loadValidatedBaseline`로 측정 전 fail-fast로 옮기고, `reportCliResult` 공유 헬퍼가
+    비교 오류 시에도 측정 결과를 --out/stdout에 먼저 보존한 뒤 오류를 보고한다.
+  - CLI 비교 글루가 두 도구에 중복돼 있던 것을 `reportCliResult`로 통합하고, 임계값
+    `--baseline` 요구 검사를 `parseThresholds` 앞으로 옮겨 실제 원인이 먼저 보고되게 했다.
+  - baseline=0일 때 `entries[].ratio`가 `Infinity`로 JSON에 null이 되던 것을 명시적
+    `number|null`로 기록하고, `search= ` 같은 빈 비율을 거절하며, environment 필드를
+    타입별로 검증한다. 결과 스키마 버전을 2로 올려 구 baseline을 명확히 거절한다.
+  - 회귀·비회귀 CLI 테스트가 실제 타이밍에 의존하던 것을 baseline 메트릭 덮어쓰기로
+    결정적으로 만들고, 단언과 반대였던 테스트 이름을 바로잡았다. cold probe는 첫 cold
+    서비스에 합쳐 서비스 인스턴스 수를 줄였다.
 - Node24 경로를 적용해 `npm run check`: **304 tests / 303 passed / 0 failed / 1 기존 GC 전용 skipped**.
   포함된 설계·문서 검사 통과. `npm run check:types` 통과.
-- `node --test test/automation/experiments.test.ts`: 9/9 통과(신규 거절 경로 2개 단언 추가).
+- `node --test test/automation/experiments.test.ts`: 9/9 통과(신규 거절 경로 단언 추가).
 - `node tools/performance-fabric.ts --documents 2 --samples 1 --body-bytes 1`로 baseline 생성 및
   `--baseline` + `--threshold` 비교 실행 각각 exit0(합성 어댑터 기능 확인일 뿐 성능 개선·
   실제 Fabric 커밋 증명이 아니다).
 - 이번 변경으로 `npm run demo`, 브라우저 검사, 대규모 벤치마크, 운영 네트워크 시험은 실행하지 않았다.
-- PR #3 원격 CI 8/8 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments
-  (push run 35252200004·pull_request run 35252206501 — 브라우저 job 안의 `test:performance`가
+- PR #3 원격 CI 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments
+  (커밋별 push+pull_request run 전부 success — 브라우저 job 안의 `test:performance`가
   새 multi-query/cold 경로를 CI에서 실행했다).
 
 PR #2까지 포함한 이전 실행 근거다(2026-09-17 재실행).

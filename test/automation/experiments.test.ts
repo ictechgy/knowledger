@@ -86,13 +86,20 @@ test('resilience smoke refuses a nonempty root directory',async()=>{
   try {await assert.rejects(runResilienceSmoke({rootDir:root}),/new or empty/);}finally{rmSync(root,{recursive:true,force:true});}
 });
 
-test('performance smoke CLI compares against a baseline and exits nonzero on regression', async t => {
+test('performance smoke CLI accepts a non-regressed rerun against a baseline', async t => {
   const { spawnSync } = await import('node:child_process');
   const root = mkdtempSync(join(tmpdir(), 'knowledger-performance-compare-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const flags = ['--documents', '2', '--samples', '1', '--body-bytes', '1'];
   const baseline = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), ...flags, '--out', 'baseline.json'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(baseline.status, 0, baseline.stderr);
+  // 실제 타이밍 지터에 의존하지 않도록 baseline 메트릭을 큰 값으로 덮어써 비회귀를 결정적으로 만든다.
+  const baselineData = JSON.parse(readFileSync(join(root, 'baseline.json'), 'utf8'));
+  for (const name of Object.keys(baselineData.metrics)) {
+    const metric = baselineData.metrics[name];
+    baselineData.metrics[name] = metric && typeof metric === 'object' ? { ...metric, p95_ms: 1e12 } : 1e12;
+  }
+  writeFileSync(join(root, 'baseline.json'), JSON.stringify(baselineData));
   const rerun = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), ...flags, '--baseline', 'baseline.json', '--threshold', 'search=10,overview=10,publish=10,search_warm=10,search_cold=10,replay_restart_ms=10', '--out', 'comparison.json'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(rerun.status, 0, rerun.stderr);
   const compared = JSON.parse(rerun.stdout);
@@ -109,6 +116,13 @@ test('performance smoke CLI keeps the result file and exits nonzero on threshold
   const flags = ['--documents', '2', '--samples', '1', '--body-bytes', '1'];
   const baseline = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), ...flags, '--out', 'baseline.json'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(baseline.status, 0, baseline.stderr);
+  // baseline 메트릭을 0으로 덮어쓰면 양수 측정값이 항상 회귀로 판정된다 — 타이밍에 의존하지 않는다.
+  const baselineData = JSON.parse(readFileSync(join(root, 'baseline.json'), 'utf8'));
+  for (const name of Object.keys(baselineData.metrics)) {
+    const metric = baselineData.metrics[name];
+    baselineData.metrics[name] = metric && typeof metric === 'object' ? { ...metric, p95_ms: 0 } : 0;
+  }
+  writeFileSync(join(root, 'baseline.json'), JSON.stringify(baselineData));
   const regression = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), ...flags, '--baseline', 'baseline.json', '--threshold', 'publish=0,search=0,search_warm=0,search_cold=0,overview=0,replay_restart_ms=0', '--out', 'comparison.json'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(regression.status, 1, `expected regression exit, stderr: ${regression.stderr}`);
   assert.match(regression.stderr, /performance regression detected/);
@@ -136,6 +150,9 @@ test('performance smoke CLI rejects incomparable baselines with actionable error
   const duplicateThreshold = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), '--documents', '2', '--baseline', 'baseline.json', '--threshold', 'search=0.1,search=0.2'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(duplicateThreshold.status, 1);
   assert.match(duplicateThreshold.stderr, /duplicate threshold metric/);
+  const emptyRatio = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), '--documents', '2', '--baseline', 'baseline.json', '--threshold', 'search= '], { cwd: root, encoding: 'utf8', timeout: 30_000 });
+  assert.equal(emptyRatio.status, 1);
+  assert.match(emptyRatio.stderr, /not a finite nonnegative ratio/);
   const thresholdWithoutBaseline = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), '--documents', '2', '--threshold', 'search=0.1'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(thresholdWithoutBaseline.status, 1);
   assert.match(thresholdWithoutBaseline.stderr, /--threshold requires --baseline/);

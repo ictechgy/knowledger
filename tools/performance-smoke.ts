@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
-import { compareMetrics, ComparisonInputError, loadBaselineJson, parseThresholds } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
 const MAX_DOCUMENTS = 100_000;
@@ -21,6 +20,8 @@ const DEFAULT_SAMPLES = 3;
 const DEFAULT_BODY_BYTES = 1024;
 const SEARCH_QUERIES = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 const COLD_CACHE_QUERY = 'cold-cache-probe';
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'read_workload', 'search_probes'] as const;
+const COMPARABLE_METRICS = ['publish', 'search', 'search_warm', 'search_cold', 'overview', 'replay_restart_ms'] as const;
 
 export interface PerformanceSmokeOptions {
   dataDir: string;
@@ -31,14 +32,17 @@ export interface PerformanceSmokeOptions {
 }
 
 export interface PerformanceSmokeResult {
-  schema_version: 1;
+  schema_version: typeof RESULT_SCHEMA_VERSION;
   mode: 'local-simulation';
   environment: { node: string; platform: string; arch: string; cpu_count: number };
-  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary'; search_queries: readonly string[]; search_probes: 'single_marker' | 'multi_query' };
+  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary'; search_queries: readonly string[]; search_probes: 'multi_query' };
   metrics: {
     publish: LatencyMetric;
+    /** 첫 타이밍 루프 — 첫 샘플은 신규 서비스의 cache-miss 전체 스캔, 이후는 캐시 적중이다. */
     search: LatencyMetric;
+    /** 캐시가 예열된 상태의 steady-state 적중 경로 — 모든 샘플이 cache-hit이어야 한다. */
     search_warm: LatencyMetric;
+    /** 샘플마다 새 KnowledgerService를 만들어 측정하는 cache-miss 전체 스캔 경로. */
     search_cold: LatencyMetric;
     overview: LatencyMetric;
     replay_restart_ms: number;
@@ -130,6 +134,7 @@ export async function generateSyntheticDocument(service: KnowledgerService, inde
   if (receipt.status !== 'committed') throw new Error('synthetic publication did not commit');
 }
 
+/** 이 실행이 생성한 합성 문서인지 구분한다 — seedDemo가 만든 예시 문서와 섞이지 않게 한다. */
 function isPerformanceDocument(item: any): boolean {
   return typeof item?.payload?.document_id === 'string' && item.payload.document_id.startsWith('doc-performance-');
 }
@@ -190,9 +195,10 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       if (overview.filter(isPerformanceDocument).length !== options.documents) throw new Error('overview result count mismatch');
     }
 
-    // 동일 체크포인트에서 복수 검색어를 재검색한다 — warm 캐시 경로의 실제 결과 수를 검증한다.
+    // warm 검색은 marker 매치 캐시 엔트리가 살아 있을 때 바로 측정한다 — measureSearchQueryMatches가
+    // 상한이 있는 매치 캐시에 다른 검색어를 채워 marker 엔트리를 밀어내므로, warm 루프를 복수
+    // 검색어 측정보다 먼저 둬야 모든 샘플이 실제 cache-hit 경로를 탄다.
     const warmOverview = await browseAll(service);
-    searchQueryMatches = await measureSearchQueryMatches(service);
     for (let sample = 0; sample < options.samples; sample += 1) {
       const started = performance.now();
       const search = await browseAll(service, true);
@@ -200,17 +206,21 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       if (search.length !== warmOverview.filter(isPerformanceDocument).length) throw new Error('warm search result count mismatch');
     }
 
+    // 동일 체크포인트에서 복수 검색어를 재검색한다 — 캐시 적중 여부와 무관하게 실제 결과 수를 기록한다.
+    searchQueryMatches = await measureSearchQueryMatches(service);
+
     // cold 측정: 검색 매치 캐시는 서비스 인스턴스별이므로 샘플마다 새 서비스를 만들어
     // 모든 샘플이 실제 cache-miss 전체 스캔을 측정한다. 캐시 내부를 건드리지 않고
     // 재생이 완료된 동일 원장 상태만 재사용한다 — initialize()는 열린 원장의 tail
     // 확인과 구성 검사뿐이라 저널 재생 없이 가볍다.
-    const probeService = new KnowledgerService(ledger, vault, definition);
-    await probeService.initialize();
-    const coldProbe = await browseAll(probeService, true, COLD_CACHE_QUERY);
-    if (coldProbe.length !== 0) throw new Error('cold cache probe unexpectedly matched documents');
+    // 첫 cold 서비스에서 미등록 검색어를 한번 질의해 0건 기능 가드도 함께 확인한다.
     for (let sample = 0; sample < options.samples; sample += 1) {
       const coldService = new KnowledgerService(ledger, vault, definition);
       await coldService.initialize();
+      if (sample === 0) {
+        const coldProbe = await browseAll(coldService, true, COLD_CACHE_QUERY);
+        if (coldProbe.length !== 0) throw new Error('cold cache probe unexpectedly matched documents');
+      }
       const started = performance.now();
       const search = await browseAll(coldService, true);
       searchColdTimes.push(performance.now() - started);
@@ -232,9 +242,9 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     const replayDocuments = replayOverview.filter(isPerformanceDocument).length;
     if (replayDocuments !== options.documents || replaySearch.length !== options.documents) throw new Error('replay result count mismatch');
     return {
-      schema_version: 1,
+      schema_version: RESULT_SCHEMA_VERSION,
       mode: 'local-simulation',
-      environment: { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length },
+      environment: currentEnvironment(),
       dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, marker, read_workload: 'all_pages_summary', search_queries: [...SEARCH_QUERIES], search_probes: 'multi_query' },
       metrics: { publish: latency(publishTimes), search: latency(searchTimes), search_warm: latency(searchWarmTimes), search_cold: latency(searchColdTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
@@ -279,9 +289,6 @@ function isMain(): boolean {
   return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
 
-const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'read_workload', 'search_probes'] as const;
-const COMPARABLE_METRICS = ['publish', 'search', 'search_warm', 'search_cold', 'overview', 'replay_restart_ms'] as const;
-
 if (isMain()) {
   let dataDir: string | undefined;
   let ownedData = false;
@@ -289,21 +296,12 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
-    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
     if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
+    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
+    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경 불일치로 긴 측정을 낭비하지 않기 위해서다.
+    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'local-simulation') } : undefined;
     const result = await runPerformanceSmoke(parsed.options);
-    let comparison: { baseline: string; regressions: string[]; metrics: { metric: string; baseline_ms: number; current_ms: number; ratio: number; threshold: number | null }[] } | undefined;
-    if (parsed.baselinePath) {
-      const verdict = compareMetrics(loadBaselineJson(parsed.baselinePath), result, COMPARABLE_DATASET_FIELDS, COMPARABLE_METRICS, thresholds);
-      comparison = { baseline: parsed.baselinePath, regressions: verdict.regressions, metrics: verdict.entries };
-    }
-    const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
-    if (parsed.out) { mkdirSync(resolve(parsed.out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(parsed.out, `${output}\n`, { mode: 0o600 }); }
-    process.stdout.write(`${output}\n`);
-    if (comparison && comparison.regressions.length) {
-      process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
-      process.exitCode = 1;
-    }
+    reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges and that --data is a new empty directory)';

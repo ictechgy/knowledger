@@ -6,12 +6,11 @@
 performance-smoke와 같은 전체 페이지 읽기 workload를 측정한다. 블록은 실제
 protobuf·해시 체인·프로젝터 검증을 거치지만 네트워크 커밋 증명은 아니며,
 수치는 Fabric SLA가 아니라 어댑터 읽기 경로의 측정값이다. */
-import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalLedger, verifyJournalDb } from '../packages/storage/local-ledger.ts';
@@ -21,7 +20,7 @@ import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../ex
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { browseAll, directoryBytes, generateSyntheticDocument, latency, marker } from './performance-smoke.ts';
 import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke.ts';
-import { compareMetrics, ComparisonInputError, loadBaselineJson, parseThresholds } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
@@ -61,11 +60,13 @@ function ensureFabricDeps(): Promise<void> {
 
 const MAX_TX_PER_BLOCK = 500;
 const DEFAULT_TX_PER_BLOCK = 50;
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload'] as const;
+const COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
 
 interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number; journalPath?: string }
 
 export interface FabricSmokeResult {
-  schema_version: 1;
+  schema_version: typeof RESULT_SCHEMA_VERSION;
   mode: 'fabric-adapter-synthetic';
   environment: { node: string; platform: string; arch: string; cpu_count: number };
   dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; journal_transactions: number; fabric_blocks: number; tx_per_block: number; marker: string; read_workload: 'all_pages_summary' };
@@ -315,9 +316,9 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
     const replayDocuments = replayOverview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length;
     if (replayDocuments !== options.documents || replaySearch.length !== options.documents) throw new Error('replay result count mismatch');
     return {
-      schema_version: 1,
+      schema_version: RESULT_SCHEMA_VERSION,
       mode: 'fabric-adapter-synthetic',
-      environment: { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length },
+      environment: currentEnvironment(),
       dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, journal_transactions: ingest.transactions, fabric_blocks: ingest.blocks, tx_per_block: options.txPerBlock, marker, read_workload: 'all_pages_summary' },
       metrics: { ingest_total_ms: ingest.applyMs, ingest_per_block_ms: ingest.blocks ? ingest.applyMs / ingest.blocks : 0, search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
@@ -363,9 +364,6 @@ function isMain(): boolean {
   return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
 
-const FABRIC_COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload'] as const;
-const FABRIC_COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
-
 if (isMain()) {
   let dataDir: string | undefined;
   let ownedData = false;
@@ -373,21 +371,12 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
-    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, FABRIC_COMPARABLE_METRICS) : {};
     if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
+    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
+    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경 불일치로 긴 측정을 낭비하지 않기 위해서다.
+    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'fabric-adapter-synthetic') } : undefined;
     const result = await runFabricPerformance(parsed.options);
-    let comparison: { baseline: string; regressions: string[]; metrics: { metric: string; baseline_ms: number; current_ms: number; ratio: number; threshold: number | null }[] } | undefined;
-    if (parsed.baselinePath) {
-      const verdict = compareMetrics(loadBaselineJson(parsed.baselinePath), result, FABRIC_COMPARABLE_DATASET_FIELDS, FABRIC_COMPARABLE_METRICS, thresholds);
-      comparison = { baseline: parsed.baselinePath, regressions: verdict.regressions, metrics: verdict.entries };
-    }
-    const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
-    if (parsed.out) { mkdirSync(resolve(parsed.out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(parsed.out, `${output}\n`, { mode: 0o600 }); }
-    process.stdout.write(`${output}\n`);
-    if (comparison && comparison.regressions.length) {
-      process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
-      process.exitCode = 1;
-    }
+    reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges, that --data is a new empty directory, and that optional Fabric dependencies are installed)';
