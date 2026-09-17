@@ -25,6 +25,11 @@ import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
 let Timestamp: any;
+// Fabric 모듈들은 fabric-protos를 모듈 레벨에서 요구하므로 import도 의존성 확인 이후로 미룬다.
+let SqliteFabricProjection: typeof import('../packages/fabric/sqlite-projection.ts').SqliteFabricProjection;
+let fabricBlockHeaderHash: typeof import('../packages/fabric/block-projector.ts').fabricBlockHeaderHash;
+let FabricApplicationLedger: typeof import('../packages/fabric/application-ledger.ts').FabricApplicationLedger;
+let canonicalize: typeof import('../packages/domain/index.ts').canonicalize;
 /** 선택적 Fabric 의존성을 첫 사용 시점에 불러온다 — 모듈 import만으로 프로세스를 종료하지 않는다. */
 async function ensureFabricDeps(): Promise<void> {
   if (protos) return;
@@ -34,11 +39,11 @@ async function ensureFabricDeps(): Promise<void> {
   } catch {
     throw new Error('performance-fabric requires the optional packages/fabric dependencies (npm ci --prefix packages/fabric)');
   }
+  ({ SqliteFabricProjection } = await import('../packages/fabric/sqlite-projection.ts'));
+  ({ fabricBlockHeaderHash } = await import('../packages/fabric/block-projector.ts'));
+  ({ FabricApplicationLedger } = await import('../packages/fabric/application-ledger.ts'));
+  ({ canonicalize } = await import('../packages/domain/index.ts'));
 }
-const { SqliteFabricProjection } = await import('../packages/fabric/sqlite-projection.ts');
-const { fabricBlockHeaderHash } = await import('../packages/fabric/block-projector.ts');
-const { FabricApplicationLedger } = await import('../packages/fabric/application-ledger.ts');
-const { canonicalize } = await import('../packages/domain/index.ts');
 
 const MAX_TX_PER_BLOCK = 500;
 const DEFAULT_TX_PER_BLOCK = 50;

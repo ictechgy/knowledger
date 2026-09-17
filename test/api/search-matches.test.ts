@@ -40,6 +40,17 @@ test('normal entries cannot evict the resident oversized entry; only another ove
   assert.equal(cache.get('oversized-next')?.length, 24_000);
 });
 
+test('re-putting the oversized key with a normal result resets oversized tracking', () => {
+  const cache = new SearchMatchCache();
+  const large = Array.from({ length: 24_000 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
+  cache.put('big', large);
+  // 같은 키에 일반 크기 결과가 오면 상주 대형 항목 지위를 잃고 일반 축출 대상이 된다.
+  cache.put('big', ['revision-small']);
+  for (let index = 0; index < 9; index++) cache.put(`normal-${index}`, [`revision-${index}`]);
+  assert.equal(cache.get('big'), undefined, 'a downsized entry is no longer protected');
+  assert.deepEqual(cache.get('normal-8'), ['revision-8']);
+});
+
 test('search match byte budget includes keys and retains oversized data as a single entry', () => {
   const cache = new SearchMatchCache();
   cache.put('empty', []); assert.deepEqual(cache.get('empty'), []);

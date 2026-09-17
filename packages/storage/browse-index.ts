@@ -36,6 +36,8 @@ interface BrowseState {
 interface RevisionCacheEntry {
   refs: readonly RevisionBrowseRef[];
   estimatedBytes: number;
+  /** 선택 집합이 바인딩된 체크포인트 — 이 이하의 커밋이 들어오면 항목이 오래된 것이다. */
+  at: Checkpoint;
 }
 
 const MAX_REVISION_CACHE_ENTRIES = 8;
@@ -156,8 +158,9 @@ export class VerifiedBrowseIndex {
   }
 
   /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
-  get revisionCacheStats(): { entries: number; oversized: boolean } {
-    return { entries: this.revisionCache.size, oversized: this.oversizedRevisionKey !== undefined };
+  get revisionCacheStats(): { entries: number; refs: number; bytes: number; oversized: boolean } {
+    return { entries: this.revisionCache.size, refs: this.revisionCacheRefs, bytes: this.revisionCacheBytes,
+      oversized: this.oversizedRevisionKey !== undefined };
   }
 
   prepare(batches: Iterable<BrowseWriteBatch>): { commit(): void } {
@@ -172,12 +175,14 @@ export class VerifiedBrowseIndex {
     const addedProposals: ProposalBrowseRef[] = [];
     const pendingProposals = new Map<string, ProposalBrowseRef>();
     const pendingAgreements = new Map<string, AgreementBrowseRef>();
+    const batchCheckpoints: Checkpoint[] = [];
     const pushTo = <T>(map: Map<string, T[]>, key: string, value: T): void => {
       const list = map.get(key); if (list) list.push(value); else map.set(key, [value]);
     };
 
     for (const batch of batches) {
       assertCheckpoint(batch.checkpoint, this.channelId);
+      batchCheckpoints.push(cloneCheckpoint(batch.checkpoint));
       if (!Array.isArray(batch.writes)) throw new Error('Invalid browse write batch');
       if (batch.checkpoint.transaction_index === -1 && batch.writes.length) throw new Error('Block-only browse checkpoint cannot publish writes');
       for (const entry of batch.writes) {
@@ -220,7 +225,7 @@ export class VerifiedBrowseIndex {
     }
     let committed = false;
     return { commit: () => {
-      if (committed) return; committed = true;
+      if (committed) return;
       const state = this.state;
       // 1) 커밋 시점의 현재 상태와 다시 대조한다 — 다른 prepare가 먼저
       //    커밋돼 같은 키가 들어간 경우 중복 추가를 건너뛰고, 불변 필드가
@@ -243,7 +248,16 @@ export class VerifiedBrowseIndex {
         if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
         return false;
       });
-      // 2) 검증이 끝난 뒤에만 상태를 변경한다.
+      committed = true;
+      // 2) 검증이 끝난 뒤에만 상태를 변경한다. 이 커밋의 체크포인트에 가시적인
+      //    캐시 선택 집합은 새 ref를 놓칠 수 있으므로 무효화한다 — 순서대로
+      //    들어오는 커밋은 기존 캐시의 at보다 항상 뒤라 유지된다.
+      for (const cachedKey of [...this.revisionCache.keys()]) {
+        const entry = this.revisionCache.get(cachedKey)!;
+        if (batchCheckpoints.some(committedCheckpoint => checkpointOrder(committedCheckpoint, entry.at) <= 0)) {
+          this.dropRevisionCacheEntry(cachedKey);
+        }
+      }
       if (freshRevisions.length) {
         freshRevisions.sort(compareRevisions);
         state.revisions = prependLatest(freshRevisions, state.revisions, compareRevisions);
@@ -325,19 +339,23 @@ export class VerifiedBrowseIndex {
       const seen = new Set<string>();
       selected = selected.filter(item => { const key = slotKey(item.slot); if (seen.has(key)) return false; seen.add(key); return true; });
     }
-    this.cacheRevisions(cacheKey, selected);
+    this.cacheRevisions(cacheKey, selected, query.at);
     return page(selected, query.offset, query.limit, cloneRevision);
   }
 
-  private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[]): void {
+  /** 캐시 항목을 지우고 카운터를 갱신한다 — 상주 대형 항목 추적도 함께 해제한다. */
+  private dropRevisionCacheEntry(key: string): void {
+    const entry = this.revisionCache.get(key);
+    if (!entry) return;
+    this.revisionCache.delete(key);
+    this.revisionCacheRefs -= entry.refs.length;
+    this.revisionCacheBytes -= entry.estimatedBytes;
+    if (key === this.oversizedRevisionKey) this.resetOversizedRevision();
+  }
+
+  private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[], at: Checkpoint): void {
     const estimatedBytes = Buffer.byteLength(key) + refs.length * ESTIMATED_REF_POINTER_BYTES;
-    const existing = this.revisionCache.get(key);
-    if (existing) {
-      this.revisionCache.delete(key);
-      this.revisionCacheRefs -= existing.refs.length;
-      this.revisionCacheBytes -= existing.estimatedBytes;
-      if (key === this.oversizedRevisionKey) this.resetOversizedRevision();
-    }
+    if (this.revisionCache.has(key)) this.dropRevisionCacheEntry(key);
     if (refs.length > MAX_REVISION_CACHE_REFS || estimatedBytes > MAX_REVISION_CACHE_BYTES) {
       // 상한을 넘는 결과 집합도 오프셋 페이지네이션이 같은 키로 재질의하므로,
       // 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러 O(문서²)가 된다.
@@ -359,13 +377,10 @@ export class VerifiedBrowseIndex {
         || normalBytes() + estimatedBytes > MAX_REVISION_CACHE_BYTES) {
         const oldest = [...this.revisionCache.keys()].find(candidate => candidate !== this.oversizedRevisionKey);
         if (oldest === undefined) break;
-        const entry = this.revisionCache.get(oldest)!;
-        this.revisionCache.delete(oldest);
-        this.revisionCacheRefs -= entry.refs.length;
-        this.revisionCacheBytes -= entry.estimatedBytes;
+        this.dropRevisionCacheEntry(oldest);
       }
     }
-    const entry = { refs: [...refs], estimatedBytes };
+    const entry = { refs: [...refs], estimatedBytes, at: cloneCheckpoint(at) };
     this.revisionCache.set(key, entry);
     this.revisionCacheRefs += entry.refs.length;
     this.revisionCacheBytes += estimatedBytes;

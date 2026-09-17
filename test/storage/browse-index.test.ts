@@ -177,7 +177,10 @@ test('normal revision queries cannot evict the resident oversized selection', ()
   for (let index_ = 0; index_ < 12; index_++) {
     index.query({ kind: 'revisions', mode: 'document', document_id: `doc-mixed-${index_}`, at, offset: 0, limit: 10 });
   }
-  assert.equal(index.revisionCacheStats.oversized, true, 'normal queries must not evict the oversized entry');
+  const mixed = index.revisionCacheStats;
+  assert.equal(mixed.oversized, true, 'normal queries must not evict the oversized entry');
+  assert.ok(mixed.entries > 1, 'normal selections are cached alongside the oversized entry');
+  assert.ok(mixed.refs > total, 'oversized refs stay counted next to normal entries');
   const tail = index.query({ kind: 'revisions', mode: 'all', at, offset: total - 1, limit: 1 });
   assert.equal(tail.total, total);
   assert.equal(tail.items.length, 1);
@@ -230,6 +233,30 @@ test('an older checkpoint committed after a newer one keeps newest-first order',
   const older = index.prepare([{ checkpoint: checkpoint(1), writes: [[keyFor.revision(first.revision_digest), first]] }]);
   newer.commit(); older.commit();
   assert.deepEqual(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).items.map(item => item.revision_digest), [second.revision_digest, first.revision_digest]);
+});
+
+test('a commit invalidates cached selections whose checkpoint can see the new writes', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const first = revision('revision-cached', slot('doc-cached'));
+  commit(index, checkpoint(2), [[keyFor.revision(first.revision_digest), first]]);
+  // at=(2)의 선택 집합을 캐시한다.
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).total, 1);
+  const before = index.revisionCacheStats;
+  assert.equal(before.entries, 1);
+  // 순서대로 들어오는 커밋(3 > at 2)은 캐시를 건드리지 않는다 — 페이지 재사용이 유지된다.
+  const third = revision('revision-cached-later', slot('doc-cached-later'));
+  commit(index, checkpoint(3), [[keyFor.revision(third.revision_digest), third]]);
+  assert.equal(index.revisionCacheStats.entries, 1, 'in-order commits keep cached pages');
+  // 비순차 커밋(1 < at 2)은 at=(2)의 선택 집합을 오래된 것으로 만든다 — 무효화돼야 한다.
+  const delayed = revision('revision-cached-delayed', slot('doc-cached-delayed'));
+  commit(index, checkpoint(1), [[keyFor.revision(delayed.revision_digest), delayed]]);
+  assert.equal(index.revisionCacheStats.entries, 0, 'out-of-order commits invalidate stale selections');
+  assert.equal(index.revisionCacheStats.refs, 0);
+  assert.equal(index.revisionCacheStats.bytes, 0);
+  assert.equal(index.revisionCacheStats.oversized, false);
+  const fresh = index.query({ kind: 'revisions', mode: 'all', at: checkpoint(3), offset: 0, limit: 10 });
+  assert.equal(fresh.total, 3);
+  assert.deepEqual(fresh.items.map(item => item.revision_digest), [third.revision_digest, first.revision_digest, delayed.revision_digest]);
 });
 
 test('later mutable writes cannot change indexed identity, order, or full-slot fields', () => {
