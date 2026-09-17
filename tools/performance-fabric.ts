@@ -40,7 +40,7 @@ const { canonicalize } = await import('../packages/domain/index.ts');
 const MAX_TX_PER_BLOCK = 500;
 const DEFAULT_TX_PER_BLOCK = 50;
 
-interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number }
+interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number; journalPath?: string }
 
 export interface FabricSmokeResult {
   schema_version: 1;
@@ -192,23 +192,26 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   const localLedgerPath = join(localDir, 'shared-ledger.sqlite');
   const projectionPath = join(fabricDir, 'fabric-projection.sqlite');
 
-  // 1) 동일 생성 절차로 로컬 저널을 만든다.
-  let localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
-  let localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
+  // 1) 동일 생성 절차로 로컬 저널을 만든다. --journal이면 기존 저널을 재사용한다.
   const definition = demoDefinition();
-  const localService = new KnowledgerService(localLedger, localVault, definition);
-  try {
-    await localService.initialize();
-    await seedDemo(localService);
-    for (let index = 0; index < options.documents; index += 1) await generateSyntheticDocument(localService, index, options);
-  } finally {
-    try { localLedger.close(); } catch { /* 첫 실패를 보존한다 */ }
-    try { localVault.close(); } catch { /* 첫 실패를 보존한다 */ }
+  const journalSource = input.journalPath ? resolve(input.journalPath) : localLedgerPath;
+  if (!input.journalPath) {
+    let localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
+    let localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
+    const localService = new KnowledgerService(localLedger, localVault, definition);
+    try {
+      await localService.initialize();
+      await seedDemo(localService);
+      for (let index = 0; index < options.documents; index += 1) await generateSyntheticDocument(localService, index, options);
+    } finally {
+      try { localLedger.close(); } catch { /* 첫 실패를 보존한다 */ }
+      try { localVault.close(); } catch { /* 첫 실패를 보존한다 */ }
+    }
   }
 
   // 2) 저널 이벤트를 합성 블록으로 변환해 projection에 재생한다.
   let projection = new SqliteFabricProjection(projectionPath, { channel_id: CHANNEL_ID, chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
-  const ingest = ingestJournal(localLedgerPath, projection, options.txPerBlock);
+  const ingest = ingestJournal(journalSource, projection, options.txPerBlock);
 
   // 3) Fabric 어댑터 위에서 동일한 전체 페이지 읽기 workload를 측정한다.
   const source = {
@@ -279,7 +282,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
 }
 
 function parseCli(args: string[]): { options: FabricSmokeOptions; out?: string; ownedData: boolean } {
-  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--tx-per-block', '--out']);
+  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--tx-per-block', '--journal', '--out']);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
@@ -296,7 +299,7 @@ function parseCli(args: string[]): { options: FabricSmokeOptions; out?: string; 
     const value = values.get(name);
     return value === undefined ? undefined : Number(value);
   };
-  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups'), txPerBlock: number('--tx-per-block') }, out, ownedData };
+  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups'), txPerBlock: number('--tx-per-block'), journalPath: values.get('--journal') }, out, ownedData };
 }
 
 function isMain(): boolean {
