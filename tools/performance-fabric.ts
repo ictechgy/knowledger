@@ -30,19 +30,32 @@ let SqliteFabricProjection: typeof import('../packages/fabric/sqlite-projection.
 let fabricBlockHeaderHash: typeof import('../packages/fabric/block-projector.ts').fabricBlockHeaderHash;
 let FabricApplicationLedger: typeof import('../packages/fabric/application-ledger.ts').FabricApplicationLedger;
 let canonicalize: typeof import('../packages/domain/index.ts').canonicalize;
-/** 선택적 Fabric 의존성을 첫 사용 시점에 불러온다 — 모듈 import만으로 프로세스를 종료하지 않는다. */
-async function ensureFabricDeps(): Promise<void> {
-  if (protos) return;
-  try {
-    protos = await import(requireFabric.resolve('@hyperledger/fabric-protos'));
-    Timestamp = requireFabric('google-protobuf/google/protobuf/timestamp_pb.js').Timestamp;
-  } catch {
-    throw new Error('performance-fabric requires the optional packages/fabric dependencies (npm ci --prefix packages/fabric)');
-  }
-  ({ SqliteFabricProjection } = await import('../packages/fabric/sqlite-projection.ts'));
-  ({ fabricBlockHeaderHash } = await import('../packages/fabric/block-projector.ts'));
-  ({ FabricApplicationLedger } = await import('../packages/fabric/application-ledger.ts'));
-  ({ canonicalize } = await import('../packages/domain/index.ts'));
+let fabricDepsReady: Promise<void> | undefined;
+/** 선택적 Fabric 의존성을 첫 사용 시점에 불러온다 — 모듈 import만으로 프로세스를 종료하지 않는다.
+단일 프로미스로 원자화해 동시 호출이 부분 초기화를 보지 않게 하고, 실패 시 재시도가 가능하다. */
+function ensureFabricDeps(): Promise<void> {
+  fabricDepsReady ??= (async () => {
+    let loadedProtos: any;
+    let loadedTimestamp: any;
+    try {
+      loadedProtos = await import(requireFabric.resolve('@hyperledger/fabric-protos'));
+      loadedTimestamp = requireFabric('google-protobuf/google/protobuf/timestamp_pb.js').Timestamp;
+    } catch (cause) {
+      throw new Error('performance-fabric requires the optional packages/fabric dependencies (npm ci --prefix packages/fabric)', { cause });
+    }
+    const projectionModule = await import('../packages/fabric/sqlite-projection.ts');
+    const projectorModule = await import('../packages/fabric/block-projector.ts');
+    const ledgerModule = await import('../packages/fabric/application-ledger.ts');
+    const domainModule = await import('../packages/domain/index.ts');
+    protos = loadedProtos;
+    Timestamp = loadedTimestamp;
+    SqliteFabricProjection = projectionModule.SqliteFabricProjection;
+    fabricBlockHeaderHash = projectorModule.fabricBlockHeaderHash;
+    FabricApplicationLedger = ledgerModule.FabricApplicationLedger;
+    canonicalize = domainModule.canonicalize;
+  })();
+  fabricDepsReady.catch(() => { fabricDepsReady = undefined; });
+  return fabricDepsReady;
 }
 
 const MAX_TX_PER_BLOCK = 500;
@@ -237,11 +250,19 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
         recoverPending: async () => [],
       } }];
       const ledger = new FabricApplicationLedger({ projection, source, routes });
-      await ledger.refresh();
-      const vault = new PrivateStore(join(fabricDir, 'private-fabric.sqlite'));
-      const service = new KnowledgerService(ledger, vault, definition);
-      await service.initialize();
-      return { ledger, vault, service };
+      let vault: PrivateStore | undefined;
+      try {
+        await ledger.refresh();
+        vault = new PrivateStore(join(fabricDir, 'private-fabric.sqlite'));
+        const service = new KnowledgerService(ledger, vault, definition);
+        await service.initialize();
+        return { ledger, vault, service };
+      } catch (error) {
+        // 초기화 중간 실패 시 확보한 핸들을 그대로 두지 않는다 — ledger.close()가 projection까지 닫는다.
+        try { vault?.close(); } catch { /* 첫 실패를 보존한다 */ }
+        try { await ledger.close(); } catch { /* 첫 실패를 보존한다 */ }
+        throw error;
+      }
     };
     opened = await openService();
     const searchTimes: number[] = [];

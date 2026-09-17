@@ -190,6 +190,12 @@ test('normal revision queries cannot evict the resident oversized selection', ()
   index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 });
   assert.equal(index.revisionCacheStats.oversized, true);
   assert.equal(index.revisionCacheStats.entries, 1, 'only the newest oversized selection stays resident');
+  // 비순차 커밋은 상주 대형 항목도 무효화한다 — 그 항목의 at가 새 쓰기를 볼 수 있으므로.
+  const outOfOrder = revision('revision-mixed-ooo', slot('doc-mixed-ooo'));
+  commit(index, checkpoint(0), [[keyFor.revision(outOfOrder.revision_digest), outOfOrder]]);
+  assert.equal(index.revisionCacheStats.oversized, false, 'out-of-order commits invalidate the resident oversized entry');
+  assert.equal(index.revisionCacheStats.entries, 0);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 1 }).total, total + 2);
 });
 
 test('overlapping prepared commits cannot duplicate or rewrite immutable entries', () => {
@@ -233,6 +239,31 @@ test('an older checkpoint committed after a newer one keeps newest-first order',
   const older = index.prepare([{ checkpoint: checkpoint(1), writes: [[keyFor.revision(first.revision_digest), first]] }]);
   newer.commit(); older.commit();
   assert.deepEqual(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).items.map(item => item.revision_digest), [second.revision_digest, first.revision_digest]);
+});
+
+test('an out-of-order duplicate commit lowers the published checkpoint so history stays visible', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-demoted', slot('doc-demoted'));
+  const key = keyFor.revision(value.revision_digest);
+  // 같은 키가 checkpoint 2로 먼저 커밋되고 checkpoint 1의 같은 쓰기가 뒤에 도착하면,
+  // 발행 체크포인트는 더 이른 1로 낮아져야 at=(1)의 역사 질의가 항목을 숨기지 않는다.
+  const newer = index.prepare([{ checkpoint: checkpoint(2), writes: [[key, value]] }]);
+  const older = index.prepare([{ checkpoint: checkpoint(1), writes: [[key, value]] }]);
+  newer.commit(); older.commit();
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 }).total, 1);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 }).items[0].revision_digest, value.revision_digest);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).total, 1);
+  // 더 늦은 체크포인트의 중복 쓰기는 이미 반영된 더 이른 체크포인트를 바꾸지 않는다.
+  const late = index.prepare([{ checkpoint: checkpoint(3), writes: [[key, value]] }]);
+  late.commit();
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 }).items[0].published_checkpoint.block_number, 1);
+  // proposal도 같은 규칙이 적용된다.
+  const prop = proposal('proposal-demoted', value, '2026-09-16T01:00:00.000Z');
+  const propKey = keyFor.proposal(prop.proposal_id);
+  const propNewer = index.prepare([{ checkpoint: checkpoint(5), writes: [[propKey, prop]] }]);
+  const propOlder = index.prepare([{ checkpoint: checkpoint(4), writes: [[propKey, prop]] }]);
+  propNewer.commit(); propOlder.commit();
+  assert.equal(index.query({ kind: 'proposals', at: checkpoint(4), offset: 0, limit: 10 }).total, 1);
 });
 
 test('a commit invalidates cached selections whose checkpoint can see the new writes', () => {

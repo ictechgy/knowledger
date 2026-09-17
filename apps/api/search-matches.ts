@@ -18,13 +18,19 @@ export class SearchMatchCache {
     return entry.ids;
   }
 
+  /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
+  get stats(): { entries: number; ids: number; bytes: number; oversized: boolean } {
+    return { entries: this.entries.size, ids: this.ids, bytes: this.bytes, oversized: this.oversizedKey !== undefined };
+  }
+
   put(key: string, ids: readonly string[]): void {
     this.remove(key);
     const bytes = Buffer.byteLength(key) + ids.reduce((sum, id) => sum + Buffer.byteLength(id), 0);
-    // 상한을 넘는 결과도 오프셋 페이지네이션이 같은 키로 재질의하므로,
+    // 결과 건수가 상한을 넘는 목록도 오프셋 페이지네이션이 같은 키로 재질의하므로,
     // 캐시하지 않으면 페이지마다 전체 원장을 다시 읽어 O(문서²)가 된다.
     // ids는 불변 다이제스트 문자열뿐이므로 다른 항목을 비우고 단일 대형 항목으로 유지한다.
-    if (ids.length > MAX_IDS || bytes > MAX_BYTES) {
+    // 바이트만 넘는 작은 결과는 일반 경로로 두어 거대 키가 작업 세트를 밀어내지 않게 한다.
+    if (ids.length > MAX_IDS) {
       for (const existing of [...this.entries.keys()]) this.remove(existing);
       this.oversizedKey = key;
       this.oversizedIds = ids.length;

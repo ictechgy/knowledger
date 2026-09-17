@@ -230,22 +230,30 @@ export class VerifiedBrowseIndex {
       // 1) 커밋 시점의 현재 상태와 다시 대조한다 — 다른 prepare가 먼저
       //    커밋돼 같은 키가 들어간 경우 중복 추가를 건너뛰고, 불변 필드가
       //    다르면 상태를 변경하기 전에 여기서 중단한다.
+      const demotedRevisions: RevisionBrowseRef[] = [];
       const freshRevisions = addedRevisions.filter(ref => {
         const existing = state.revisionsByKey.get(ref.key);
         if (!existing) return true;
         if (!staticRevisionMatches(existing, ref)) throw new Error('Browse index immutable revision fields changed');
+        // 더 이른 체크포인트의 같은 쓰기가 늦게 커밋되면 발행 체크포인트를 낮춘다 —
+        // 그렇지 않으면 그 시점의 역사 질의가 이미 존재한 항목을 숨긴다.
+        if (checkpointOrder(ref.published_checkpoint, existing.published_checkpoint) < 0) demotedRevisions.push(ref);
         return false;
       });
+      const demotedProposals: ProposalBrowseRef[] = [];
       const freshProposals = addedProposals.filter(ref => {
         const existing = state.proposalsByKey.get(ref.key);
         if (!existing) return true;
         if (!staticProposalMatches(existing, ref)) throw new Error('Browse index immutable proposal fields changed');
+        if (checkpointOrder(ref.published_checkpoint, existing.published_checkpoint) < 0) demotedProposals.push(ref);
         return false;
       });
+      const demotedAgreements: AgreementBrowseRef[] = [];
       const freshAgreements = [...pendingAgreements.values()].filter(ref => {
         const existing = state.agreementsByKey.get(ref.key);
         if (!existing) return true;
         if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
+        if (checkpointOrder(ref.published_checkpoint, existing.published_checkpoint) < 0) demotedAgreements.push(ref);
         return false;
       });
       committed = true;
@@ -257,6 +265,31 @@ export class VerifiedBrowseIndex {
         if (batchCheckpoints.some(committedCheckpoint => checkpointOrder(committedCheckpoint, entry.at) <= 0)) {
           this.dropRevisionCacheEntry(cachedKey);
         }
+      }
+      // 강등 대상은 기존 ref를 제거하고 더 이른 체크포인트의 ref로 재삽입해
+      // 정렬 위치를 다시 계산한다.
+      const removeRef = <T extends { key: string }>(list: T[] | undefined, ref: T): T[] =>
+        (list ?? []).filter(item => item !== ref);
+      for (const ref of demotedRevisions) {
+        const previous = state.revisionsByKey.get(ref.key)!;
+        state.revisionsByKey.delete(ref.key);
+        state.revisions = removeRef(state.revisions, previous);
+        state.revisionsBySlot.set(slotKey(previous.slot), removeRef(state.revisionsBySlot.get(slotKey(previous.slot)), previous));
+        state.revisionsByDocument.set(previous.slot.document_id, removeRef(state.revisionsByDocument.get(previous.slot.document_id), previous));
+        freshRevisions.push(ref);
+      }
+      for (const ref of demotedProposals) {
+        const previous = state.proposalsByKey.get(ref.key)!;
+        state.proposalsByKey.delete(ref.key);
+        state.proposals = removeRef(state.proposals, previous);
+        state.proposalsByRevision.set(previous.revision_digest, removeRef(state.proposalsByRevision.get(previous.revision_digest), previous));
+        freshProposals.push(ref);
+      }
+      for (const ref of demotedAgreements) {
+        const previous = state.agreementsByKey.get(ref.key)!;
+        state.agreementsByKey.delete(ref.key);
+        state.agreementsByRevision.set(previous.revision_digest, removeRef(state.agreementsByRevision.get(previous.revision_digest), previous));
+        freshAgreements.push(ref);
       }
       if (freshRevisions.length) {
         freshRevisions.sort(compareRevisions);
@@ -356,11 +389,12 @@ export class VerifiedBrowseIndex {
   private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[], at: Checkpoint): void {
     const estimatedBytes = Buffer.byteLength(key) + refs.length * ESTIMATED_REF_POINTER_BYTES;
     if (this.revisionCache.has(key)) this.dropRevisionCacheEntry(key);
-    if (refs.length > MAX_REVISION_CACHE_REFS || estimatedBytes > MAX_REVISION_CACHE_BYTES) {
-      // 상한을 넘는 결과 집합도 오프셋 페이지네이션이 같은 키로 재질의하므로,
-      // 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러 O(문서²)가 된다.
-      // refs는 state의 객체를 공유하는 포인터 배열이므로 다른 항목을 비우고
-      // 단일 대형 항목으로 유지한다.
+    if (refs.length > MAX_REVISION_CACHE_REFS) {
+      // 결과 건수가 상한을 넘는 선택 집합도 오프셋 페이지네이션이 같은 키로
+      // 재질의하므로, 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러
+      // O(문서²)가 된다. refs는 state의 객체를 공유하는 포인터 배열이므로 다른
+      // 항목을 비우고 단일 대형 항목으로 유지한다. 바이트만 넘는 작은 결과는
+      // 일반 경로로 두어 거대 키가 작업 세트를 밀어내지 않게 한다.
       this.revisionCache.clear();
       this.revisionCacheRefs = 0;
       this.revisionCacheBytes = 0;
