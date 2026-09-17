@@ -267,10 +267,14 @@ export class FabricBlockProjector {
     };
   }
 
-  /** Create a candidate that shares no mutable state with this projector. */
+  /** Create a candidate whose state map is independent of this projector.
+      Entries are shared by reference — state values are only ever replaced by
+      cloned writes in applyBlock and never mutated in place (read()/entries()
+      clone on the way out), so a shallow copy preserves fork isolation without
+      an O(state) deep clone per block. */
   fork(): FabricBlockProjector {
     const candidate = new FabricBlockProjector(this.options);
-    candidate.state = new Map([...this.state.entries()].map(([key, value]) => [key, clone(value)]));
+    candidate.state = new Map(this.state);
     candidate.latestCheckpoint = this.latestCheckpoint ? { ...this.latestCheckpoint } : null;
     return candidate;
   }
@@ -322,21 +326,27 @@ export class FabricBlockProjector {
       transactions.push(transaction);
     }
 
-    const staged = new Map<string, unknown>([...this.state.entries()].map(([key, value]) => [key, clone(value)]));
+    // 블록 검증이 끝나기 전까지 커밋 상태를 변경하지 않는다 — 쓰기분만
+    // 스테이징하고 읽기는 기존 상태로 되돌아가는 오버레이로 원자성을 유지한다.
+    // 전체 상태 복제는 블록마다 O(상태) 비용을 만든다. stagedGet은 커밋 상태의
+    // 살아있는 객체를 돌려주므로 여기서 호출하는 검증 함수(validateStateLinks,
+    // canonicalize)는 읽기 전용이어야 한다 — 쓰기는 stagedWrites.clone만 거친다.
+    const stagedWrites = new Map<string, unknown>();
+    const stagedGet = (key: string): unknown => stagedWrites.has(key) ? stagedWrites.get(key) : this.state.get(key);
     for (const transaction of transactions) {
       if (!transaction.valid) continue;
       for (const { key, value } of transaction.writeset) {
-        const prior = staged.get(key);
+        const prior = stagedGet(key);
         const kind = key === BOOTSTRAP_KEY ? "bootstrap_manifest" : key.split(":")[2];
         if (prior !== undefined && (kind === "bootstrap_manifest" || IMMUTABLE_KINDS.has(kind)) && canonicalize(prior) !== canonicalize(value)) fail("Immutable ledger write-set was overwritten; projection halted");
-        staged.set(key, clone(value));
+        stagedWrites.set(key, clone(value));
       }
       for (const { key, value } of transaction.writeset) {
-        if (key !== BOOTSTRAP_KEY) validateStateLinks(key, value, referenced => staged.get(referenced));
+        if (key !== BOOTSTRAP_KEY) validateStateLinks(key, value, referenced => stagedGet(referenced));
       }
     }
     const checkpoint: ProjectorCheckpoint = { channel_id: this.channel_id, block_number: blockNumber, block_hash: fabricBlockHeaderHash(header), data_hash: digest(Buffer.concat(dataEntries.map(entry => Buffer.from(entry)))) };
-    this.state = staged;
+    for (const [key, value] of stagedWrites) this.state.set(key, value);
     this.latestCheckpoint = checkpoint;
     return {
       checkpoint: { ...checkpoint },
