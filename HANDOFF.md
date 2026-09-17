@@ -1,13 +1,16 @@
 # Handoff
 
-_Last updated: 2026-09-17 18:05 KST by Devin_
+_Last updated: 2026-09-18 KST (성능 도구 개선 — PR #3 오픈·CI 통과, 머지 전)_
 
 ## Goal
 
 MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Knowledger로 확정**했다(기존 `knowledge-consensus-ledger`/`kcl`에서 리네임).
 조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
 합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임·공개 게시·
-대규모 확장성 수정은 완료했다. 다음 우선순위는 선택 도입/확장과 유지보수다.
+대규모 확장성 수정은 완료했다. **성능 도구 개선 3개**(baseline JSON 비교·검색 시나리오 확대·CLI 오류 진단)는
+독립 리뷰·부족분 보완·로컬 검증을 거쳐 `feature/perf-baseline-compare` 브랜치로
+**PR #3에 오픈**돼 있고 원격 CI를 통과했다. 머지 여부는 사용자 결정이다.
+PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`로 확인한다.
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
@@ -18,8 +21,11 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- 리네임 전 추적 파일은 clean, 사용자 `.serena/`와 `scorpionfish/`만 untracked. 둘 다 보존·커밋 제외.
-- **마지막 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
+- main HEAD `7461542`. 성능 도구 개선은 `feature/perf-baseline-compare` 브랜치에 있다 —
+  `tools/performance-compare.ts` 신규 + `tools/performance-smoke.ts`·`tools/performance-fabric.ts`·
+  `test/automation/experiments.test.ts`·`HANDOFF.md` 수정. **PR #3 오픈, CI 통과, 머지 전**.
+  사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
+- **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
   앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
   재시작 중 발견된 두 결함을 수정했다: peer gRPC keepalive(`26e75a8`)와 원장 갱신 상한
   `refreshTimeoutMs`(`f189e80`). 세부는 [검증 기록](docs/VALIDATION.md)의 최신 장애 시험 항목.
@@ -84,7 +90,110 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Verification
 
-PR #2까지 포함한 최신 실행 근거다(2026-09-17 재실행).
+2026-09-18 성능 도구 개선 — 리뷰·보완 후 재검증 근거(`feature/perf-baseline-compare` 브랜치):
+
+- 1차 자체 리뷰에서 확인한 초안 결함과 수정:
+  - `search_cold`가 samples>1에서 실제로 cold가 아니었다 — 매치 캐시는 서비스 인스턴스별이라
+    샘플 1만 cache-miss였다. 샘플마다 새 `KnowledgerService`를 만들도록 수정했다
+    (열린 원장 재사용, `initialize()`는 tail 확인뿐이라 저널 재생 없음).
+  - `assertSearchQueryMatches`의 미사용 `documents` 파라미터를 제거하고 `measureSearchQueryMatches`로
+    이름을 바로잡았다. `cold_search_matches`는 tautology 대신 실측 마지막 건수를 기록한다.
+  - 두 도구에 중복돼 있던 `compareWithBaseline`을 `perf-compare.ts`의 `compareMetrics`로 합쳤다.
+  - baseline 호환성·검증 오류를 `ComparisonInputError`로 바꿔 CLI가 부적절한 일반 안내를 붙이지 않게 했다.
+  - `parseThresholds`가 도구별 측정 메트릭 목록을 받아 미측정 메트릭·중복 키를 거절한다.
+    `--threshold` 단독 사용은 `--baseline` 요구 오류로 거절한다. baseline=0이면 `+Infinity%` 대신
+    명시 문구를 출력한다.
+  - dead export `RegressionThresholds`·`validateThreshold`를 제거했다.
+- 커밋·푸시 후 ultra-review 1라운드(claude 트랙 2/2 유효, codex·grok·대부분의 agy 샤드는
+  러너 권한/타임아웃으로 무효)에서 추가로 확인한 결함과 수정:
+  - **HIGH**: `measureSearchQueryMatches`가 10개 질의를 상한 있는 매치 캐시에 채워 marker
+    엔트리를 축출한 뒤 `search_warm` 루프가 시작돼, 첫 warm 샘플이 실제로는 cache-miss였다.
+    warm 루프를 복수 검색어 측정보다 앞으로 옮겨 모든 샘플이 cache-hit를 타게 했다.
+  - baseline 로드·스키마·environment 검증이 전체 측정 뒤에 실행되던 것을
+    `loadValidatedBaseline`로 측정 전 fail-fast로 옮기고, `reportCliResult` 공유 헬퍼가
+    비교 오류 시에도 측정 결과를 --out/stdout에 먼저 보존한 뒤 오류를 보고한다.
+  - CLI 비교 글루가 두 도구에 중복돼 있던 것을 `reportCliResult`로 통합하고, 임계값
+    `--baseline` 요구 검사를 `parseThresholds` 앞으로 옮겨 실제 원인이 먼저 보고되게 했다.
+  - baseline=0일 때 `entries[].ratio`가 `Infinity`로 JSON에 null이 되던 것을 명시적
+    `number|null`로 기록하고, `search= ` 같은 빈 비율을 거절하며, environment 필드를
+    타입별로 검증한다. 결과 스키마 버전을 2로 올려 구 baseline을 명확히 거절한다.
+  - 회귀·비회귀 CLI 테스트가 실제 타이밍에 의존하던 것을 baseline 메트릭 덮어쓰기로
+    결정적으로 만들고, 단언과 반대였던 테스트 이름을 바로잡았다. cold probe는 첫 cold
+    서비스에 합쳐 서비스 인스턴스 수를 줄였다.
+- ultra-review 2라운드(claude×2 APPROVE, codex×2·grok×1 CHANGES_REQUESTED, agy 유효
+  샤드 5개 APPROVE)에서 추가로 확인한 항목과 수정:
+  - fabric 비교 dataset 필드에 `journal_transactions`·`fabric_blocks`가 빠져 다른
+    `--journal` workload의 baseline이 comparable로 통과할 수 있었다 — 두 필드를 비교
+    대상에 추가했다.
+  - 부동소수점 경계(110/100-1 > 0.1)로 정확한 경계값이 회귀로 오판될 수 있었다 —
+    임계값 비교에 허용 오차를 뒀다.
+  - baseline 메트릭 키와 옵션 파생 dataset 필드도 측정 전에 검증한다
+    (`loadValidatedBaseline`에 메트릭 목록 전달 + `assertDatasetComparable` 계획 비교).
+  - `search_matches`도 요청값 대신 실측 마지막 건수를 기록하고, warm 루프의 불필요한
+    추가 overview 순회를 제거했다. `metricMs`는 키 누락을 "missing"으로 보고하고,
+    `loadBaselineJson` 안내는 도구별 예시 대신 일반 문구로 바꿨다.
+  - `assertComparable`이 단독 호출에도 mode·dataset 섹션을 스스로 검증하고,
+    `loadBaselineJson`이 비객체 JSON을 거절한다.
+  - `compareMetrics`·`reportCliResult` 단위 테스트와 fabric CLI 조건부 비교 테스트를
+    추가했다(선택적 Fabric 의존성이 없는 환경에서는 skip). `--baseline` 단독 사용은
+    회귀 판정 없이 비교 수치만 기록하는 annotation 모드다.
+- ultra-review 3라운드(claude×2 APPROVE, codex CHANGES_REQUESTED, agy 유효 샤드 4개
+  APPROVE; codex-2 quota 소진·grok 타임아웃으로 무효 처리)에서 확인한 항목과 수정:
+  - fabric 비교가 저널 트랜잭션·블록 개수만 봐 내용이 다른 동일 개수 저널이 통과될 수
+    있었다 — `journal_source`(generated/external)와 `journal_digest`를 비교 필드에
+    추가했다. 외부 저널은 레코드 내용 SHA-256, 자체 생성 저널은 타임스탬프와 무관한
+    생성 스펙 다이제스트를 쓴다.
+  - `currentEnvironment`가 Node·플랫폼·코어 수만 같으면 다른 머신도 통과했다 —
+    `cpu_model`을 비교 대상에 추가하고 스키마 버전을 3으로 올렸다.
+  - `--out`이 `--baseline`과 같은 파일(심볼릭·하드링크 포함)이면 결과가 baseline을
+    덮어써 회귀 기준을 파괴했다 — `assertDistinctOutputPath`로 측정 전에 거절한다.
+  - `assertComparable`의 3중 검증을 `assertDatasetComparable` 위임으로 정리하고,
+    두 CLI의 baseline/threshold 글루를 `prepareCliComparison`으로 합쳤다.
+    environment 섹션 누락은 TypeError 대신 ComparisonInputError다.
+  - cold 샘플 0만 타이밍 전에 probe를 돌려 이질적이던 것을 타이밍 뒤로 옮겼다.
+    쓰기 실패가 선행 비교 오류를 가리지 않게 원인을 함께 보고한다.
+- ultra-review 4라운드(claude×2 APPROVE, agy 유효 샤드 6개 중 APPROVE 4·CHANGES_REQUESTED 2;
+  codex quota 소진·grok 타임아웃으로 무효 처리)에서 확인한 항목과 수정:
+  - HANDOFF Resume Prompt의 "대기 중인 성능 브랜치는 없다"와 PR #3 오픈 문장의 모순을 정리했다.
+  - `reportCliResult`가 파일 쓰기·경로 검사 전에 stdout으로 결과를 먼저 출력해 어떤
+    실패 경로에서도 측정 결과가 남게 하고, 쓰기 실패는 항상 ComparisonInputError로
+    래핑해 부적절한 측정 안내가 붙지 않게 했다.
+  - 공유 모듈을 `performance-compare.ts`로 리네임(무축약 규칙), 두 도구의 옵션 정규화
+    함수를 `normalizeOptions`로 통일하고 dead export를 없앴다. 실행은 정규화된 옵션으로
+    돌려 계획·측정이 같은 값을 쓰게 했고, smoke의 planned에서 비교 대상이 아닌
+    marker를 뺐다.
+  - mode·섹션 검사 메시지를 `assertModeMatches`·`requireSection`으로 공유하고,
+    `metricMs` 누락 안내는 baseline 쪽에만 재생성 문구를 붙인다.
+  - 기각한 리뷰 주장: smoke의 dataset에 `journal_transactions`는 존재하지 않는
+    필드이고(외부 저널 입력이 없음), `search_matches` 중복 프로퍼티 주장은 오탐
+    (tsc 통과), cold 서비스는 이벤트 리스너를 등록하지 않는다.
+- ultra-review 5라운드(claude×2 APPROVE, agy 유효 샤드 3개 중 APPROVE 2·CHANGES_REQUESTED 1;
+  codex quota 소진·grok 타임아웃으로 무효 처리)에서 확인한 항목과 수정:
+  - `search_query_matches`가 숫자 검색어에 매치되는 seedDemo 문서까지 셀 수 있었다 —
+    `isPerformanceDocument`로 필터해 합성 workload 증거만 기록한다.
+  - `COMPARABLE_DATASET_FIELDS`·`COMPARABLE_METRICS`를 `satisfies`로 결과 인터페이스의
+    키에 컴파일 타임 바인딩해 필드 오타·누락을 런타임이 아닌 tsc가 잡게 했다.
+  - 비교 실패는 결과 JSON에 `comparison.error`로 기록해 "--baseline 미지정"과 구별하고,
+    `reportCliResult`의 경로 충돌·쓰기 실패가 모두 선행 비교 오류를 병합한다.
+    빈 `--baseline` 경로와 normalizeOptions 비대칭(fabric은 dataDir·journalPath까지
+    정규화)도 정리했다. `journalSourceOf`로 계획·측정의 journal_source 판정을 공유한다.
+  - `parseThresholds` 단위 테스트를 추가하고 CLI spawn 보일러플레이트를 헬퍼로 정리했다.
+  - 기각한 리뷰 주장: `isPerformanceDocument` 미사용·검색 결과 top-level document_id
+    주장은 오탐(4곳에서 사용, `describeRevision`은 `{payload}` 반환),
+    `generatedJournalDigest`의 marker는 모듈 상수.
+- Node24 경로를 적용해 `npm run check`: **309 tests / 308 passed / 0 failed / 1 기존 GC 전용 skipped**.
+  포함된 설계·문서 검사 통과. `npm run check:types` 통과.
+- `node --test test/automation/experiments.test.ts`: 14/14 통과(신규 거절 경로·결정적 비교·
+  parseThresholds 단위·reportCliResult 보존·경로 충돌·fabric 조건부 비교 단언 추가).
+- `node tools/performance-fabric.ts --documents 2 --samples 1 --body-bytes 1`로 baseline 생성 및
+  `--baseline` + `--threshold` 비교 실행 각각 exit0(합성 어댑터 기능 확인일 뿐 성능 개선·
+  실제 Fabric 커밋 증명이 아니다).
+- 이번 변경으로 `npm run demo`, 브라우저 검사, 대규모 벤치마크, 운영 네트워크 시험은 실행하지 않았다.
+- PR #3 원격 CI 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments
+  (커밋별 push+pull_request run 전부 success — 브라우저 job 안의 `test:performance`가
+  새 multi-query/cold 경로를 CI에서 실행했다).
+
+PR #2까지 포함한 이전 실행 근거다(2026-09-17 재실행).
 
 - `npm run check`: **300 tests / 299 passed / 0 failed / 1 GC 전용 skipped**. `npm run check:types` 통과.
 - PR #2 원격 CI 8/8 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments.
@@ -153,13 +262,17 @@ python3 -B tools/check_docs.py
    캐시당 하나라 교차 대형 질의 시 재계산으로 돌아가고, `fork()` 얕은 복사는 블록당
    O(상태) Map 복사가 남는다(포인터 복사라 측정상 39배 개선).
    이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
-4. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): PR #3 오픈·CI 통과·리뷰 루프 진행 중.
+   **머지는 사용자 승인 후 진행** — 사용자가 리뷰 후 머지를 승인했으므로 리뷰 루프가
+   블로커 없이 끝나면 머지한다.
+5. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
 공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다 — 대기 중인 성능 브랜치는 없다.
+10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다.
+성능 도구 개선은 PR #3(`feature/perf-baseline-compare`)로 오픈·CI 통과 — 리뷰 후 머지가 승인됐으니 리뷰 루프를 마저 돌리고 블로커가 없으면 머지해. 그 외 대기 중인 브랜치는 없다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
