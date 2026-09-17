@@ -62,6 +62,12 @@ Fabric 10만 측정에서 두 번째 O(상태×블록) 결함을 발견했다 �
 기능 단언(10만 생성·조회·검색 일치·재시작 후 동일 개수)은 모두 통과했다. 인제스트의 남은
 비용은 블록 디코드·검증·SQL 기록으로 블록 크기에 비례한다.
 
+후속 리뷰에서 `SqliteFabricProjection.applyBlock`이 블록마다 `projector.fork()`로 전체 상태를
+깊은 복제하는 잔여 O(상태×블록) 비용을 발견했다 — 위 1,328s 인제스트 수치는 그 깊은 복제를
+포함해 측정됐다. `fork()`는 상태 값이 항상 복제된 쓰기로만 교체되고 읽기 경로가 복제본을
+반환하므로 얕은 Map 복사로 충분하며, 10만 엔트리 기준 fork 비용이 ~220ms에서 ~5.6ms로
+줄었다(마이크로벤치). 전체 인제스트 재측정은 하지 않았다.
+
 근거는 `.artifacts/large-scale-reads/`의 `local-10k-mixed8.json`, `fabric-10k.json`,
 `local-100k-pagination.json`, `fabric-100k.json`이다.
 

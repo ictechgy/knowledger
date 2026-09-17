@@ -43,6 +43,9 @@ interface RevisionCacheEntry {
 const MAX_REVISION_CACHE_ENTRIES = 8;
 const MAX_REVISION_CACHE_REFS = 16_384;
 const MAX_REVISION_CACHE_BYTES = 512 * 1024;
+// 상주 대형 항목도 무제한은 아니다 — 추정치 기준 백만 refs 규모까지 허용하는
+// 상한을 넘으면 캐시하지 않는다.
+const MAX_OVERSIZED_REVISION_CACHE_BYTES = 16 * 1024 * 1024;
 const ESTIMATED_REF_POINTER_BYTES = 16;
 
 const emptyState = (): BrowseState => ({
@@ -177,6 +180,16 @@ export class VerifiedBrowseIndex {
     const addedProposals: ProposalBrowseRef[] = [];
     const pendingProposals = new Map<string, ProposalBrowseRef>();
     const pendingAgreements = new Map<string, AgreementBrowseRef>();
+    // prepare 시점에 이미 커밋된 키의 더 이른 체크포인트 쓰기는 커밋 시점에
+    // 다시 대조해 발행 체크포인트를 낮춘다 — 순차 커밋(cp2 커밋 후 cp1 prepare)도
+    // 겹친 prepare와 같은 규칙으로 역사 가시성을 유지한다. 키당 가장 이른 후보만 남긴다.
+    const demoteCandidatesRevisions = new Map<string, RevisionBrowseRef>();
+    const demoteCandidatesProposals = new Map<string, ProposalBrowseRef>();
+    const demoteCandidatesAgreements = new Map<string, AgreementBrowseRef>();
+    const noteDemote = <Ref extends { key: string; published_checkpoint: Checkpoint }>(map: Map<string, Ref>, ref: Ref): void => {
+      const previous = map.get(ref.key);
+      if (!previous || checkpointOrder(ref.published_checkpoint, previous.published_checkpoint) < 0) map.set(ref.key, ref);
+    };
 
     for (const batch of batches) {
       assertCheckpoint(batch.checkpoint, this.channelId);
@@ -190,13 +203,16 @@ export class VerifiedBrowseIndex {
           if (key !== keyFor.revision(revision.revision_digest) || revision.payload.channel_id !== this.channelId) throw new Error('Invalid browse revision binding');
           const ref: RevisionBrowseRef = { key, revision_digest: revision.revision_digest, slot: cloneSlot(revision.payload), published_checkpoint: cloneCheckpoint(batch.checkpoint) };
           const pendingRevision = pendingRevisions.get(key);
-          const existing = this.state.revisionsByKey.get(key) ?? pendingRevision;
+          const committedRevision = this.state.revisionsByKey.get(key);
+          const existing = committedRevision ?? pendingRevision;
           if (existing) {
             if (!staticRevisionMatches(existing, ref)) throw new Error('Browse index immutable revision fields changed');
             // 같은 prepare 안에서 더 이른 체크포인트의 중복 쓰기는 pending의 발행
-            // 체크포인트를 낮춘다 — 커밋 단계 강등과 같은 규칙이다.
+            // 체크포인트를 낮추고, 이미 커밋된 키는 커밋 시점 강등 후보로 넘긴다.
             if (pendingRevision && checkpointOrder(ref.published_checkpoint, pendingRevision.published_checkpoint) < 0) {
               pendingRevision.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            } else if (committedRevision && checkpointOrder(ref.published_checkpoint, committedRevision.published_checkpoint) < 0) {
+              noteDemote(demoteCandidatesRevisions, ref);
             }
             continue;
           }
@@ -207,11 +223,14 @@ export class VerifiedBrowseIndex {
           const ref: ProposalBrowseRef = { key, proposal_id: proposal.proposal_id, revision_digest: proposal.revision_digest,
             slot: cloneSlot(proposal), created_at: proposal.created_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
           const pendingProposal = pendingProposals.get(key);
-          const existing = this.state.proposalsByKey.get(key) ?? pendingProposal;
+          const committedProposal = this.state.proposalsByKey.get(key);
+          const existing = committedProposal ?? pendingProposal;
           if (existing) {
             if (!staticProposalMatches(existing, ref)) throw new Error('Browse index immutable proposal fields changed');
             if (pendingProposal && checkpointOrder(ref.published_checkpoint, pendingProposal.published_checkpoint) < 0) {
               pendingProposal.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            } else if (committedProposal && checkpointOrder(ref.published_checkpoint, committedProposal.published_checkpoint) < 0) {
+              noteDemote(demoteCandidatesProposals, ref);
             }
             continue;
           }
@@ -222,11 +241,14 @@ export class VerifiedBrowseIndex {
           const ref: AgreementBrowseRef = { key, agreement_id: agreement.agreement_id, revision_digest: agreement.revision_digest,
             slot: cloneSlot(agreement), activated_at: agreement.activated_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
           const pendingAgreement = pendingAgreements.get(key);
-          const existing = this.state.agreementsByKey.get(key) ?? pendingAgreement;
+          const committedAgreement = this.state.agreementsByKey.get(key);
+          const existing = committedAgreement ?? pendingAgreement;
           if (existing) {
             if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
             if (pendingAgreement && checkpointOrder(ref.published_checkpoint, pendingAgreement.published_checkpoint) < 0) {
               pendingAgreement.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            } else if (committedAgreement && checkpointOrder(ref.published_checkpoint, committedAgreement.published_checkpoint) < 0) {
+              noteDemote(demoteCandidatesAgreements, ref);
             }
             continue;
           }
@@ -267,11 +289,25 @@ export class VerifiedBrowseIndex {
         if (checkpointOrder(ref.published_checkpoint, existing.published_checkpoint) < 0) demotedAgreements.push(ref);
         return false;
       });
-      committed = true;
-      // 2) 실제로 반영되는 ref의 최소 체크포인트 이하의 at에 바인딩된 캐시 선택
-      //    집합만 무효화한다 — 상태를 바꾸지 않는 멱등·block-only 커밋은 캐시를
-      //    유지하고, 순서대로 들어오는 커밋도 기존 at보다 뒤라 유지된다.
-      const touched = [...freshRevisions, ...demotedRevisions, ...freshProposals, ...demotedProposals, ...freshAgreements, ...demotedAgreements];
+      // prepare 시점에 이미 커밋돼 있던 키의 강등 후보도 현재 상태와 다시 대조한다 —
+      // 그 사이 다른 커밋이 더 이르게 낮췄으면 건너뛰고, 불변 필드 충돌은 여기서 중단한다.
+      const collectDemoted = <Ref extends { key: string; published_checkpoint: Checkpoint }>(
+        candidates: Iterable<Ref>, byKey: Map<string, Ref>, matches: (existing: Ref, next: Ref) => boolean, error: string, demoted: Ref[],
+      ): void => {
+        for (const ref of candidates) {
+          const existing = byKey.get(ref.key);
+          if (!existing) continue;
+          if (!matches(existing, ref)) throw new Error(error);
+          if (checkpointOrder(ref.published_checkpoint, existing.published_checkpoint) < 0) demoted.push(ref);
+        }
+      };
+      collectDemoted(demoteCandidatesRevisions.values(), state.revisionsByKey, staticRevisionMatches, 'Browse index immutable revision fields changed', demotedRevisions);
+      collectDemoted(demoteCandidatesProposals.values(), state.proposalsByKey, staticProposalMatches, 'Browse index immutable proposal fields changed', demotedProposals);
+      collectDemoted(demoteCandidatesAgreements.values(), state.agreementsByKey, staticAgreementMatches, 'Browse index immutable agreement fields changed', demotedAgreements);
+      // 2) 실제로 반영되는 revision ref의 최소 체크포인트 이하의 at에 바인딩된 캐시 선택
+      //    집합만 무효화한다 — 상태를 바꾸지 않는 멱등·block-only·proposal/agreement만의
+      //    커밋은 캐시를 유지하고, 순서대로 들어오는 커밋도 기존 at보다 뒤라 유지된다.
+      const touched = [...freshRevisions, ...demotedRevisions];
       if (touched.length) {
         let minCommitted = touched[0].published_checkpoint;
         for (const ref of touched) {
@@ -294,6 +330,9 @@ export class VerifiedBrowseIndex {
         buckets: [{ map: state.proposalsByRevision, keyOf: ref => ref.revision_digest }] });
       this.mergeDelta({ fresh: freshAgreements, demoted: demotedAgreements, byKey: state.agreementsByKey, compare: compareAgreements,
         buckets: [{ map: state.agreementsByRevision, keyOf: ref => ref.revision_digest }] });
+      // 병합이 끝난 뒤에야 완료로 표시한다 — 비교자는 순수하지만, 만약 중간에 예외가
+      // 나면 재커밋이 멱등하게 나머지를 반영할 수 있어야 한다.
+      committed = true;
     } };
   }
 
@@ -357,7 +396,6 @@ export class VerifiedBrowseIndex {
       this.revisionCache.delete(cacheKey); this.revisionCache.set(cacheKey, cached);
       return page(cached.refs, query.offset, query.limit, cloneRevision);
     }
-    this.revisionCacheMisses += 1;
     let candidates: readonly RevisionBrowseRef[];
     if (query.mode === 'slot') {
       if (!query.slot || query.slot.channel_id !== this.channelId) throw new Error('Invalid browse slot');
@@ -367,6 +405,8 @@ export class VerifiedBrowseIndex {
       candidates = this.state.revisionsByDocument.get(query.document_id) ?? [];
     } else if (query.mode === 'all' || query.mode === 'latest-per-slot') candidates = this.state.revisions;
     else throw new Error('Invalid browse revision mode');
+    // 검증을 통과한 미스만 계수한다 — 거부된 질의는 캐시 적중률을 왜곡하지 않는다.
+    this.revisionCacheMisses += 1;
     let selected = candidates.filter(item => visible(item.published_checkpoint, query.at)
       && (query.document_id === undefined || item.slot.document_id === query.document_id)
       && (query.context_id === undefined || item.slot.context_id === query.context_id)
@@ -398,6 +438,7 @@ export class VerifiedBrowseIndex {
       // 재질의하므로, 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러
       // O(문서²)가 된다. refs는 state의 객체를 공유하는 포인터 배열이므로 다른
       // 항목을 비우고 단일 대형 항목으로 유지한다.
+      if (estimatedBytes > MAX_OVERSIZED_REVISION_CACHE_BYTES) return;
       this.revisionCache.clear();
       this.revisionCacheRefs = 0;
       this.revisionCacheBytes = 0;

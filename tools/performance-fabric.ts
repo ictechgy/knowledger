@@ -204,6 +204,15 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
     slotGroups: boundedInteger(input.slotGroups ?? 1, 'slotGroups', 1, 256),
     txPerBlock: boundedInteger(input.txPerBlock ?? DEFAULT_TX_PER_BLOCK, 'txPerBlock', 1, MAX_TX_PER_BLOCK),
   };
+  const journalSource = input.journalPath ? resolve(input.journalPath) : join(dataDir, 'local', 'shared-ledger.sqlite');
+  // --journal은 신뢰 입력이 아니다 — 디렉터리를 만들기 전에 존재를 확인하고,
+  // LocalLedger 생성자의 rebuildProjection→validateHistory로 채널·시퀀스·
+  // 해시체인·쓰기 검증을 전부 수행한 뒤 닫는다.
+  if (input.journalPath) {
+    if (!existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
+    const verifier = new LocalLedger(journalSource, CHANNEL_ID);
+    verifier.close();
+  }
   if (existsSync(dataDir)) {
     if (readdirSync(dataDir).length !== 0) throw new Error('dataDir must be a new or empty directory');
   } else mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -216,11 +225,9 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
 
   // 1) 동일 생성 절차로 로컬 저널을 만든다. --journal이면 기존 저널을 재사용한다.
   const definition = demoDefinition();
-  const journalSource = input.journalPath ? resolve(input.journalPath) : localLedgerPath;
-  if (input.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
   if (!input.journalPath) {
-    let localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
-    let localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
+    const localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
+    const localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
     const localService = new KnowledgerService(localLedger, localVault, definition);
     try {
       await localService.initialize();
@@ -271,7 +278,11 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
     let measuredSearchMatches = 0;
     let overview = await browseAll(opened.service);
     const generated = overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
-    if (generated.length !== options.documents) throw new Error('generated document count mismatch');
+    if (generated.length !== options.documents) {
+      throw new Error(input.journalPath
+        ? `--journal has ${generated.length} generated documents but --documents=${options.documents}`
+        : `generated document count mismatch: expected ${options.documents}, got ${generated.length}`);
+    }
     for (let sample = 0; sample < options.samples; sample += 1) {
       let started = performance.now();
       const search = await browseAll(opened.service, true);

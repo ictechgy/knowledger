@@ -269,6 +269,23 @@ test('an out-of-order duplicate commit lowers the published checkpoint so histor
   assert.equal(index.query({ kind: 'proposals', at: checkpoint(4), offset: 0, limit: 10 }).total, 1);
 });
 
+test('a sequential commit of an earlier duplicate still lowers the published checkpoint', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-seq-demoted', slot('doc-seq-demoted'));
+  const key = keyFor.revision(value.revision_digest);
+  // 겹친 prepare가 아니라 cp2 커밋이 완전히 끝난 뒤 cp1의 같은 쓰기가 커밋돼도
+  // 발행 체크포인트는 1로 낮아져야 at=(1)의 역사 질의가 항목을 본다.
+  commit(index, checkpoint(2), [[key, value]]);
+  commit(index, checkpoint(1), [[key, value]]);
+  const atOne = index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(atOne.total, 1);
+  assert.equal(atOne.items[0].published_checkpoint.block_number, 1);
+  // 더 늦은 중복은 발행 체크포인트를 바꾸지 않는다.
+  commit(index, checkpoint(3), [[key, value]]);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 })
+    .items[0].published_checkpoint.block_number, 1);
+});
+
 test('duplicate keys within one prepare keep the earliest published checkpoint', () => {
   const index = new VerifiedBrowseIndex(CHANNEL);
   const value = revision('revision-same-prepare', slot('doc-same-prepare'));

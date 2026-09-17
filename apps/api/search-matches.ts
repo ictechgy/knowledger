@@ -1,6 +1,9 @@
 const MAX_ENTRIES = 8;
 const MAX_IDS = 20_000;
 const MAX_BYTES = 2 * 1024 * 1024;
+// 상주 대형 항목도 무제한은 아니다 — digest 문자열 기준 수백만 매치까지 허용하는
+// 상한을 넘으면 캐시하지 않는다.
+const MAX_OVERSIZED_BYTES = 64 * 1024 * 1024;
 
 /** Exact-query, exact-snapshot results. Only immutable digest strings are retained. */
 export class SearchMatchCache {
@@ -34,6 +37,7 @@ export class SearchMatchCache {
     // 캐시하지 않으면 페이지마다 전체 원장을 다시 읽어 O(문서²)가 된다.
     // ids는 불변 다이제스트 문자열뿐이므로 다른 항목을 비우고 단일 대형 항목으로 유지한다.
     if (ids.length > MAX_IDS) {
+      if (bytes > MAX_OVERSIZED_BYTES) return;
       for (const existing of [...this.entries.keys()]) this.remove(existing);
       this.oversizedKey = key;
       this.oversizedIds = ids.length;
