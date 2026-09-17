@@ -20,7 +20,7 @@ import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../ex
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { browseAll, directoryBytes, generateSyntheticDocument, latency, marker } from './performance-smoke.ts';
 import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke.ts';
-import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './performance-compare.ts';
 
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
@@ -400,7 +400,7 @@ if (isMain()) {
         journal_source: parsed.options.journalPath ? 'external' : 'generated',
       },
     });
-    const result = await runFabricPerformance(parsed.options);
+    const result = await runFabricPerformance({ ...parsed.options, ...normalized });
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

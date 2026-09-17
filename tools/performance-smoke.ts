@@ -8,7 +8,7 @@ import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
-import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './performance-compare.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
 const MAX_DOCUMENTS = 100_000;
@@ -97,7 +97,7 @@ export function directoryBytes(directory: string): number {
 }
 
 /** CLI 옵션을 기본값과 함께 정규화하고 범위를 검증한다 — dataset 계획 비교에도 재사용된다. */
-export function validateOptions(options: PerformanceSmokeOptions): Required<PerformanceSmokeOptions> {
+function normalizeOptions(options: PerformanceSmokeOptions): Required<PerformanceSmokeOptions> {
   if (!isAbsolute(options.dataDir)) throw new Error('dataDir must be absolute');
   return {
     dataDir: resolve(options.dataDir),
@@ -156,7 +156,7 @@ async function measureSearchQueryMatches(service: KnowledgerService): Promise<Re
 }
 
 export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promise<PerformanceSmokeResult> {
-  const options = validateOptions(input);
+  const options = normalizeOptions(input);
   if (existsSync(options.dataDir)) {
     if (readdirSync(options.dataDir).length !== 0) throw new Error('dataDir must be a new or empty directory');
   } else mkdirSync(options.dataDir, { recursive: true, mode: 0o700 });
@@ -299,16 +299,16 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
-    const normalized = validateOptions(parsed.options);
+    const normalized = normalizeOptions(parsed.options);
     const { baseline, thresholds } = prepareCliComparison({
       baselinePath: parsed.baselinePath, thresholdText: parsed.thresholdText, outPath: parsed.out,
       mode: 'local-simulation', metricNames: COMPARABLE_METRICS, datasetFields: COMPARABLE_DATASET_FIELDS,
       planned: {
         documents_requested: normalized.documents, body_bytes: normalized.bodyBytes, samples: normalized.samples,
-        slot_groups: normalized.slotGroups, marker, read_workload: 'all_pages_summary', search_probes: 'multi_query',
+        slot_groups: normalized.slotGroups, read_workload: 'all_pages_summary', search_probes: 'multi_query',
       },
     });
-    const result = await runPerformanceSmoke(parsed.options);
+    const result = await runPerformanceSmoke(normalized);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

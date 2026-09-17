@@ -152,6 +152,21 @@ PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`�
     environment 섹션 누락은 TypeError 대신 ComparisonInputError다.
   - cold 샘플 0만 타이밍 전에 probe를 돌려 이질적이던 것을 타이밍 뒤로 옮겼다.
     쓰기 실패가 선행 비교 오류를 가리지 않게 원인을 함께 보고한다.
+- ultra-review 4라운드(claude×2 APPROVE, agy 유효 샤드 6개 중 APPROVE 4·CHANGES_REQUESTED 2;
+  codex quota 소진·grok 타임아웃으로 무효 처리)에서 확인한 항목과 수정:
+  - HANDOFF Resume Prompt의 "대기 중인 성능 브랜치는 없다"와 PR #3 오픈 문장의 모순을 정리했다.
+  - `reportCliResult`가 파일 쓰기·경로 검사 전에 stdout으로 결과를 먼저 출력해 어떤
+    실패 경로에서도 측정 결과가 남게 하고, 쓰기 실패는 항상 ComparisonInputError로
+    래핑해 부적절한 측정 안내가 붙지 않게 했다.
+  - 공유 모듈을 `performance-compare.ts`로 리네임(무축약 규칙), 두 도구의 옵션 정규화
+    함수를 `normalizeOptions`로 통일하고 dead export를 없앴다. 실행은 정규화된 옵션으로
+    돌려 계획·측정이 같은 값을 쓰게 했고, smoke의 planned에서 비교 대상이 아닌
+    marker를 뺐다.
+  - mode·섹션 검사 메시지를 `assertModeMatches`·`requireSection`으로 공유하고,
+    `metricMs` 누락 안내는 baseline 쪽에만 재생성 문구를 붙인다.
+  - 기각한 리뷰 주장: smoke의 dataset에 `journal_transactions`는 존재하지 않는
+    필드이고(외부 저널 입력이 없음), `search_matches` 중복 프로퍼티 주장은 오탐
+    (tsc 통과), cold 서비스는 이벤트 리스너를 등록하지 않는다.
 - Node24 경로를 적용해 `npm run check`: **308 tests / 307 passed / 0 failed / 1 기존 GC 전용 skipped**.
   포함된 설계·문서 검사 통과. `npm run check:types` 통과.
 - `node --test test/automation/experiments.test.ts`: 13/13 통과(신규 거절 경로·결정적 비교·
@@ -242,8 +257,8 @@ python3 -B tools/check_docs.py
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
 공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다 — 대기 중인 성능 브랜치는 없다.
-성능 도구 개선은 PR #3(`feature/perf-baseline-compare`)로 오픈·CI 통과 — 리뷰 후 머지가 승인됐으니 리뷰 루프를 마저 돌리고 블로커가 없으면 머지해.
+10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다.
+성능 도구 개선은 PR #3(`feature/perf-baseline-compare`)로 오픈·CI 통과 — 리뷰 후 머지가 승인됐으니 리뷰 루프를 마저 돌리고 블로커가 없으면 머지해. 그 외 대기 중인 브랜치는 없다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.

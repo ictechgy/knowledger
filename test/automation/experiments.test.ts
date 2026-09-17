@@ -164,7 +164,7 @@ test('performance smoke CLI rejects incomparable baselines with actionable error
 });
 
 test('compareMetrics handles boundary ratios, baseline zero, and invalid baselines deterministically', async () => {
-  const { compareMetrics, RESULT_SCHEMA_VERSION } = await import('../../tools/perf-compare.ts');
+  const { compareMetrics, RESULT_SCHEMA_VERSION } = await import('../../tools/performance-compare.ts');
   const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8, cpu_model: 'test-cpu' };
   const dataset = { documents_requested: 2 };
   const fields = ['documents_requested'] as const;
@@ -191,7 +191,7 @@ test('compareMetrics handles boundary ratios, baseline zero, and invalid baselin
 });
 
 test('assertDistinctOutputPath rejects --out aliases of the baseline file', async () => {
-  const { assertDistinctOutputPath, ComparisonInputError } = await import('../../tools/perf-compare.ts');
+  const { assertDistinctOutputPath, ComparisonInputError } = await import('../../tools/performance-compare.ts');
   const { linkSync } = await import('node:fs');
   const root = mkdtempSync(join(tmpdir(), 'knowledger-out-collision-'));
   try {
@@ -199,6 +199,10 @@ test('assertDistinctOutputPath rejects --out aliases of the baseline file', asyn
     writeFileSync(baseline, '{}');
     // 같은 파일·심볼릭링크·하드링크 별칭은 모두 거절한다 — 결과가 baseline을 덮어쓰면 안 된다.
     assert.throws(() => assertDistinctOutputPath(baseline, baseline), ComparisonInputError);
+    const { symlinkSync } = await import('node:fs');
+    const symlink = join(root, 'baseline-link.json');
+    symlinkSync(baseline, symlink);
+    assert.throws(() => assertDistinctOutputPath(symlink, baseline), ComparisonInputError);
     const hardlink = join(root, 'baseline-alias.json');
     linkSync(baseline, hardlink);
     assert.throws(() => assertDistinctOutputPath(hardlink, baseline), ComparisonInputError);
@@ -210,7 +214,7 @@ test('assertDistinctOutputPath rejects --out aliases of the baseline file', asyn
 });
 
 test('reportCliResult preserves the measured result when comparison input fails', async () => {
-  const { reportCliResult, RESULT_SCHEMA_VERSION, ComparisonInputError } = await import('../../tools/perf-compare.ts');
+  const { reportCliResult, RESULT_SCHEMA_VERSION, ComparisonInputError } = await import('../../tools/performance-compare.ts');
   const root = mkdtempSync(join(tmpdir(), 'knowledger-report-preserve-'));
   try {
     const outPath = join(root, 'out.json');
