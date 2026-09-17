@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-18 KST (성능 도구 개선 — PR #3 오픈·CI 통과, 머지 전)_
+_Last updated: 2026-09-18 KST (성능 도구 개선 — PR #3 머지 완료 `b073c81`)_
 
 ## Goal
 
@@ -8,9 +8,8 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
 합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임·공개 게시·
 대규모 확장성 수정은 완료했다. **성능 도구 개선 3개**(baseline JSON 비교·검색 시나리오 확대·CLI 오류 진단)는
-독립 리뷰·부족분 보완·로컬 검증을 거쳐 `feature/perf-baseline-compare` 브랜치로
-**PR #3에 오픈**돼 있고 원격 CI를 통과했다. 머지 여부는 사용자 결정이다.
-PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`로 확인한다.
+독립 리뷰·6라운드 멀티모델 리뷰 루프·로컬 검증·원격 CI를 거쳐 **PR #3으로 main에
+머지됐다(squash `b073c81`)**.
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
@@ -21,9 +20,10 @@ PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`�
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- main HEAD `7461542`. 성능 도구 개선은 `feature/perf-baseline-compare` 브랜치에 있다 —
+- main HEAD `b073c81` — 성능 도구 개선이 PR #3 squash로 머지됐다:
   `tools/performance-compare.ts` 신규 + `tools/performance-smoke.ts`·`tools/performance-fabric.ts`·
-  `test/automation/experiments.test.ts`·`HANDOFF.md` 수정. **PR #3 오픈, CI 통과, 머지 전**.
+  `test/automation/experiments.test.ts`·`HANDOFF.md` 수정. 원격 브랜치
+  `feature/perf-baseline-compare`는 머지 후 정리 대상이다.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
   앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
@@ -188,6 +188,14 @@ PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`�
 - `node tools/performance-fabric.ts --documents 2 --samples 1 --body-bytes 1`로 baseline 생성 및
   `--baseline` + `--threshold` 비교 실행 각각 exit0(합성 어댑터 기능 확인일 뿐 성능 개선·
   실제 Fabric 커밋 증명이 아니다).
+- ultra-review 최종 6라운드(대상 `bf17153`): claude×2 APPROVE(LOW 유지보수성 항목만),
+  agy 유효 샤드 27개 중 7개 CHANGES_REQUESTED였으나 HIGH/MEDIUM 주장 전부 실제 코드와
+  대조해 오탐으로 판정했다(파일명·schema 버전·smoke 저널 필드는 stale diff 조각 기반).
+  codex quota 소진·grok 타임아웃은 3라운드 연속이라 무효 처리했다. 유효 블로커가 없어
+  PR #3을 squash `b073c81`로 머지했다(MERGEABLE/CLEAN, 전 job 통과 확인 후).
+  남은 LOW는 후속 정리 대상: 미사용 export 표면 정리, `reportCliResult`의 process I/O 결합,
+  테스트 import·spawn 스타일 통일, fabric CLI 안내 문구 보강, fabric 비교 테스트의
+  CI 실행 근거 확인.
 - 이번 변경으로 `npm run demo`, 브라우저 검사, 대규모 벤치마크, 운영 네트워크 시험은 실행하지 않았다.
 - PR #3 원격 CI 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments
   (커밋별 push+pull_request run 전부 success — 브라우저 job 안의 `test:performance`가
@@ -262,17 +270,18 @@ python3 -B tools/check_docs.py
    캐시당 하나라 교차 대형 질의 시 재계산으로 돌아가고, `fork()` 얕은 복사는 블록당
    O(상태) Map 복사가 남는다(포인터 복사라 측정상 39배 개선).
    이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
-4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): PR #3 오픈·CI 통과·리뷰 루프 진행 중.
-   **머지는 사용자 승인 후 진행** — 사용자가 리뷰 후 머지를 승인했으므로 리뷰 루프가
-   블로커 없이 끝나면 머지한다.
+4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): **PR #3 머지 완료(squash `b073c81`)**.
+   6라운드 리뷰 루프에서 유효 블로커를 모두 해소했다. 남은 LOW 유지보수성 항목
+   (미사용 export 정리·`reportCliResult` I/O 분리·테스트 스타일 통일·fabric 안내 문구)은
+   후속 정리로 처리할 수 있다.
 5. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
 공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`)로 main에 머지됐다.
-성능 도구 개선은 PR #3(`feature/perf-baseline-compare`)로 오픈·CI 통과 — 리뷰 후 머지가 승인됐으니 리뷰 루프를 마저 돌리고 블로커가 없으면 머지해. 그 외 대기 중인 브랜치는 없다.
+10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)로 main에 머지됐다.
+대기 중인 브랜치는 없다 — 성능 도구의 LOW 정리 항목(HANDOFF Verification 참조)은 후속 정리 대상이다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
