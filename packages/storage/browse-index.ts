@@ -151,6 +151,8 @@ export class VerifiedBrowseIndex {
   private oversizedRevisionKey: string | undefined;
   private oversizedRevisionRefs = 0;
   private oversizedRevisionBytes = 0;
+  private revisionCacheHits = 0;
+  private revisionCacheMisses = 0;
 
   constructor(channelId: string) {
     if (typeof channelId !== 'string' || channelId.length < 1) throw new Error('Invalid browse channel');
@@ -158,9 +160,9 @@ export class VerifiedBrowseIndex {
   }
 
   /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
-  get revisionCacheStats(): { entries: number; refs: number; bytes: number; oversized: boolean } {
+  get revisionCacheStats(): { entries: number; refs: number; bytes: number; oversized: boolean; hits: number; misses: number } {
     return { entries: this.revisionCache.size, refs: this.revisionCacheRefs, bytes: this.revisionCacheBytes,
-      oversized: this.oversizedRevisionKey !== undefined };
+      oversized: this.oversizedRevisionKey !== undefined, hits: this.revisionCacheHits, misses: this.revisionCacheMisses };
   }
 
   prepare(batches: Iterable<BrowseWriteBatch>): { commit(): void } {
@@ -175,14 +177,9 @@ export class VerifiedBrowseIndex {
     const addedProposals: ProposalBrowseRef[] = [];
     const pendingProposals = new Map<string, ProposalBrowseRef>();
     const pendingAgreements = new Map<string, AgreementBrowseRef>();
-    const batchCheckpoints: Checkpoint[] = [];
-    const pushTo = <T>(map: Map<string, T[]>, key: string, value: T): void => {
-      const list = map.get(key); if (list) list.push(value); else map.set(key, [value]);
-    };
 
     for (const batch of batches) {
       assertCheckpoint(batch.checkpoint, this.channelId);
-      batchCheckpoints.push(cloneCheckpoint(batch.checkpoint));
       if (!Array.isArray(batch.writes)) throw new Error('Invalid browse write batch');
       if (batch.checkpoint.transaction_index === -1 && batch.writes.length) throw new Error('Block-only browse checkpoint cannot publish writes');
       for (const entry of batch.writes) {
@@ -192,9 +189,15 @@ export class VerifiedBrowseIndex {
           const revision = validateRevision(value);
           if (key !== keyFor.revision(revision.revision_digest) || revision.payload.channel_id !== this.channelId) throw new Error('Invalid browse revision binding');
           const ref: RevisionBrowseRef = { key, revision_digest: revision.revision_digest, slot: cloneSlot(revision.payload), published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = this.state.revisionsByKey.get(key) ?? pendingRevisions.get(key);
+          const pendingRevision = pendingRevisions.get(key);
+          const existing = this.state.revisionsByKey.get(key) ?? pendingRevision;
           if (existing) {
             if (!staticRevisionMatches(existing, ref)) throw new Error('Browse index immutable revision fields changed');
+            // 같은 prepare 안에서 더 이른 체크포인트의 중복 쓰기는 pending의 발행
+            // 체크포인트를 낮춘다 — 커밋 단계 강등과 같은 규칙이다.
+            if (pendingRevision && checkpointOrder(ref.published_checkpoint, pendingRevision.published_checkpoint) < 0) {
+              pendingRevision.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            }
             continue;
           }
           addedRevisions.push(ref); pendingRevisions.set(key, ref);
@@ -203,9 +206,13 @@ export class VerifiedBrowseIndex {
           if (key !== keyFor.proposal(proposal.proposal_id) || proposal.channel_id !== this.channelId) throw new Error('Invalid browse proposal binding');
           const ref: ProposalBrowseRef = { key, proposal_id: proposal.proposal_id, revision_digest: proposal.revision_digest,
             slot: cloneSlot(proposal), created_at: proposal.created_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = this.state.proposalsByKey.get(key) ?? pendingProposals.get(key);
+          const pendingProposal = pendingProposals.get(key);
+          const existing = this.state.proposalsByKey.get(key) ?? pendingProposal;
           if (existing) {
             if (!staticProposalMatches(existing, ref)) throw new Error('Browse index immutable proposal fields changed');
+            if (pendingProposal && checkpointOrder(ref.published_checkpoint, pendingProposal.published_checkpoint) < 0) {
+              pendingProposal.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            }
             continue;
           }
           addedProposals.push(ref); pendingProposals.set(key, ref);
@@ -214,9 +221,13 @@ export class VerifiedBrowseIndex {
           if (key !== keyFor.agreement(agreement.agreement_id) || agreement.channel_id !== this.channelId) throw new Error('Invalid browse agreement binding');
           const ref: AgreementBrowseRef = { key, agreement_id: agreement.agreement_id, revision_digest: agreement.revision_digest,
             slot: cloneSlot(agreement), activated_at: agreement.activated_at, published_checkpoint: cloneCheckpoint(batch.checkpoint) };
-          const existing = this.state.agreementsByKey.get(key) ?? pendingAgreements.get(key);
+          const pendingAgreement = pendingAgreements.get(key);
+          const existing = this.state.agreementsByKey.get(key) ?? pendingAgreement;
           if (existing) {
             if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
+            if (pendingAgreement && checkpointOrder(ref.published_checkpoint, pendingAgreement.published_checkpoint) < 0) {
+              pendingAgreement.published_checkpoint = cloneCheckpoint(ref.published_checkpoint);
+            }
             continue;
           }
           pendingAgreements.set(key, ref);
@@ -257,84 +268,75 @@ export class VerifiedBrowseIndex {
         return false;
       });
       committed = true;
-      // 2) 검증이 끝난 뒤에만 상태를 변경한다. 이 커밋의 체크포인트에 가시적인
-      //    캐시 선택 집합은 새 ref를 놓칠 수 있으므로 무효화한다 — 순서대로
-      //    들어오는 커밋은 기존 캐시의 at보다 항상 뒤라 유지된다.
-      for (const cachedKey of [...this.revisionCache.keys()]) {
-        const entry = this.revisionCache.get(cachedKey)!;
-        if (batchCheckpoints.some(committedCheckpoint => checkpointOrder(committedCheckpoint, entry.at) <= 0)) {
-          this.dropRevisionCacheEntry(cachedKey);
+      // 2) 실제로 반영되는 ref의 최소 체크포인트 이하의 at에 바인딩된 캐시 선택
+      //    집합만 무효화한다 — 상태를 바꾸지 않는 멱등·block-only 커밋은 캐시를
+      //    유지하고, 순서대로 들어오는 커밋도 기존 at보다 뒤라 유지된다.
+      const touched = [...freshRevisions, ...demotedRevisions, ...freshProposals, ...demotedProposals, ...freshAgreements, ...demotedAgreements];
+      if (touched.length) {
+        let minCommitted = touched[0].published_checkpoint;
+        for (const ref of touched) {
+          if (checkpointOrder(ref.published_checkpoint, minCommitted) < 0) minCommitted = ref.published_checkpoint;
+        }
+        for (const cachedKey of [...this.revisionCache.keys()]) {
+          if (checkpointOrder(minCommitted, this.revisionCache.get(cachedKey)!.at) <= 0) this.dropRevisionCacheEntry(cachedKey);
         }
       }
-      // 강등 대상은 기존 ref를 제거하고 더 이른 체크포인트의 ref로 재삽입해
-      // 정렬 위치를 다시 계산한다.
-      const removeRef = <T extends { key: string }>(list: T[] | undefined, ref: T): T[] =>
-        (list ?? []).filter(item => item !== ref);
-      for (const ref of demotedRevisions) {
-        const previous = state.revisionsByKey.get(ref.key)!;
-        state.revisionsByKey.delete(ref.key);
-        state.revisions = removeRef(state.revisions, previous);
-        state.revisionsBySlot.set(slotKey(previous.slot), removeRef(state.revisionsBySlot.get(slotKey(previous.slot)), previous));
-        state.revisionsByDocument.set(previous.slot.document_id, removeRef(state.revisionsByDocument.get(previous.slot.document_id), previous));
-        freshRevisions.push(ref);
-      }
-      for (const ref of demotedProposals) {
-        const previous = state.proposalsByKey.get(ref.key)!;
-        state.proposalsByKey.delete(ref.key);
-        state.proposals = removeRef(state.proposals, previous);
-        state.proposalsByRevision.set(previous.revision_digest, removeRef(state.proposalsByRevision.get(previous.revision_digest), previous));
-        freshProposals.push(ref);
-      }
-      for (const ref of demotedAgreements) {
-        const previous = state.agreementsByKey.get(ref.key)!;
-        state.agreementsByKey.delete(ref.key);
-        state.agreementsByRevision.set(previous.revision_digest, removeRef(state.agreementsByRevision.get(previous.revision_digest), previous));
-        freshAgreements.push(ref);
-      }
-      if (freshRevisions.length) {
-        freshRevisions.sort(compareRevisions);
-        state.revisions = prependLatest(freshRevisions, state.revisions, compareRevisions);
-        const bySlot = new Map<string, RevisionBrowseRef[]>();
-        const byDocument = new Map<string, RevisionBrowseRef[]>();
-        for (const ref of freshRevisions) {
-          state.revisionsByKey.set(ref.key, ref);
-          pushTo(bySlot, slotKey(ref.slot), ref);
-          pushTo(byDocument, ref.slot.document_id, ref);
-        }
-        for (const [key, refs] of bySlot) {
-          refs.sort(compareRevisions);
-          state.revisionsBySlot.set(key, prependLatest(refs, state.revisionsBySlot.get(key) ?? [], compareRevisions));
-        }
-        for (const [key, refs] of byDocument) {
-          refs.sort(compareRevisions);
-          state.revisionsByDocument.set(key, prependLatest(refs, state.revisionsByDocument.get(key) ?? [], compareRevisions));
-        }
-      }
-      if (freshProposals.length) {
-        freshProposals.sort(compareProposals);
-        state.proposals = prependLatest(freshProposals, state.proposals, compareProposals);
-        const byRevision = new Map<string, ProposalBrowseRef[]>();
-        for (const ref of freshProposals) {
-          state.proposalsByKey.set(ref.key, ref);
-          pushTo(byRevision, ref.revision_digest, ref);
-        }
-        for (const [key, refs] of byRevision) {
-          refs.sort(compareProposals);
-          state.proposalsByRevision.set(key, prependLatest(refs, state.proposalsByRevision.get(key) ?? [], compareProposals));
-        }
-      }
-      if (freshAgreements.length) {
-        const byRevision = new Map<string, AgreementBrowseRef[]>();
-        for (const ref of freshAgreements) {
-          state.agreementsByKey.set(ref.key, ref);
-          pushTo(byRevision, ref.revision_digest, ref);
-        }
-        for (const [key, refs] of byRevision) {
-          refs.sort(compareAgreements);
-          state.agreementsByRevision.set(key, prependLatest(refs, state.agreementsByRevision.get(key) ?? [], compareAgreements));
-        }
-      }
+      // 3) 강등은 기존 ref를 제거한 뒤 더 이른 체크포인트로 재삽입해 정렬 위치를
+      //    다시 계산하고, 신규 ref는 정렬 병합으로 반영한다.
+      this.mergeDelta({ fresh: freshRevisions, demoted: demotedRevisions, byKey: state.revisionsByKey, compare: compareRevisions,
+        all: { get: () => state.revisions, set: next => { state.revisions = next; } },
+        buckets: [
+          { map: state.revisionsBySlot, keyOf: ref => slotKey(ref.slot) },
+          { map: state.revisionsByDocument, keyOf: ref => ref.slot.document_id },
+        ] });
+      this.mergeDelta({ fresh: freshProposals, demoted: demotedProposals, byKey: state.proposalsByKey, compare: compareProposals,
+        all: { get: () => state.proposals, set: next => { state.proposals = next; } },
+        buckets: [{ map: state.proposalsByRevision, keyOf: ref => ref.revision_digest }] });
+      this.mergeDelta({ fresh: freshAgreements, demoted: demotedAgreements, byKey: state.agreementsByKey, compare: compareAgreements,
+        buckets: [{ map: state.agreementsByRevision, keyOf: ref => ref.revision_digest }] });
     } };
+  }
+
+  /** 한 종류의 델타를 커밋한다 — 강등 ref를 모든 색인에서 제거하고 fresh+demoted를 정렬 병합한다. */
+  private mergeDelta<Ref extends { key: string; published_checkpoint: Checkpoint }>(spec: {
+    fresh: Ref[];
+    demoted: Ref[];
+    byKey: Map<string, Ref>;
+    compare: (left: Ref, right: Ref) => number;
+    all?: { get(): Ref[]; set(next: Ref[]): void };
+    buckets: { map: Map<string, Ref[]>; keyOf: (ref: Ref) => string }[];
+  }): void {
+    const { fresh, demoted, byKey, compare, all, buckets } = spec;
+    if (demoted.length) {
+      const demotedKeys = new Set(demoted.map(ref => ref.key));
+      const keep = (item: Ref) => !demotedKeys.has(item.key);
+      if (all) all.set(all.get().filter(keep));
+      for (const key of demotedKeys) byKey.delete(key);
+      for (const bucket of buckets) {
+        for (const bucketKey of new Set(demoted.map(ref => bucket.keyOf(ref)))) {
+          bucket.map.set(bucketKey, (bucket.map.get(bucketKey) ?? []).filter(keep));
+        }
+      }
+    }
+    const incoming = [...fresh, ...demoted];
+    if (!incoming.length) return;
+    incoming.sort(compare);
+    if (all) all.set(prependLatest(incoming, all.get(), compare));
+    const grouped = buckets.map(() => new Map<string, Ref[]>());
+    for (const ref of incoming) {
+      byKey.set(ref.key, ref);
+      buckets.forEach((bucket, bucketIndex) => {
+        const bucketKey = bucket.keyOf(ref);
+        const list = grouped[bucketIndex].get(bucketKey);
+        if (list) list.push(ref); else grouped[bucketIndex].set(bucketKey, [ref]);
+      });
+    }
+    buckets.forEach((bucket, bucketIndex) => {
+      for (const [bucketKey, refs] of grouped[bucketIndex]) {
+        refs.sort(compare);
+        bucket.map.set(bucketKey, prependLatest(refs, bucket.map.get(bucketKey) ?? [], compare));
+      }
+    });
   }
 
   query<Q extends BrowseQuery>(query: Q): BrowseResult<Q> {
@@ -351,9 +353,11 @@ export class VerifiedBrowseIndex {
     const cacheKey = revisionCacheKey(query);
     const cached = this.revisionCache.get(cacheKey);
     if (cached) {
+      this.revisionCacheHits += 1;
       this.revisionCache.delete(cacheKey); this.revisionCache.set(cacheKey, cached);
       return page(cached.refs, query.offset, query.limit, cloneRevision);
     }
+    this.revisionCacheMisses += 1;
     let candidates: readonly RevisionBrowseRef[];
     if (query.mode === 'slot') {
       if (!query.slot || query.slot.channel_id !== this.channelId) throw new Error('Invalid browse slot');
@@ -393,14 +397,17 @@ export class VerifiedBrowseIndex {
       // 결과 건수가 상한을 넘는 선택 집합도 오프셋 페이지네이션이 같은 키로
       // 재질의하므로, 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러
       // O(문서²)가 된다. refs는 state의 객체를 공유하는 포인터 배열이므로 다른
-      // 항목을 비우고 단일 대형 항목으로 유지한다. 바이트만 넘는 작은 결과는
-      // 일반 경로로 두어 거대 키가 작업 세트를 밀어내지 않게 한다.
+      // 항목을 비우고 단일 대형 항목으로 유지한다.
       this.revisionCache.clear();
       this.revisionCacheRefs = 0;
       this.revisionCacheBytes = 0;
       this.oversizedRevisionKey = key;
       this.oversizedRevisionRefs = refs.length;
       this.oversizedRevisionBytes = estimatedBytes;
+    } else if (estimatedBytes > MAX_REVISION_CACHE_BYTES) {
+      // 바이트만 넘는 항목(거대 키 등)은 캐시하지 않는다 — 상주 대상은
+      // 페이지네이션이 재사용하는 큰 결과 집합뿐이다.
+      return;
     } else {
       // 일반 항목은 일반 예산 안에서만 축출한다 — 대형 항목을 밀어내면
       // 교차 워크로드에서 큰 선택 집합의 다음 페이지가 다시 전체 필터를 한다.

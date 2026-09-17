@@ -10,17 +10,21 @@ export class SearchMatchCache {
   private oversizedIds = 0;
   private oversizedBytes = 0;
   private oversizedKey: string | undefined;
+  private hits = 0;
+  private misses = 0;
 
   get(key: string): readonly string[] | undefined {
     const entry = this.entries.get(key);
-    if (!entry) return undefined;
+    if (!entry) { this.misses += 1; return undefined; }
+    this.hits += 1;
     this.entries.delete(key); this.entries.set(key, entry);
     return entry.ids;
   }
 
   /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
-  get stats(): { entries: number; ids: number; bytes: number; oversized: boolean } {
-    return { entries: this.entries.size, ids: this.ids, bytes: this.bytes, oversized: this.oversizedKey !== undefined };
+  get stats(): { entries: number; ids: number; bytes: number; oversized: boolean; hits: number; misses: number } {
+    return { entries: this.entries.size, ids: this.ids, bytes: this.bytes, oversized: this.oversizedKey !== undefined,
+      hits: this.hits, misses: this.misses };
   }
 
   put(key: string, ids: readonly string[]): void {
@@ -29,12 +33,15 @@ export class SearchMatchCache {
     // 결과 건수가 상한을 넘는 목록도 오프셋 페이지네이션이 같은 키로 재질의하므로,
     // 캐시하지 않으면 페이지마다 전체 원장을 다시 읽어 O(문서²)가 된다.
     // ids는 불변 다이제스트 문자열뿐이므로 다른 항목을 비우고 단일 대형 항목으로 유지한다.
-    // 바이트만 넘는 작은 결과는 일반 경로로 두어 거대 키가 작업 세트를 밀어내지 않게 한다.
     if (ids.length > MAX_IDS) {
       for (const existing of [...this.entries.keys()]) this.remove(existing);
       this.oversizedKey = key;
       this.oversizedIds = ids.length;
       this.oversizedBytes = bytes;
+    } else if (bytes > MAX_BYTES) {
+      // 바이트만 넘는 항목(거대 키 등)은 캐시하지 않는다 — 상주 대상은
+      // 페이지네이션이 재사용하는 큰 결과 집합뿐이다.
+      return;
     } else {
       // 일반 항목은 일반 예산 안에서만 축출한다 — 대형 항목을 밀어내면
       // 교차 워크로드에서 큰 질의의 다음 페이지가 다시 전체 스캔을 한다.

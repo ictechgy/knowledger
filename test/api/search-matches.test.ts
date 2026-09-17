@@ -51,12 +51,17 @@ test('re-putting the oversized key with a normal result resets oversized trackin
   assert.deepEqual(cache.get('normal-8'), ['revision-8']);
 });
 
-test('search match byte budget includes keys and retains oversized data as a single entry', () => {
+test('byte-only oversized entries are not cached and keep the normal working set', () => {
   const cache = new SearchMatchCache();
   cache.put('empty', []); assert.deepEqual(cache.get('empty'), []);
   const hugeKey = 'large-key'.repeat(300_000);
   cache.put(hugeKey, ['revision-one']);
   cache.put('large-id', ['x'.repeat(2 * 1024 * 1024)]);
-  assert.equal(cache.get('large-id')?.length, 1); assert.equal(cache.get(hugeKey), undefined);
-  assert.equal(cache.get('empty'), undefined, 'oversized entries replace the normal working set');
+  // 건수는 작지만 바이트가 초과되는 항목은 캐시하지 않는다 — 상주 대상은
+  // 페이지네이션이 재사용하는 큰 결과 집합뿐이고, 기존 작업 세트는 유지된다.
+  assert.equal(cache.get('large-id'), undefined);
+  assert.equal(cache.get(hugeKey), undefined);
+  assert.deepEqual(cache.get('empty'), [], 'byte-overflow puts must not wipe the normal working set');
+  assert.equal(cache.stats.entries, 1);
+  assert.equal(cache.stats.oversized, false);
 });

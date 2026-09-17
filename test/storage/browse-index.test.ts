@@ -153,6 +153,9 @@ test('oversized revision selections stay correct across offset pages and later c
     for (const item of result.items) seen.add(item.revision_digest);
   }
   assert.equal(seen.size, total);
+  // 첫 페이지만 캐시 미스이고 이후 오프셋 페이지는 캐시된 선택 집합을 재사용한다.
+  assert.equal(index.revisionCacheStats.misses, 1);
+  assert.equal(index.revisionCacheStats.hits, 19);
   // 대형 캐시 항목이 이후 커밋·다른 체크포인트의 결과를 오염시키지 않는다.
   const later = revision('revision-after-oversized', slot('doc-after'));
   commit(index, checkpoint(2), [[keyFor.revision(later.revision_digest), later]]);
@@ -264,6 +267,62 @@ test('an out-of-order duplicate commit lowers the published checkpoint so histor
   const propOlder = index.prepare([{ checkpoint: checkpoint(4), writes: [[propKey, prop]] }]);
   propNewer.commit(); propOlder.commit();
   assert.equal(index.query({ kind: 'proposals', at: checkpoint(4), offset: 0, limit: 10 }).total, 1);
+});
+
+test('duplicate keys within one prepare keep the earliest published checkpoint', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-same-prepare', slot('doc-same-prepare'));
+  const key = keyFor.revision(value.revision_digest);
+  // 커밋 단계 강등과 같은 규칙이 prepare 안의 배치 순서에도 적용돼야 한다 —
+  // 같은 키가 checkpoint 2 다음 checkpoint 1로 쓰이면 발행 체크포인트는 1이다.
+  index.prepare([
+    { checkpoint: checkpoint(2), writes: [[key, value]] },
+    { checkpoint: checkpoint(1), writes: [[key, value]] },
+  ]).commit();
+  const atOne = index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(atOne.total, 1);
+  assert.equal(atOne.items[0].published_checkpoint.block_number, 1);
+  // 반대 순서(1 다음 2)로 쓰여도 결과는 같다 — 순서에 의존하지 않는다.
+  const other = revision('revision-same-prepare-2', slot('doc-same-prepare-2'));
+  const otherKey = keyFor.revision(other.revision_digest);
+  index.prepare([
+    { checkpoint: checkpoint(3), writes: [[otherKey, other]] },
+    { checkpoint: checkpoint(4), writes: [[otherKey, other]] },
+  ]).commit();
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(3), offset: 0, limit: 10 })
+    .items.find(item => item.revision_digest === other.revision_digest)?.published_checkpoint.block_number, 3);
+});
+
+test('a byte-only oversized selection is not cached and keeps the working set', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-byte-key', slot('doc-byte-key'));
+  commit(index, checkpoint(1), [[keyFor.revision(value.revision_digest), value]]);
+  // 평범한 선택 집합을 먼저 캐시한다.
+  index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.entries, 1);
+  // 결과는 작지만 캐시 키가 바이트 예산을 넘는 질의는 캐시되지 않고
+  // 기존 작업 세트를 비우지도 않는다.
+  const giantDocument = 'doc-'.padEnd(700 * 1024, 'x');
+  const result = index.query({ kind: 'revisions', mode: 'document', document_id: giantDocument, at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(result.total, 0);
+  assert.equal(index.revisionCacheStats.entries, 1, 'byte-overflow selections are not cached');
+  assert.equal(index.revisionCacheStats.oversized, false);
+});
+
+test('no-op commits keep cached selections valid', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-noop', slot('doc-noop'));
+  const key = keyFor.revision(value.revision_digest);
+  commit(index, checkpoint(1), [[key, value]]);
+  index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.entries, 1);
+  // block-only 배치는 쓰기가 없어 상태가 변하지 않는다 — 캐시를 유지한다.
+  const blockOnly = { ...checkpoint(2), transaction_index: -1, transaction_id: '' };
+  index.prepare([{ checkpoint: blockOnly, writes: [] }]).commit();
+  assert.equal(index.revisionCacheStats.entries, 1, 'block-only commits do not invalidate the cache');
+  // 전부 중복이라 실제로 아무것도 반영하지 않는 커밋도 캐시를 유지한다.
+  index.prepare([{ checkpoint: checkpoint(1), writes: [[key, value]] }]).commit();
+  assert.equal(index.revisionCacheStats.entries, 1, 'fully deduplicated commits do not invalidate the cache');
 });
 
 test('a commit invalidates cached selections whose checkpoint can see the new writes', () => {

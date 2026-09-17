@@ -217,6 +217,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   // 1) 동일 생성 절차로 로컬 저널을 만든다. --journal이면 기존 저널을 재사용한다.
   const definition = demoDefinition();
   const journalSource = input.journalPath ? resolve(input.journalPath) : localLedgerPath;
+  if (input.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
   if (!input.journalPath) {
     let localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
     let localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
