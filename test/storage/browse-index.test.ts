@@ -135,6 +135,31 @@ test('browse refs preserve ordering, full slots, pages, and exact historical vis
   assert.equal(index.query({ kind: 'revisions', mode: 'latest-per-slot', scope_id: 'scope-browse', at: checkpoint(9), offset: 0, limit: 10 }).items[0].revision_digest, later.revision_digest);
 });
 
+test('oversized revision selections stay correct across offset pages and later commits', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const total = 20_000;
+  const writes: [string, unknown][] = [];
+  for (let index_ = 0; index_ < total; index_++) {
+    const value = revision(`revision-oversized-${index_}`, slot(`doc-oversized-${index_}`));
+    writes.push([keyFor.revision(value.revision_digest), value]);
+  }
+  commit(index, checkpoint(1), writes);
+  const at = checkpoint(1);
+  // 캐시 상한(16,384 refs)을 넘는 결과 집합도 모든 오프셋 페이지가 정확해야 한다.
+  const seen = new Set<string>();
+  for (let offset = 0; offset < total; offset += 1000) {
+    const result = index.query({ kind: 'revisions', mode: 'all', at, offset, limit: 1000 });
+    assert.equal(result.total, total);
+    for (const item of result.items) seen.add(item.revision_digest);
+  }
+  assert.equal(seen.size, total);
+  // 대형 캐시 항목이 이후 커밋·다른 체크포인트의 결과를 오염시키지 않는다.
+  const later = revision('revision-after-oversized', slot('doc-after'));
+  commit(index, checkpoint(2), [[keyFor.revision(later.revision_digest), later]]);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 1 }).items[0].revision_digest, later.revision_digest);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at, offset: 0, limit: 1 }).total, total);
+});
+
 test('later mutable writes cannot change indexed identity, order, or full-slot fields', () => {
   const index = new VerifiedBrowseIndex(CHANNEL);
   const value = revision('revision-mutable', slot('document-mutable'));

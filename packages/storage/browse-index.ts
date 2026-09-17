@@ -280,15 +280,24 @@ export class VerifiedBrowseIndex {
 
   private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[]): void {
     const estimatedBytes = Buffer.byteLength(key) + refs.length * ESTIMATED_REF_POINTER_BYTES;
-    if (refs.length > MAX_REVISION_CACHE_REFS || estimatedBytes > MAX_REVISION_CACHE_BYTES) return;
-    while (this.revisionCache.size >= MAX_REVISION_CACHE_ENTRIES
-      || this.revisionCacheRefs + refs.length > MAX_REVISION_CACHE_REFS
-      || this.revisionCacheBytes + estimatedBytes > MAX_REVISION_CACHE_BYTES) {
-      const oldest = this.revisionCache.entries().next().value as [string, RevisionCacheEntry] | undefined;
-      if (!oldest) break;
-      this.revisionCache.delete(oldest[0]);
-      this.revisionCacheRefs -= oldest[1].refs.length;
-      this.revisionCacheBytes -= oldest[1].estimatedBytes;
+    if (refs.length > MAX_REVISION_CACHE_REFS || estimatedBytes > MAX_REVISION_CACHE_BYTES) {
+      // 상한을 넘는 결과 집합도 오프셋 페이지네이션이 같은 키로 재질의하므로,
+      // 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러 O(문서²)가 된다.
+      // refs는 state의 객체를 공유하는 포인터 배열이므로 다른 항목을 비우고
+      // 단일 대형 항목으로 유지한다.
+      this.revisionCache.clear();
+      this.revisionCacheRefs = 0;
+      this.revisionCacheBytes = 0;
+    } else {
+      while (this.revisionCache.size >= MAX_REVISION_CACHE_ENTRIES
+        || this.revisionCacheRefs + refs.length > MAX_REVISION_CACHE_REFS
+        || this.revisionCacheBytes + estimatedBytes > MAX_REVISION_CACHE_BYTES) {
+        const oldest = this.revisionCache.entries().next().value as [string, RevisionCacheEntry] | undefined;
+        if (!oldest) break;
+        this.revisionCache.delete(oldest[0]);
+        this.revisionCacheRefs -= oldest[1].refs.length;
+        this.revisionCacheBytes -= oldest[1].estimatedBytes;
+      }
     }
     const entry = { refs: [...refs], estimatedBytes };
     this.revisionCache.set(key, entry);
