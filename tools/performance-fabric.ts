@@ -237,7 +237,13 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   try {
     // --journal은 검증과 재생을 같은 읽기 트랜잭션 스냅샷에 묶는다 — 검증 사이에
     // 파일이 바뀌어 섞이지 않는다. 자체 생성 저널은 LocalLedger 생성자가 검증했다.
-    journalDb = new DatabaseSync(journalSource, { readOnly: true });
+    // read-only 오픈은 WAL 미체크포인트 데이터가 있고 SHM이 없는 저널에서 실패할 수 있다 —
+    // 그 경우 명확한 안내를 낸다(immutable로 우회하면 미체크포인트 트랜잭션을 조용히 잃는다).
+    try {
+      journalDb = new DatabaseSync(journalSource, { readOnly: true });
+    } catch (error) {
+      throw new Error(`cannot open journal read-only (checkpoint the journal by closing its writer first): ${journalSource}`, { cause: error });
+    }
     journalDb.exec('BEGIN');
     if (input.journalPath) verifyJournalDb(journalDb, CHANNEL_ID);
     const ingest = ingestJournal(journalDb, projection, options.txPerBlock);

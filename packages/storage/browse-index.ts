@@ -402,6 +402,13 @@ export class VerifiedBrowseIndex {
     for (const selector of [query.document_id, query.context_id, query.scope_id, query.usage_scope]) {
       if (selector !== undefined && (typeof selector !== 'string' || selector.length < 1)) throw new Error('Invalid browse revision selector');
     }
+    // 캐시 조회 전에 mode·slot 형태를 전부 검증한다 — 유효 질의만 캐시를 만진다.
+    if (query.mode === 'slot') {
+      if (!query.slot || query.slot.channel_id !== this.channelId) throw new Error('Invalid browse slot');
+      slotKey(query.slot);
+    } else if (query.mode === 'document') {
+      if (typeof query.document_id !== 'string' || query.document_id.length < 1) throw new Error('Invalid browse document');
+    } else if (query.mode !== 'all' && query.mode !== 'latest-per-slot') throw new Error('Invalid browse revision mode');
     const cacheKey = revisionCacheKey(query);
     const cached = this.revisionCache.get(cacheKey);
     if (cached) {
@@ -409,17 +416,11 @@ export class VerifiedBrowseIndex {
       this.revisionCache.delete(cacheKey); this.revisionCache.set(cacheKey, cached);
       return page(cached.refs, query.offset, query.limit, cloneRevision);
     }
-    let candidates: readonly RevisionBrowseRef[];
-    if (query.mode === 'slot') {
-      if (!query.slot || query.slot.channel_id !== this.channelId) throw new Error('Invalid browse slot');
-      candidates = this.state.revisionsBySlot.get(slotKey(query.slot)) ?? [];
-    } else if (query.mode === 'document') {
-      if (typeof query.document_id !== 'string' || query.document_id.length < 1) throw new Error('Invalid browse document');
-      candidates = this.state.revisionsByDocument.get(query.document_id) ?? [];
-    } else if (query.mode === 'all' || query.mode === 'latest-per-slot') candidates = this.state.revisions;
-    else throw new Error('Invalid browse revision mode');
-    // 검증을 통과한 미스만 계수한다 — 거부된 질의는 캐시 적중률을 왜곡하지 않는다.
     this.revisionCacheMisses += 1;
+    const candidates: readonly RevisionBrowseRef[] =
+      query.mode === 'slot' ? this.state.revisionsBySlot.get(slotKey(query.slot!)) ?? []
+      : query.mode === 'document' ? this.state.revisionsByDocument.get(query.document_id!) ?? []
+      : this.state.revisions;
     let selected = candidates.filter(item => visible(item.published_checkpoint, query.at)
       && (query.document_id === undefined || item.slot.document_id === query.document_id)
       && (query.context_id === undefined || item.slot.context_id === query.context_id)
