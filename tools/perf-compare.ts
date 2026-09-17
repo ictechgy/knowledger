@@ -5,12 +5,12 @@
  * regression은 임계값 대비 명시적 비율로 판정한다.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { resolve } from 'node:path';
 
 /** 성능 결과 JSON의 스키마 버전 — 비교 대상 필드가 바뀌면 올려 구 baseline을 명확히 거절한다. */
-export const RESULT_SCHEMA_VERSION = 2;
+export const RESULT_SCHEMA_VERSION = 3;
 
 /**
  * 비교 입력 오류 — 잘못된 baseline 파일·임계값·호환성 등 사용자 입력 문제와
@@ -52,7 +52,7 @@ export function validateBaselineShape(baseline: unknown, expectedMode: string): 
     }
   }
   const environment = record.environment as Record<string, unknown>;
-  for (const field of ['node', 'platform', 'arch'] as const) {
+  for (const field of ['node', 'platform', 'arch', 'cpu_model'] as const) {
     if (typeof environment[field] !== 'string') {
       throw new ComparisonInputError(`baseline environment.${field} is missing or is not a string; regenerate the baseline with the same tool`);
     }
@@ -73,9 +73,11 @@ export function validateMetricValue(value: unknown, label: string): number {
   return value;
 }
 
-/** 현재 실행 환경 정보 — baseline 호환성 검사는 측정 전에도 계산 가능한 이 값으로 한다. */
-export function currentEnvironment(): { node: string; platform: string; arch: string; cpu_count: number } {
-  return { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length };
+/** 현재 실행 환경 정보 — baseline 호환성 검사는 측정 전에도 계산 가능한 이 값으로 한다.
+cpu_model을 포함한다 — Node·플랫폼·코어 수만 같아도 다른 프로세서일 수 있으므로
+"같은 환경" 주장이 실제로 같은 머신 등급을 요구하도록 한다. */
+export function currentEnvironment(): { node: string; platform: string; arch: string; cpu_count: number; cpu_model: string } {
+  return { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length, cpu_model: cpus()[0]?.model ?? 'unknown' };
 }
 
 /**
@@ -84,7 +86,7 @@ export function currentEnvironment(): { node: string; platform: string; arch: st
  */
 export function assertEnvironmentComparable(baseline: Record<string, any>, current: Record<string, any>): void {
   const mismatches: string[] = [];
-  for (const field of ['node', 'platform', 'arch', 'cpu_count'] as const) {
+  for (const field of ['node', 'platform', 'arch', 'cpu_count', 'cpu_model'] as const) {
     if (baseline[field] !== current[field]) {
       mismatches.push(`${field} ${JSON.stringify(baseline[field])} -> ${JSON.stringify(current[field])}`);
     }
@@ -107,24 +109,12 @@ export function assertComparable(
   if (baseline.mode !== current.mode) {
     throw new ComparisonInputError(`baseline mode ${JSON.stringify(baseline.mode)} does not match this run's mode ${JSON.stringify(current.mode)}; use a baseline produced by the same tool`);
   }
-  assertEnvironmentComparable(baseline.environment as Record<string, any>, current.environment);
-  const baselineDataset = baseline.dataset;
-  if (!baselineDataset || typeof baselineDataset !== 'object' || Array.isArray(baselineDataset)) {
-    throw new ComparisonInputError('baseline is missing the "dataset" section; regenerate the baseline with the same tool');
+  const environment = baseline.environment;
+  if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+    throw new ComparisonInputError('baseline is missing the "environment" section; regenerate the baseline with the same tool');
   }
-  const baselineRecord = baselineDataset as Record<string, any>;
-  const mismatches: string[] = [];
-  for (const field of datasetFields) {
-    if (!current.dataset || !(field in current.dataset)) {
-      throw new ComparisonInputError(`current result is missing dataset.${field}; this tool version is incompatible with the baseline`);
-    }
-    if (baselineRecord[field] !== current.dataset[field]) {
-      mismatches.push(`dataset.${field} ${JSON.stringify(baselineRecord[field])} -> ${JSON.stringify(current.dataset[field])}`);
-    }
-  }
-  if (mismatches.length) {
-    throw new ComparisonInputError(`baseline is not comparable with this run — same mode, environment, and dataset are required. Differences: ${mismatches.join('; ')}. Re-measure both runs with identical dataset options or keep baselines separate.`);
-  }
+  assertEnvironmentComparable(environment as Record<string, any>, current.environment);
+  assertDatasetComparable(baseline.dataset, current.dataset, datasetFields, { requireAllFields: true });
 }
 
 /**
@@ -266,21 +256,80 @@ export function assertDatasetComparable(
   baselineDataset: unknown,
   planned: Record<string, any>,
   datasetFields: readonly string[],
+  options: { requireAllFields?: boolean } = {},
 ): void {
   if (!baselineDataset || typeof baselineDataset !== 'object' || Array.isArray(baselineDataset)) {
     throw new ComparisonInputError('baseline is missing the "dataset" section; regenerate the baseline with the same tool');
   }
+  if (!planned || typeof planned !== 'object' || Array.isArray(planned)) {
+    throw new ComparisonInputError('current result is missing the "dataset" section; this tool version is incompatible with the baseline');
+  }
   const record = baselineDataset as Record<string, any>;
   const mismatches: string[] = [];
   for (const field of datasetFields) {
-    if (!(field in planned)) continue;
+    if (!(field in planned)) {
+      if (options.requireAllFields) {
+        throw new ComparisonInputError(`current result is missing dataset.${field}; this tool version is incompatible with the baseline`);
+      }
+      continue;
+    }
     if (record[field] !== planned[field]) {
       mismatches.push(`dataset.${field} ${JSON.stringify(record[field])} -> ${JSON.stringify(planned[field])}`);
     }
   }
   if (mismatches.length) {
-    throw new ComparisonInputError(`baseline dataset is not comparable with this run's options. Differences: ${mismatches.join('; ')}. Re-measure both runs with identical dataset options or keep baselines separate.`);
+    throw new ComparisonInputError(`baseline is not comparable with this run — same mode, environment, and dataset are required. Differences: ${mismatches.join('; ')}. Re-measure both runs with identical dataset options or keep baselines separate.`);
   }
+}
+
+/**
+ * --out이 --baseline과 같은 파일을 가리키는지 확인한다. 같은 파일이면 결과 기록이
+ * baseline을 덮어써 기준을 파괴하고, 회귀한 결과가 다음 비교의 기준이 되는
+ * ratcheting을 일으킨다. 심볼릭링크는 realpath로, 하드링크는 dev/ino로 판별한다.
+ */
+export function assertDistinctOutputPath(outPath: string, baselinePath: string): void {
+  const resolvedOut = resolve(outPath);
+  const resolvedBaseline = resolve(baselinePath);
+  const real = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  const samePath = real(resolvedOut) === real(resolvedBaseline);
+  let sameInode = false;
+  try {
+    const outStat = statSync(resolvedOut);
+    const baselineStat = statSync(resolvedBaseline);
+    sameInode = outStat.dev === baselineStat.dev && outStat.ino === baselineStat.ino;
+  } catch {
+    // 어느 한쪽 파일이 아직 없으면 경로 비교 결과만 신뢰한다.
+  }
+  if (samePath || sameInode) {
+    throw new ComparisonInputError(`--out "${outPath}" resolves to the same file as --baseline "${baselinePath}"; write results to a different file to keep the baseline intact`);
+  }
+}
+
+/**
+ * 두 성능 CLI가 공유하는 측정 전 비교 준비 — --threshold의 --baseline 요구,
+ * 임계값 파싱, --out/--baseline 경로 충돌 거절, baseline 로드·검증, 옵션 파생
+ * dataset 필드의 사전 비교를 한 곳에서 한다.
+ */
+export function prepareCliComparison(spec: {
+  baselinePath?: string;
+  thresholdText?: string;
+  outPath?: string;
+  mode: string;
+  metricNames: readonly string[];
+  datasetFields: readonly string[];
+  planned: Record<string, any>;
+}): { baseline?: { path: string; data: Record<string, any> }; thresholds: Record<string, number> } {
+  if (spec.thresholdText !== undefined && !spec.baselinePath) {
+    throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
+  }
+  const thresholds = spec.thresholdText === undefined ? {} : parseThresholds(spec.thresholdText, spec.metricNames);
+  if (!spec.baselinePath) return { thresholds };
+  if (spec.outPath) assertDistinctOutputPath(spec.outPath, spec.baselinePath);
+  // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경·메트릭 키 불일치로 긴 측정을 낭비하지 않기 위해서다.
+  const data = loadValidatedBaseline(spec.baselinePath, spec.mode, spec.metricNames);
+  // 옵션으로 정해지는 dataset 필드도 미리 비교한다 — 잘못된 플래그 조합은 측정 전에 거절한다.
+  assertDatasetComparable(data.dataset, spec.planned, spec.datasetFields);
+  return { baseline: { path: spec.baselinePath, data }, thresholds };
 }
 
 /** reportCliResult가 요구하는 결과 형태 — 두 성능 도구의 결과 타입이 구조적으로 만족한다. */
@@ -316,7 +365,20 @@ export function reportCliResult<T extends ComparableResult>(spec: {
     }
   }
   const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
-  if (outPath) { mkdirSync(resolve(outPath, '..'), { recursive: true, mode: 0o700 }); writeFileSync(outPath, `${output}\n`, { mode: 0o600 }); }
+  if (outPath) {
+    // CLI 경로는 prepareCliComparison이 측정 전에 거절하지만, 직접 호출에도 baseline 파괴를 막는다.
+    if (baseline) assertDistinctOutputPath(outPath, baseline.path);
+    try {
+      mkdirSync(resolve(outPath, '..'), { recursive: true, mode: 0o700 });
+      writeFileSync(outPath, `${output}\n`, { mode: 0o600 });
+    } catch (error) {
+      // 쓰기 실패가 먼저 잡힌 비교 오류를 가리지 않게 원인을 함께 보고한다.
+      if (comparisonError) {
+        throw new ComparisonInputError(`failed to write result to --out "${outPath}": ${(error as Error).message}; comparison had already failed: ${(comparisonError as Error).message}`);
+      }
+      throw error;
+    }
+  }
   process.stdout.write(`${output}\n`);
   if (comparisonError) throw comparisonError;
   if (comparison && comparison.regressions.length) {

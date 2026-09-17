@@ -20,7 +20,7 @@ import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../ex
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { browseAll, directoryBytes, generateSyntheticDocument, latency, marker } from './performance-smoke.ts';
 import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke.ts';
-import { assertDatasetComparable, ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
@@ -60,9 +60,10 @@ function ensureFabricDeps(): Promise<void> {
 
 const MAX_TX_PER_BLOCK = 500;
 const DEFAULT_TX_PER_BLOCK = 50;
-// journal_transactions·fabric_blocks는 --journal 내용이 다르면 달라지는 workload 식별자다 —
-// 비교 필드에 포함해 다른 저널로 측정한 baseline이 comparable로 통과하지 않게 한다.
-const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload', 'journal_transactions', 'fabric_blocks'] as const;
+// journal_source·journal_digest·journal_transactions·fabric_blocks는 --journal 내용이 다르면
+// 달라지는 workload 식별자다 — 개수만 비교하면 내용이 다른 동일 개수 저널이 comparable로
+// 통과하므로 원본 종류와 내용 다이제스트까지 비교 필드에 포함한다.
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload', 'journal_source', 'journal_transactions', 'fabric_blocks', 'journal_digest'] as const;
 const COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
 
 interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number; journalPath?: string }
@@ -70,8 +71,8 @@ interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: numb
 export interface FabricSmokeResult {
   schema_version: typeof RESULT_SCHEMA_VERSION;
   mode: 'fabric-adapter-synthetic';
-  environment: { node: string; platform: string; arch: string; cpu_count: number };
-  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; journal_transactions: number; fabric_blocks: number; tx_per_block: number; marker: string; read_workload: 'all_pages_summary' };
+  environment: ReturnType<typeof currentEnvironment>;
+  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; journal_source: 'generated' | 'external'; journal_transactions: number; fabric_blocks: number; journal_digest: string; tx_per_block: number; marker: string; read_workload: 'all_pages_summary' };
   metrics: {
     ingest_total_ms: number;
     ingest_per_block_ms: number;
@@ -160,9 +161,12 @@ function blockBytes(number: number, entries: Uint8Array[], previousHashHex: stri
   return { bytes: block.serializeBinary(), hash: fabricBlockHeaderHash(header) };
 }
 
-/** 이미 열린 저널 스냅샷을 순서대로 읽어 합성 블록을 만들어 projection에 재생한다. */
-function ingestJournal(journal: DatabaseSync, projection: { applyBlock(block: Uint8Array): void }, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number } {
+/** 이미 열린 저널 스냅샷을 순서대로 읽어 합성 블록을 만들어 projection에 재생한다.
+외부 저널(--journal)의 workload 식별을 위해 레코드 내용의 SHA-256도 함께 누적한다 —
+자체 생성 저널은 타임스탬프·txid 때문에 실행마다 이 값이 달라져 생성 스펙 다이제스트를 쓴다. */
+function ingestJournal(journal: DatabaseSync, projection: { applyBlock(block: Uint8Array): void }, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number; journalDigest: string } {
   const rows = journal.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
+  const journalHash = createHash('sha256');
   let pending: Uint8Array[] = [];
   let blockNumber = 0;
   let previousHash = '';
@@ -178,13 +182,19 @@ function ingestJournal(journal: DatabaseSync, projection: { applyBlock(block: Ui
     pending = [];
   };
   for (const row of rows) {
+    journalHash.update(row.record_json);
     const event = JSON.parse(row.record_json);
     pending.push(transaction(event.checkpoint.transaction_id, event.timestamp, event.writes));
     transactions++;
     if (pending.length >= txPerBlock) flush();
   }
   flush();
-  return { transactions, blocks: blockNumber, tipHash: previousHash, applyMs };
+  return { transactions, blocks: blockNumber, tipHash: previousHash, applyMs, journalDigest: journalHash.digest('hex') };
+}
+
+/** 자체 생성 저널의 workload 식별 다이제스트 — 생성 입력이 같으면 저널 레코드의 타임스탬프와 무관하게 같다. */
+function generatedJournalDigest(options: { documents: number; bodyBytes: number; slotGroups: number; txPerBlock: number }): string {
+  return createHash('sha256').update(`generated:${options.documents}:${options.bodyBytes}:${options.slotGroups}:${options.txPerBlock}:${marker}`).digest('hex');
 }
 
 function boundedInteger(value: unknown, name: string, min: number, max: number): number {
@@ -326,7 +336,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       schema_version: RESULT_SCHEMA_VERSION,
       mode: 'fabric-adapter-synthetic',
       environment: currentEnvironment(),
-      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, journal_transactions: ingest.transactions, fabric_blocks: ingest.blocks, tx_per_block: options.txPerBlock, marker, read_workload: 'all_pages_summary' },
+      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, journal_source: input.journalPath ? 'external' : 'generated', journal_transactions: ingest.transactions, fabric_blocks: ingest.blocks, journal_digest: input.journalPath ? ingest.journalDigest : generatedJournalDigest(options), tx_per_block: options.txPerBlock, marker, read_workload: 'all_pages_summary' },
       metrics: { ingest_total_ms: ingest.applyMs, ingest_per_block_ms: ingest.blocks ? ingest.applyMs / ingest.blocks : 0, search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
         documents_generated: generated.length,
@@ -378,19 +388,18 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
-    if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
-    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
-    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경·메트릭 키 불일치로 긴 측정을 낭비하지 않기 위해서다.
-    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'fabric-adapter-synthetic', COMPARABLE_METRICS) } : undefined;
-    // 옵션으로 정해지는 dataset 필드도 미리 비교한다 — journal_transactions·fabric_blocks는
-    // 측정 전에 알 수 없으므로 측정 후 assertComparable이 다시 확인한다.
-    if (baseline) {
-      const planned = normalizeOptions(parsed.options);
-      assertDatasetComparable(baseline.data.dataset, {
-        documents_requested: planned.documents, body_bytes: planned.bodyBytes, samples: planned.samples,
-        slot_groups: planned.slotGroups, tx_per_block: planned.txPerBlock, read_workload: 'all_pages_summary',
-      }, COMPARABLE_DATASET_FIELDS);
-    }
+    const normalized = normalizeOptions(parsed.options);
+    const { baseline, thresholds } = prepareCliComparison({
+      baselinePath: parsed.baselinePath, thresholdText: parsed.thresholdText, outPath: parsed.out,
+      mode: 'fabric-adapter-synthetic', metricNames: COMPARABLE_METRICS, datasetFields: COMPARABLE_DATASET_FIELDS,
+      // journal_transactions·fabric_blocks·journal_digest는 저널을 읽기 전에는 알 수 없으므로
+      // 측정 후 assertComparable이 다시 확인한다.
+      planned: {
+        documents_requested: normalized.documents, body_bytes: normalized.bodyBytes, samples: normalized.samples,
+        slot_groups: normalized.slotGroups, tx_per_block: normalized.txPerBlock, read_workload: 'all_pages_summary',
+        journal_source: parsed.options.journalPath ? 'external' : 'generated',
+      },
+    });
     const result = await runFabricPerformance(parsed.options);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {

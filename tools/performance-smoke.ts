@@ -8,7 +8,7 @@ import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
-import { assertDatasetComparable, ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { ComparisonInputError, currentEnvironment, prepareCliComparison, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
 const MAX_DOCUMENTS = 100_000;
@@ -34,7 +34,7 @@ export interface PerformanceSmokeOptions {
 export interface PerformanceSmokeResult {
   schema_version: typeof RESULT_SCHEMA_VERSION;
   mode: 'local-simulation';
-  environment: { node: string; platform: string; arch: string; cpu_count: number };
+  environment: ReturnType<typeof currentEnvironment>;
   dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary'; search_queries: readonly string[]; search_probes: 'multi_query' };
   metrics: {
     publish: LatencyMetric;
@@ -215,19 +215,20 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     // 모든 샘플이 실제 cache-miss 전체 스캔을 측정한다. 캐시 내부를 건드리지 않고
     // 재생이 완료된 동일 원장 상태만 재사용한다 — initialize()는 열린 원장의 tail
     // 확인과 구성 검사뿐이라 저널 재생 없이 가볍다.
-    // 첫 cold 서비스에서 미등록 검색어를 한번 질의해 0건 기능 가드도 함께 확인한다.
+    // 미등록 검색어 0건 가드는 타이밍 뒤에 둔다 — probe가 먼저 실행되면 첫 샘플만
+    // 다른 사전 상태에서 측정돼 cold 샘플이 이질적이 된다.
     for (let sample = 0; sample < options.samples; sample += 1) {
       const coldService = new KnowledgerService(ledger, vault, definition);
       await coldService.initialize();
-      if (sample === 0) {
-        const coldProbe = await browseAll(coldService, true, COLD_CACHE_QUERY);
-        if (coldProbe.length !== 0) throw new Error('cold cache probe unexpectedly matched documents');
-      }
       const started = performance.now();
       const search = await browseAll(coldService, true);
       searchColdTimes.push(performance.now() - started);
       if (search.length !== options.documents) throw new Error('cold search result count mismatch');
       coldSearchMatches = search.length;
+      if (sample === 0) {
+        const coldProbe = await browseAll(coldService, true, COLD_CACHE_QUERY);
+        if (coldProbe.length !== 0) throw new Error('cold cache probe unexpectedly matched documents');
+      }
     }
 
     const databaseBytesBeforeReplay = directoryBytes(options.dataDir);
@@ -298,18 +299,15 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
-    if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
-    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
-    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경·메트릭 키 불일치로 긴 측정을 낭비하지 않기 위해서다.
-    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'local-simulation', COMPARABLE_METRICS) } : undefined;
-    // 옵션으로 정해지는 dataset 필드도 미리 비교한다 — 잘못된 플래그 조합은 측정 전에 거절한다.
-    if (baseline) {
-      const planned = validateOptions(parsed.options);
-      assertDatasetComparable(baseline.data.dataset, {
-        documents_requested: planned.documents, body_bytes: planned.bodyBytes, samples: planned.samples,
-        slot_groups: planned.slotGroups, marker, read_workload: 'all_pages_summary', search_probes: 'multi_query',
-      }, COMPARABLE_DATASET_FIELDS);
-    }
+    const normalized = validateOptions(parsed.options);
+    const { baseline, thresholds } = prepareCliComparison({
+      baselinePath: parsed.baselinePath, thresholdText: parsed.thresholdText, outPath: parsed.out,
+      mode: 'local-simulation', metricNames: COMPARABLE_METRICS, datasetFields: COMPARABLE_DATASET_FIELDS,
+      planned: {
+        documents_requested: normalized.documents, body_bytes: normalized.bodyBytes, samples: normalized.samples,
+        slot_groups: normalized.slotGroups, marker, read_workload: 'all_pages_summary', search_probes: 'multi_query',
+      },
+    });
     const result = await runPerformanceSmoke(parsed.options);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {

@@ -156,11 +156,16 @@ test('performance smoke CLI rejects incomparable baselines with actionable error
   const thresholdWithoutBaseline = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), '--documents', '2', '--threshold', 'search=0.1'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(thresholdWithoutBaseline.status, 1);
   assert.match(thresholdWithoutBaseline.stderr, /--threshold requires --baseline/);
+  // --out이 --baseline과 같은 파일이면 측정 전에 거절해 baseline을 보존한다.
+  const sameFile = spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), '--documents', '2', '--samples', '1', '--body-bytes', '1', '--baseline', 'baseline.json', '--out', 'baseline.json'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
+  assert.equal(sameFile.status, 1);
+  assert.match(sameFile.stderr, /same file as --baseline/);
+  assert.equal(JSON.parse(readFileSync(join(root, 'baseline.json'), 'utf8')).mode, 'local-simulation');
 });
 
 test('compareMetrics handles boundary ratios, baseline zero, and invalid baselines deterministically', async () => {
   const { compareMetrics, RESULT_SCHEMA_VERSION } = await import('../../tools/perf-compare.ts');
-  const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8 };
+  const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8, cpu_model: 'test-cpu' };
   const dataset = { documents_requested: 2 };
   const fields = ['documents_requested'] as const;
   const metrics = ['search'] as const;
@@ -179,6 +184,29 @@ test('compareMetrics handles boundary ratios, baseline zero, and invalid baselin
   assert.throws(() => compareMetrics({ schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset, metrics: {}, functional_assertions: {} }, current(1), fields, metrics, {}), /metric baseline\.metrics\.search is missing/);
   assert.throws(() => compareMetrics({ ...baseline(1), schema_version: 1 }, current(1), fields, metrics, {}), /schema_version/);
   assert.throws(() => compareMetrics({ ...baseline(1), mode: 'fabric-adapter-synthetic' }, current(1), fields, metrics, {}), /mode/);
+  // 현재 결과에 비교 대상 dataset 필드가 없으면 호환 불가 오류다.
+  assert.throws(() => compareMetrics(baseline(1), { ...current(1), dataset: {} }, fields, metrics, {}), /missing dataset\.documents_requested/);
+  // environment 섹션이 없는 baseline도 ComparisonInputError로 거절한다(TypeError가 아니다).
+  assert.throws(() => compareMetrics({ ...baseline(1), environment: undefined }, current(1), fields, metrics, {}), /missing the "environment" section/);
+});
+
+test('assertDistinctOutputPath rejects --out aliases of the baseline file', async () => {
+  const { assertDistinctOutputPath, ComparisonInputError } = await import('../../tools/perf-compare.ts');
+  const { linkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-out-collision-'));
+  try {
+    const baseline = join(root, 'baseline.json');
+    writeFileSync(baseline, '{}');
+    // 같은 파일·심볼릭링크·하드링크 별칭은 모두 거절한다 — 결과가 baseline을 덮어쓰면 안 된다.
+    assert.throws(() => assertDistinctOutputPath(baseline, baseline), ComparisonInputError);
+    const hardlink = join(root, 'baseline-alias.json');
+    linkSync(baseline, hardlink);
+    assert.throws(() => assertDistinctOutputPath(hardlink, baseline), ComparisonInputError);
+    // 다른 경로와 아직 존재하지 않는 출력 경로는 통과한다.
+    assertDistinctOutputPath(join(root, 'out.json'), baseline);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('reportCliResult preserves the measured result when comparison input fails', async () => {
@@ -186,7 +214,7 @@ test('reportCliResult preserves the measured result when comparison input fails'
   const root = mkdtempSync(join(tmpdir(), 'knowledger-report-preserve-'));
   try {
     const outPath = join(root, 'out.json');
-    const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8 };
+    const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8, cpu_model: 'test-cpu' };
     const result = { mode: 'local-simulation', environment, dataset: { documents_requested: 2 }, metrics: { search: { p95_ms: 1 } } };
     const baseline = { schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset: { documents_requested: 3 }, metrics: { search: { p95_ms: 1 } }, functional_assertions: {} };
     const originalWrite = process.stdout.write.bind(process.stdout);
