@@ -11,14 +11,28 @@ test('search matches retain only immutable ID lists with bounded entry and total
   const large = Array.from({ length: 12_000 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
   cache.put('large-first', large); cache.put('large-second', large);
   assert.equal(cache.get('large-first'), undefined); assert.equal(cache.get('large-second')?.length, 12_000);
-  cache.put('oversized', [...large, ...large]); assert.equal(cache.get('oversized'), undefined);
-  assert.equal(cache.get('large-second')?.length, 12_000, 'oversized results do not evict useful cached pages');
 });
 
-test('search match byte budget includes keys and does not retain oversized data', () => {
+test('oversized results stay cached for offset pagination as a single large entry', () => {
+  const cache = new SearchMatchCache();
+  const large = Array.from({ length: 12_000 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
+  cache.put('large-first', large);
+  // 상한 초과 결과도 페이지마다 전체 원장 재스캔을 피하려면 유지해야 한다 — 기존 항목은 비운다.
+  cache.put('oversized', [...large, ...large]);
+  assert.equal(cache.get('oversized')?.length, 24_000);
+  assert.equal(cache.get('large-first'), undefined, 'oversized results clear smaller entries');
+  assert.equal(cache.get('oversized')?.length, 24_000, 'repeated reads keep serving the same snapshot');
+  cache.put('small-after', ['revision-after']);
+  assert.equal(cache.get('oversized'), undefined, 'the next normal entry evicts the oversized one');
+  assert.deepEqual(cache.get('small-after'), ['revision-after']);
+});
+
+test('search match byte budget includes keys and retains oversized data as a single entry', () => {
   const cache = new SearchMatchCache();
   cache.put('empty', []); assert.deepEqual(cache.get('empty'), []);
-  cache.put('large-key'.repeat(300_000), ['revision-one']);
+  const hugeKey = 'large-key'.repeat(300_000);
+  cache.put(hugeKey, ['revision-one']);
   cache.put('large-id', ['x'.repeat(2 * 1024 * 1024)]);
-  assert.equal(cache.get('large-id'), undefined); assert.deepEqual(cache.get('empty'), []);
+  assert.equal(cache.get('large-id')?.length, 1); assert.equal(cache.get(hugeKey), undefined);
+  assert.equal(cache.get('empty'), undefined, 'oversized entries replace the normal working set');
 });
