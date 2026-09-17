@@ -25,12 +25,15 @@ import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
 let Timestamp: any;
-try {
-  protos = await import(requireFabric.resolve('@hyperledger/fabric-protos'));
-  Timestamp = requireFabric('google-protobuf/google/protobuf/timestamp_pb.js').Timestamp;
-} catch {
-  process.stderr.write('performance-fabric requires the optional packages/fabric dependencies (npm ci --prefix packages/fabric)\n');
-  process.exit(1);
+/** 선택적 Fabric 의존성을 첫 사용 시점에 불러온다 — 모듈 import만으로 프로세스를 종료하지 않는다. */
+async function ensureFabricDeps(): Promise<void> {
+  if (protos) return;
+  try {
+    protos = await import(requireFabric.resolve('@hyperledger/fabric-protos'));
+    Timestamp = requireFabric('google-protobuf/google/protobuf/timestamp_pb.js').Timestamp;
+  } catch {
+    throw new Error('performance-fabric requires the optional packages/fabric dependencies (npm ci --prefix packages/fabric)');
+  }
 }
 const { SqliteFabricProjection } = await import('../packages/fabric/sqlite-projection.ts');
 const { fabricBlockHeaderHash } = await import('../packages/fabric/block-projector.ts');
@@ -136,7 +139,7 @@ function blockBytes(number: number, entries: Uint8Array[], previousHashHex: stri
 }
 
 /** 로컬 저널을 순서대로 읽어 합성 블록을 만들어 projection에 재생한다. */
-function ingestJournal(localLedgerPath: string, projection: any, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number } {
+function ingestJournal(localLedgerPath: string, projection: { applyBlock(block: Uint8Array): void }, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number } {
   const journal = new DatabaseSync(localLedgerPath, { readOnly: true });
   try {
     const rows = journal.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
@@ -173,6 +176,7 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
 }
 
 export async function runFabricPerformance(input: FabricSmokeOptions): Promise<FabricSmokeResult> {
+  await ensureFabricDeps();
   if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
   const dataDir = resolve(input.dataDir);
   const options = {
@@ -210,31 +214,34 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   }
 
   // 2) 저널 이벤트를 합성 블록으로 변환해 projection에 재생한다.
+  //    이 지점부터 예외 경로에서도 projection·서비스 자원을 닫아야 한다.
   let projection = new SqliteFabricProjection(projectionPath, { channel_id: CHANNEL_ID, chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
-  const ingest = ingestJournal(journalSource, projection, options.txPerBlock);
-
-  // 3) Fabric 어댑터 위에서 동일한 전체 페이지 읽기 workload를 측정한다.
-  const source = {
-    async getTip() { return { height: ingest.blocks, block_hash: ingest.tipHash }; },
-    async getBlock(): Promise<Uint8Array> { throw new Error('synthetic benchmark keeps the projection at the tip'); },
-  };
-  const openService = async () => {
-    // 읽기 전용 측정이므로 쓰기 transport는 호출되지 않는 스텁이다.
-    const routes = [{ actor: { ...BOOTSTRAP_ACTOR }, transport: {
-      execute: async () => { throw new Error('synthetic benchmark does not submit commands'); },
-      recoverPending: async () => [],
-    } }];
-    const ledger = new FabricApplicationLedger({ projection, source, routes });
-    await ledger.refresh();
-    const vault = new PrivateStore(join(fabricDir, 'private-fabric.sqlite'));
-    const service = new KnowledgerService(ledger, vault, definition);
-    await service.initialize();
-    return { ledger, vault, service };
-  };
-  let opened = await openService();
-  const searchTimes: number[] = [];
-  const overviewTimes: number[] = [];
+  let opened: { ledger: InstanceType<typeof FabricApplicationLedger>; vault: PrivateStore; service: KnowledgerService } | undefined;
   try {
+    const ingest = ingestJournal(journalSource, projection, options.txPerBlock);
+
+    // 3) Fabric 어댑터 위에서 동일한 전체 페이지 읽기 workload를 측정한다.
+    const source = {
+      async getTip() { return { height: ingest.blocks, block_hash: ingest.tipHash }; },
+      async getBlock(): Promise<Uint8Array> { throw new Error('synthetic benchmark keeps the projection at the tip'); },
+    };
+    const openService = async () => {
+      // 읽기 전용 측정이므로 쓰기 transport는 호출되지 않는 스텁이다.
+      const routes = [{ actor: { ...BOOTSTRAP_ACTOR }, transport: {
+        execute: async () => { throw new Error('synthetic benchmark does not submit commands'); },
+        recoverPending: async () => [],
+      } }];
+      const ledger = new FabricApplicationLedger({ projection, source, routes });
+      await ledger.refresh();
+      const vault = new PrivateStore(join(fabricDir, 'private-fabric.sqlite'));
+      const service = new KnowledgerService(ledger, vault, definition);
+      await service.initialize();
+      return { ledger, vault, service };
+    };
+    opened = await openService();
+    const searchTimes: number[] = [];
+    const overviewTimes: number[] = [];
+    let measuredSearchMatches = 0;
     let overview = await browseAll(opened.service);
     const generated = overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
     if (generated.length !== options.documents) throw new Error('generated document count mismatch');
@@ -243,14 +250,17 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       const search = await browseAll(opened.service, true);
       searchTimes.push(performance.now() - started);
       if (search.length !== options.documents) throw new Error('search result count mismatch');
+      measuredSearchMatches = search.length;
       started = performance.now();
       overview = await browseAll(opened.service);
       overviewTimes.push(performance.now() - started);
       if (overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length !== options.documents) throw new Error('overview result count mismatch');
     }
     const databaseBytesBeforeReplay = directoryBytes(fabricDir);
+    // ledger.close()가 projection까지 닫으므로 재오픈 전 기존 핸들을 명시적으로 닫는다.
     await opened.ledger.close();
     opened.vault.close();
+    opened = undefined;
     // projection 재오픈은 저장된 raw 블록에서 파생 상태를 다시 재생한다.
     const replayStarted = performance.now();
     projection = new SqliteFabricProjection(projectionPath, { channel_id: CHANNEL_ID, chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
@@ -269,15 +279,17 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       functional_assertions: {
         documents_generated: generated.length,
         documents_retrieved: overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length,
-        search_matches: options.documents,
+        search_matches: measuredSearchMatches,
         replay_documents_retrieved: replayDocuments,
         replay_search_matches: replaySearch.length,
       },
       assessment: { functional_pass: true, performance: 'measurement_only', fabric_sla_proven: false, note: 'Synthetic journal replay through the real block projector and adapter; not a network commit proof.' },
     };
   } finally {
-    try { await opened.ledger.close(); } catch { /* 첫 실패를 보존한다 */ }
-    try { opened.vault.close(); } catch { /* 첫 실패를 보존한다 */ }
+    try { await opened?.ledger.close(); } catch { /* 첫 실패를 보존한다 */ }
+    try { opened?.vault.close(); } catch { /* 첫 실패를 보존한다 */ }
+    // ledger.close()는 projection을 함께 닫는다 — 서비스를 열기 전에 실패한 경로를 위해 idempotent close를 호출한다.
+    try { projection.close(); } catch { /* 첫 실패를 보존한다 */ }
   }
 }
 
@@ -317,8 +329,9 @@ if (isMain()) {
     const output = JSON.stringify(result, null, 2);
     if (parsed.out) { mkdirSync(resolve(parsed.out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(parsed.out, `${output}\n`, { mode: 0o600 }); }
     process.stdout.write(`${output}\n`);
-  } catch {
-    process.stderr.write('performance-fabric failed: invalid input or measurement failure\n');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`performance-fabric failed: ${detail}\n`);
     process.exitCode = 1;
   } finally {
     if (ownedData && dataDir) rmSync(dataDir, { recursive: true, force: true });

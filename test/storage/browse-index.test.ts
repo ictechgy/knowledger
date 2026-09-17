@@ -160,6 +160,78 @@ test('oversized revision selections stay correct across offset pages and later c
   assert.equal(index.query({ kind: 'revisions', mode: 'all', at, offset: 0, limit: 1 }).total, total);
 });
 
+test('normal revision queries cannot evict the resident oversized selection', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const total = 20_000;
+  const writes: [string, unknown][] = [];
+  for (let index_ = 0; index_ < total; index_++) {
+    const value = revision(`revision-mixed-${index_}`, slot(`doc-mixed-${index_}`));
+    writes.push([keyFor.revision(value.revision_digest), value]);
+  }
+  commit(index, checkpoint(1), writes);
+  const at = checkpoint(1);
+  index.query({ kind: 'revisions', mode: 'all', at, offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.oversized, true, 'large selection is retained as the oversized entry');
+  // 일반(작은) 선택 집합의 질의가 들어와도 대형 항목은 남는다 — 축출되면 다음
+  // 오프셋 페이지가 전체 refs를 다시 필터링해 O(문서²)로 되돌아간다.
+  for (let index_ = 0; index_ < 12; index_++) {
+    index.query({ kind: 'revisions', mode: 'document', document_id: `doc-mixed-${index_}`, at, offset: 0, limit: 10 });
+  }
+  assert.equal(index.revisionCacheStats.oversized, true, 'normal queries must not evict the oversized entry');
+  const tail = index.query({ kind: 'revisions', mode: 'all', at, offset: total - 1, limit: 1 });
+  assert.equal(tail.total, total);
+  assert.equal(tail.items.length, 1);
+  // 더 새로운 체크포인트의 대형 결과만이 상주 대형 항목을 교체한다.
+  const later = revision('revision-mixed-later', slot('doc-mixed-later'));
+  commit(index, checkpoint(2), [[keyFor.revision(later.revision_digest), later]]);
+  index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.oversized, true);
+  assert.equal(index.revisionCacheStats.entries, 1, 'only the newest oversized selection stays resident');
+});
+
+test('overlapping prepared commits cannot duplicate or rewrite immutable entries', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-overlap', slot('doc-overlap'));
+  const key = keyFor.revision(value.revision_digest);
+  // 같은 키를 담은 두 prepare가 둘 다 커밋 전 검증을 통과해도, 커밋 시점 재대조가
+  // 두 번째 삽입을 걸러 목록에 중복이 생기지 않아야 한다.
+  const first = index.prepare([{ checkpoint: checkpoint(1), writes: [[key, value]] }]);
+  const second = index.prepare([{ checkpoint: checkpoint(2), writes: [[key, value]] }]);
+  first.commit(); second.commit();
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).total, 1);
+  // 커밋된 핸들의 재커밋은 무해하다.
+  first.commit();
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).total, 1);
+});
+
+test('an overlapping commit with conflicting immutable fields is rejected without partial state', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-conflict', slot('doc-conflict'));
+  const honestProposal = proposal('proposal-conflict', value, '2026-09-16T01:00:00.000Z');
+  const key = keyFor.proposal(honestProposal.proposal_id);
+  // revision 키는 digest로 잠기지만 proposal/agreement 키는 식별자 기반이라 같은 키에
+  // 불변 필드가 다른 쓰기가 올 수 있다 — 키가 아직 비어 있으면 prepare를 통과하므로
+  // 정상 커밋이 먼저 반영된 뒤 커밋 시점 재대조에서 거부되어야 한다.
+  const tampered = { ...honestProposal, created_at: '2027-01-01T00:00:00.000Z' };
+  const conflicted = index.prepare([{ checkpoint: checkpoint(2), writes: [[key, tampered]] }]);
+  const honest = index.prepare([{ checkpoint: checkpoint(1), writes: [[key, honestProposal]] }]);
+  honest.commit();
+  assert.throws(() => conflicted.commit(), /immutable/i);
+  const after = index.query({ kind: 'proposals', at: checkpoint(2), offset: 0, limit: 10 });
+  assert.equal(after.total, 1);
+  assert.equal(after.items[0].created_at, '2026-09-16T01:00:00.000Z');
+});
+
+test('an older checkpoint committed after a newer one keeps newest-first order', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const first = revision('revision-older', slot('doc-ordered'));
+  const second = revision('revision-newer', slot('doc-ordered'));
+  const newer = index.prepare([{ checkpoint: checkpoint(2), writes: [[keyFor.revision(second.revision_digest), second]] }]);
+  const older = index.prepare([{ checkpoint: checkpoint(1), writes: [[keyFor.revision(first.revision_digest), first]] }]);
+  newer.commit(); older.commit();
+  assert.deepEqual(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 }).items.map(item => item.revision_digest), [second.revision_digest, first.revision_digest]);
+});
+
 test('later mutable writes cannot change indexed identity, order, or full-slot fields', () => {
   const index = new VerifiedBrowseIndex(CHANNEL);
   const value = revision('revision-mutable', slot('document-mutable'));

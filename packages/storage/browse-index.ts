@@ -146,23 +146,31 @@ export class VerifiedBrowseIndex {
   private revisionCache = new Map<string, RevisionCacheEntry>();
   private revisionCacheRefs = 0;
   private revisionCacheBytes = 0;
+  private oversizedRevisionKey: string | undefined;
+  private oversizedRevisionRefs = 0;
+  private oversizedRevisionBytes = 0;
 
   constructor(channelId: string) {
     if (typeof channelId !== 'string' || channelId.length < 1) throw new Error('Invalid browse channel');
     this.channelId = channelId;
   }
 
+  /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
+  get revisionCacheStats(): { entries: number; oversized: boolean } {
+    return { entries: this.revisionCache.size, oversized: this.oversizedRevisionKey !== undefined };
+  }
+
   prepare(batches: Iterable<BrowseWriteBatch>): { commit(): void } {
     // 커밋 전까지 this.state를 변경하지 않고 추가분만 모은다 — 블록마다 색인
-    // 전체를 복사·정렬하면 O(색인×블록)이 되므로 델타로 유지한다.
+    // 전체를 복사·정렬하면 O(색인×블록)이 되므로 델타로 유지한다. 커밋은
+    // 신규 항목을 기존 목록 앞에 붙이고 최신 정렬이 깨진 경우에만 다시 정렬한다.
+    // 빠른 경로도 기존 배열의 포인터 복사(얕은 O(색인))는 수행하지만 객체
+    // 복제와 정렬은 하지 않는다. 두 prepare가 겹쳐도 커밋 시점에 현재 상태와
+    // 다시 대조해 중복을 걸러낸다.
     const addedRevisions: RevisionBrowseRef[] = [];
     const pendingRevisions = new Map<string, RevisionBrowseRef>();
-    const addedSlotRevisions = new Map<string, RevisionBrowseRef[]>();
-    const addedDocumentRevisions = new Map<string, RevisionBrowseRef[]>();
     const addedProposals: ProposalBrowseRef[] = [];
     const pendingProposals = new Map<string, ProposalBrowseRef>();
-    const addedRevisionProposals = new Map<string, ProposalBrowseRef[]>();
-    const addedRevisionAgreements = new Map<string, AgreementBrowseRef[]>();
     const pendingAgreements = new Map<string, AgreementBrowseRef>();
     const pushTo = <T>(map: Map<string, T[]>, key: string, value: T): void => {
       const list = map.get(key); if (list) list.push(value); else map.set(key, [value]);
@@ -185,8 +193,6 @@ export class VerifiedBrowseIndex {
             continue;
           }
           addedRevisions.push(ref); pendingRevisions.set(key, ref);
-          pushTo(addedSlotRevisions, slotKey(ref.slot), ref);
-          pushTo(addedDocumentRevisions, ref.slot.document_id, ref);
         } else if (key.startsWith('kcl:v1:proposal:')) {
           const proposal = validateProposal(value);
           if (key !== keyFor.proposal(proposal.proposal_id) || proposal.channel_id !== this.channelId) throw new Error('Invalid browse proposal binding');
@@ -198,7 +204,6 @@ export class VerifiedBrowseIndex {
             continue;
           }
           addedProposals.push(ref); pendingProposals.set(key, ref);
-          pushTo(addedRevisionProposals, ref.revision_digest, ref);
         } else if (key.startsWith('kcl:v1:agreement:')) {
           const agreement = validateAgreement(value);
           if (key !== keyFor.agreement(agreement.agreement_id) || agreement.channel_id !== this.channelId) throw new Error('Invalid browse agreement binding');
@@ -210,7 +215,6 @@ export class VerifiedBrowseIndex {
             continue;
           }
           pendingAgreements.set(key, ref);
-          pushTo(addedRevisionAgreements, ref.revision_digest, ref);
         }
       }
     }
@@ -218,32 +222,70 @@ export class VerifiedBrowseIndex {
     return { commit: () => {
       if (committed) return; committed = true;
       const state = this.state;
-      if (addedRevisions.length) {
-        addedRevisions.sort(compareRevisions);
-        state.revisions = prependLatest(addedRevisions, state.revisions, compareRevisions);
-        for (const ref of addedRevisions) state.revisionsByKey.set(ref.key, ref);
-        for (const [key, refs] of addedSlotRevisions) {
+      // 1) 커밋 시점의 현재 상태와 다시 대조한다 — 다른 prepare가 먼저
+      //    커밋돼 같은 키가 들어간 경우 중복 추가를 건너뛰고, 불변 필드가
+      //    다르면 상태를 변경하기 전에 여기서 중단한다.
+      const freshRevisions = addedRevisions.filter(ref => {
+        const existing = state.revisionsByKey.get(ref.key);
+        if (!existing) return true;
+        if (!staticRevisionMatches(existing, ref)) throw new Error('Browse index immutable revision fields changed');
+        return false;
+      });
+      const freshProposals = addedProposals.filter(ref => {
+        const existing = state.proposalsByKey.get(ref.key);
+        if (!existing) return true;
+        if (!staticProposalMatches(existing, ref)) throw new Error('Browse index immutable proposal fields changed');
+        return false;
+      });
+      const freshAgreements = [...pendingAgreements.values()].filter(ref => {
+        const existing = state.agreementsByKey.get(ref.key);
+        if (!existing) return true;
+        if (!staticAgreementMatches(existing, ref)) throw new Error('Browse index immutable agreement fields changed');
+        return false;
+      });
+      // 2) 검증이 끝난 뒤에만 상태를 변경한다.
+      if (freshRevisions.length) {
+        freshRevisions.sort(compareRevisions);
+        state.revisions = prependLatest(freshRevisions, state.revisions, compareRevisions);
+        const bySlot = new Map<string, RevisionBrowseRef[]>();
+        const byDocument = new Map<string, RevisionBrowseRef[]>();
+        for (const ref of freshRevisions) {
+          state.revisionsByKey.set(ref.key, ref);
+          pushTo(bySlot, slotKey(ref.slot), ref);
+          pushTo(byDocument, ref.slot.document_id, ref);
+        }
+        for (const [key, refs] of bySlot) {
           refs.sort(compareRevisions);
           state.revisionsBySlot.set(key, prependLatest(refs, state.revisionsBySlot.get(key) ?? [], compareRevisions));
         }
-        for (const [key, refs] of addedDocumentRevisions) {
+        for (const [key, refs] of byDocument) {
           refs.sort(compareRevisions);
           state.revisionsByDocument.set(key, prependLatest(refs, state.revisionsByDocument.get(key) ?? [], compareRevisions));
         }
       }
-      if (addedProposals.length) {
-        addedProposals.sort(compareProposals);
-        state.proposals = prependLatest(addedProposals, state.proposals, compareProposals);
-        for (const ref of addedProposals) state.proposalsByKey.set(ref.key, ref);
-        for (const [key, refs] of addedRevisionProposals) {
+      if (freshProposals.length) {
+        freshProposals.sort(compareProposals);
+        state.proposals = prependLatest(freshProposals, state.proposals, compareProposals);
+        const byRevision = new Map<string, ProposalBrowseRef[]>();
+        for (const ref of freshProposals) {
+          state.proposalsByKey.set(ref.key, ref);
+          pushTo(byRevision, ref.revision_digest, ref);
+        }
+        for (const [key, refs] of byRevision) {
           refs.sort(compareProposals);
           state.proposalsByRevision.set(key, prependLatest(refs, state.proposalsByRevision.get(key) ?? [], compareProposals));
         }
       }
-      for (const [key, ref] of pendingAgreements) state.agreementsByKey.set(key, ref);
-      for (const [key, refs] of addedRevisionAgreements) {
-        refs.sort(compareAgreements);
-        state.agreementsByRevision.set(key, prependLatest(refs, state.agreementsByRevision.get(key) ?? [], compareAgreements));
+      if (freshAgreements.length) {
+        const byRevision = new Map<string, AgreementBrowseRef[]>();
+        for (const ref of freshAgreements) {
+          state.agreementsByKey.set(ref.key, ref);
+          pushTo(byRevision, ref.revision_digest, ref);
+        }
+        for (const [key, refs] of byRevision) {
+          refs.sort(compareAgreements);
+          state.agreementsByRevision.set(key, prependLatest(refs, state.agreementsByRevision.get(key) ?? [], compareAgreements));
+        }
       }
     } };
   }
@@ -289,6 +331,13 @@ export class VerifiedBrowseIndex {
 
   private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[]): void {
     const estimatedBytes = Buffer.byteLength(key) + refs.length * ESTIMATED_REF_POINTER_BYTES;
+    const existing = this.revisionCache.get(key);
+    if (existing) {
+      this.revisionCache.delete(key);
+      this.revisionCacheRefs -= existing.refs.length;
+      this.revisionCacheBytes -= existing.estimatedBytes;
+      if (key === this.oversizedRevisionKey) this.resetOversizedRevision();
+    }
     if (refs.length > MAX_REVISION_CACHE_REFS || estimatedBytes > MAX_REVISION_CACHE_BYTES) {
       // 상한을 넘는 결과 집합도 오프셋 페이지네이션이 같은 키로 재질의하므로,
       // 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러 O(문서²)가 된다.
@@ -297,21 +346,35 @@ export class VerifiedBrowseIndex {
       this.revisionCache.clear();
       this.revisionCacheRefs = 0;
       this.revisionCacheBytes = 0;
+      this.oversizedRevisionKey = key;
+      this.oversizedRevisionRefs = refs.length;
+      this.oversizedRevisionBytes = estimatedBytes;
     } else {
-      while (this.revisionCache.size >= MAX_REVISION_CACHE_ENTRIES
-        || this.revisionCacheRefs + refs.length > MAX_REVISION_CACHE_REFS
-        || this.revisionCacheBytes + estimatedBytes > MAX_REVISION_CACHE_BYTES) {
-        const oldest = this.revisionCache.entries().next().value as [string, RevisionCacheEntry] | undefined;
-        if (!oldest) break;
-        this.revisionCache.delete(oldest[0]);
-        this.revisionCacheRefs -= oldest[1].refs.length;
-        this.revisionCacheBytes -= oldest[1].estimatedBytes;
+      // 일반 항목은 일반 예산 안에서만 축출한다 — 대형 항목을 밀어내면
+      // 교차 워크로드에서 큰 선택 집합의 다음 페이지가 다시 전체 필터를 한다.
+      const normalRefs = () => this.revisionCacheRefs - this.oversizedRevisionRefs;
+      const normalBytes = () => this.revisionCacheBytes - this.oversizedRevisionBytes;
+      while (this.revisionCache.size - (this.oversizedRevisionKey === undefined ? 0 : 1) >= MAX_REVISION_CACHE_ENTRIES
+        || normalRefs() + refs.length > MAX_REVISION_CACHE_REFS
+        || normalBytes() + estimatedBytes > MAX_REVISION_CACHE_BYTES) {
+        const oldest = [...this.revisionCache.keys()].find(candidate => candidate !== this.oversizedRevisionKey);
+        if (oldest === undefined) break;
+        const entry = this.revisionCache.get(oldest)!;
+        this.revisionCache.delete(oldest);
+        this.revisionCacheRefs -= entry.refs.length;
+        this.revisionCacheBytes -= entry.estimatedBytes;
       }
     }
     const entry = { refs: [...refs], estimatedBytes };
     this.revisionCache.set(key, entry);
     this.revisionCacheRefs += entry.refs.length;
     this.revisionCacheBytes += estimatedBytes;
+  }
+
+  private resetOversizedRevision(): void {
+    this.oversizedRevisionKey = undefined;
+    this.oversizedRevisionRefs = 0;
+    this.oversizedRevisionBytes = 0;
   }
 
   private proposals(query: ProposalBrowseQuery): BrowsePage<ProposalBrowseRef> {

@@ -7,6 +7,9 @@ export class SearchMatchCache {
   private readonly entries = new Map<string, { ids: readonly string[]; bytes: number }>();
   private ids = 0;
   private bytes = 0;
+  private oversizedIds = 0;
+  private oversizedBytes = 0;
+  private oversizedKey: string | undefined;
 
   get(key: string): readonly string[] | undefined {
     const entry = this.entries.get(key);
@@ -23,9 +26,19 @@ export class SearchMatchCache {
     // ids는 불변 다이제스트 문자열뿐이므로 다른 항목을 비우고 단일 대형 항목으로 유지한다.
     if (ids.length > MAX_IDS || bytes > MAX_BYTES) {
       for (const existing of [...this.entries.keys()]) this.remove(existing);
+      this.oversizedKey = key;
+      this.oversizedIds = ids.length;
+      this.oversizedBytes = bytes;
     } else {
-      while (this.entries.size >= MAX_ENTRIES || this.ids + ids.length > MAX_IDS || this.bytes + bytes > MAX_BYTES) {
-        this.remove(this.entries.keys().next().value!);
+      // 일반 항목은 일반 예산 안에서만 축출한다 — 대형 항목을 밀어내면
+      // 교차 워크로드에서 큰 질의의 다음 페이지가 다시 전체 스캔을 한다.
+      const normalIds = () => this.ids - this.oversizedIds;
+      const normalBytes = () => this.bytes - this.oversizedBytes;
+      while (this.entries.size - (this.oversizedKey === undefined ? 0 : 1) >= MAX_ENTRIES
+        || normalIds() + ids.length > MAX_IDS || normalBytes() + bytes > MAX_BYTES) {
+        const oldest = [...this.entries.keys()].find(candidate => candidate !== this.oversizedKey);
+        if (oldest === undefined) break;
+        this.remove(oldest);
       }
     }
     this.entries.set(key, { ids: Object.freeze([...ids]), bytes }); this.ids += ids.length; this.bytes += bytes;
@@ -35,5 +48,6 @@ export class SearchMatchCache {
     const entry = this.entries.get(key);
     if (!entry) return;
     this.entries.delete(key); this.ids -= entry.ids.length; this.bytes -= entry.bytes;
+    if (key === this.oversizedKey) { this.oversizedKey = undefined; this.oversizedIds = 0; this.oversizedBytes = 0; }
   }
 }

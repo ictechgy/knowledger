@@ -22,9 +22,22 @@ test('oversized results stay cached for offset pagination as a single large entr
   assert.equal(cache.get('oversized')?.length, 24_000);
   assert.equal(cache.get('large-first'), undefined, 'oversized results clear smaller entries');
   assert.equal(cache.get('oversized')?.length, 24_000, 'repeated reads keep serving the same snapshot');
-  cache.put('small-after', ['revision-after']);
-  assert.equal(cache.get('oversized'), undefined, 'the next normal entry evicts the oversized one');
-  assert.deepEqual(cache.get('small-after'), ['revision-after']);
+});
+
+test('normal entries cannot evict the resident oversized entry; only another oversized replaces it', () => {
+  const cache = new SearchMatchCache();
+  const large = Array.from({ length: 24_000 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
+  cache.put('oversized', large);
+  // 교차 워크로드: 일반 질의가 들어와도 대형 항목은 다음 오프셋 페이지를 위해 남는다.
+  for (let index = 0; index < 16; index++) cache.put(`small-${index}`, [`revision-${index}`]);
+  assert.equal(cache.get('oversized')?.length, 24_000, 'normal puts must not evict the oversized entry');
+  // 일반 항목끼리는 기존 예산 규칙대로 축출된다.
+  assert.equal(cache.get('small-0'), undefined, 'normal entries still evict each other under budget');
+  assert.deepEqual(cache.get('small-15'), ['revision-15']);
+  // 다른 대형 결과만이 상주 대형 항목을 교체한다.
+  cache.put('oversized-next', large);
+  assert.equal(cache.get('oversized'), undefined, 'a newer oversized result replaces the resident one');
+  assert.equal(cache.get('oversized-next')?.length, 24_000);
 });
 
 test('search match byte budget includes keys and retains oversized data as a single entry', () => {
