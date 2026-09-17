@@ -21,6 +21,7 @@ import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../ex
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { browseAll, directoryBytes, generateSyntheticDocument, latency, marker } from './performance-smoke.ts';
 import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke.ts';
+import { compareMetrics, ComparisonInputError, loadBaselineJson, parseThresholds } from './perf-compare.ts';
 
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
@@ -337,8 +338,8 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   }
 }
 
-function parseCli(args: string[]): { options: FabricSmokeOptions; out?: string; ownedData: boolean } {
-  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--tx-per-block', '--journal', '--out']);
+function parseCli(args: string[]): { options: FabricSmokeOptions; out?: string; ownedData: boolean; baselinePath?: string; thresholdText?: string } {
+  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--tx-per-block', '--journal', '--baseline', '--threshold', '--out']);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
@@ -355,12 +356,15 @@ function parseCli(args: string[]): { options: FabricSmokeOptions; out?: string; 
     const value = values.get(name);
     return value === undefined ? undefined : Number(value);
   };
-  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups'), txPerBlock: number('--tx-per-block'), journalPath: values.get('--journal') }, out, ownedData };
+  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups'), txPerBlock: number('--tx-per-block'), journalPath: values.get('--journal') }, out, ownedData, baselinePath: values.get('--baseline'), thresholdText: values.get('--threshold') };
 }
 
 function isMain(): boolean {
   return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
+
+const FABRIC_COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload'] as const;
+const FABRIC_COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
 
 if (isMain()) {
   let dataDir: string | undefined;
@@ -369,13 +373,25 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
+    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, FABRIC_COMPARABLE_METRICS) : {};
+    if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
     const result = await runFabricPerformance(parsed.options);
-    const output = JSON.stringify(result, null, 2);
+    let comparison: { baseline: string; regressions: string[]; metrics: { metric: string; baseline_ms: number; current_ms: number; ratio: number; threshold: number | null }[] } | undefined;
+    if (parsed.baselinePath) {
+      const verdict = compareMetrics(loadBaselineJson(parsed.baselinePath), result, FABRIC_COMPARABLE_DATASET_FIELDS, FABRIC_COMPARABLE_METRICS, thresholds);
+      comparison = { baseline: parsed.baselinePath, regressions: verdict.regressions, metrics: verdict.entries };
+    }
+    const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
     if (parsed.out) { mkdirSync(resolve(parsed.out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(parsed.out, `${output}\n`, { mode: 0o600 }); }
     process.stdout.write(`${output}\n`);
+    if (comparison && comparison.regressions.length) {
+      process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
+      process.exitCode = 1;
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`performance-fabric failed: ${detail}\n`);
+    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges, that --data is a new empty directory, and that optional Fabric dependencies are installed)';
+    process.stderr.write(`performance-fabric failed: ${detail}${guidance}\n`);
     process.exitCode = 1;
   } finally {
     if (ownedData && dataDir) rmSync(dataDir, { recursive: true, force: true });

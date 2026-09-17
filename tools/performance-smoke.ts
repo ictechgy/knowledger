@@ -9,6 +9,7 @@ import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
+import { compareMetrics, ComparisonInputError, loadBaselineJson, parseThresholds } from './perf-compare.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
 const MAX_DOCUMENTS = 100_000;
@@ -18,6 +19,8 @@ const MAX_SLOT_GROUPS = 256;
 const DEFAULT_DOCUMENTS = 8;
 const DEFAULT_SAMPLES = 3;
 const DEFAULT_BODY_BYTES = 1024;
+const SEARCH_QUERIES = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
+const COLD_CACHE_QUERY = 'cold-cache-probe';
 
 export interface PerformanceSmokeOptions {
   dataDir: string;
@@ -31,10 +34,12 @@ export interface PerformanceSmokeResult {
   schema_version: 1;
   mode: 'local-simulation';
   environment: { node: string; platform: string; arch: string; cpu_count: number };
-  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary' };
+  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary'; search_queries: readonly string[]; search_probes: 'single_marker' | 'multi_query' };
   metrics: {
     publish: LatencyMetric;
     search: LatencyMetric;
+    search_warm: LatencyMetric;
+    search_cold: LatencyMetric;
     overview: LatencyMetric;
     replay_restart_ms: number;
     database_bytes: number;
@@ -43,6 +48,8 @@ export interface PerformanceSmokeResult {
     documents_generated: number;
     documents_retrieved: number;
     search_matches: number;
+    search_query_matches: Record<string, number>;
+    cold_search_matches: number;
     replay_documents_retrieved: number;
     replay_search_matches: number;
   };
@@ -97,10 +104,10 @@ function validateOptions(options: PerformanceSmokeOptions): Required<Performance
 }
 
 /** Measure the complete paginated traversal, including every returned summary. */
-export async function browseAll(service: KnowledgerService, searching = false): Promise<any[]> {
+export async function browseAll(service: KnowledgerService, searching = false, query = marker): Promise<any[]> {
   const rows: any[] = []; let cursor: string | undefined;
   do {
-    const page = searching ? await service.search(actor, { query: marker, limit: 50, cursor }) : await service.overview(actor, { limit: 50, cursor });
+    const page = searching ? await service.search(actor, { query, limit: 50, cursor }) : await service.overview(actor, { limit: 50, cursor });
     rows.push(...('results' in page ? page.results : page.documents));
     cursor = page.next_cursor ?? undefined;
   } while (cursor);
@@ -123,6 +130,25 @@ export async function generateSyntheticDocument(service: KnowledgerService, inde
   if (receipt.status !== 'committed') throw new Error('synthetic publication did not commit');
 }
 
+function isPerformanceDocument(item: any): boolean {
+  return typeof item?.payload?.document_id === 'string' && item.payload.document_id.startsWith('doc-performance-');
+}
+
+/** 복수 검색어 샘플의 실제 결과 수를 측정해 돌려준다. 각 검색어는 전체 페이지를 순회한다. */
+async function measureSearchQueryMatches(service: KnowledgerService): Promise<Record<string, number>> {
+  const matches: Record<string, number> = {};
+  for (const query of SEARCH_QUERIES) {
+    let rows: any[];
+    try {
+      rows = await browseAll(service, true, query);
+    } catch (cause) {
+      throw new Error(`search query "${query}" failed: ${(cause as Error).message}`);
+    }
+    matches[query] = rows.length;
+  }
+  return matches;
+}
+
 export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promise<PerformanceSmokeResult> {
   const options = validateOptions(input);
   if (existsSync(options.dataDir)) {
@@ -136,7 +162,11 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
   let service = new KnowledgerService(ledger, vault, definition);
   const publishTimes: number[] = [];
   const searchTimes: number[] = [];
+  const searchWarmTimes: number[] = [];
+  const searchColdTimes: number[] = [];
   const overviewTimes: number[] = [];
+  let searchQueryMatches: Record<string, number> = {};
+  let coldSearchMatches = 0;
   try {
     await service.initialize();
     await seedDemo(service);
@@ -147,7 +177,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     }
 
     let overview = await browseAll(service);
-    const generated = overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
+    const generated = overview.filter(isPerformanceDocument);
     if (generated.length !== options.documents) throw new Error('generated document count mismatch');
     for (let sample = 0; sample < options.samples; sample += 1) {
       let started = performance.now();
@@ -157,7 +187,35 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       started = performance.now();
       overview = await browseAll(service);
       overviewTimes.push(performance.now() - started);
-      if (overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length !== options.documents) throw new Error('overview result count mismatch');
+      if (overview.filter(isPerformanceDocument).length !== options.documents) throw new Error('overview result count mismatch');
+    }
+
+    // 동일 체크포인트에서 복수 검색어를 재검색한다 — warm 캐시 경로의 실제 결과 수를 검증한다.
+    const warmOverview = await browseAll(service);
+    searchQueryMatches = await measureSearchQueryMatches(service);
+    for (let sample = 0; sample < options.samples; sample += 1) {
+      const started = performance.now();
+      const search = await browseAll(service, true);
+      searchWarmTimes.push(performance.now() - started);
+      if (search.length !== warmOverview.filter(isPerformanceDocument).length) throw new Error('warm search result count mismatch');
+    }
+
+    // cold 측정: 검색 매치 캐시는 서비스 인스턴스별이므로 샘플마다 새 서비스를 만들어
+    // 모든 샘플이 실제 cache-miss 전체 스캔을 측정한다. 캐시 내부를 건드리지 않고
+    // 재생이 완료된 동일 원장 상태만 재사용한다 — initialize()는 열린 원장의 tail
+    // 확인과 구성 검사뿐이라 저널 재생 없이 가볍다.
+    const probeService = new KnowledgerService(ledger, vault, definition);
+    await probeService.initialize();
+    const coldProbe = await browseAll(probeService, true, COLD_CACHE_QUERY);
+    if (coldProbe.length !== 0) throw new Error('cold cache probe unexpectedly matched documents');
+    for (let sample = 0; sample < options.samples; sample += 1) {
+      const coldService = new KnowledgerService(ledger, vault, definition);
+      await coldService.initialize();
+      const started = performance.now();
+      const search = await browseAll(coldService, true);
+      searchColdTimes.push(performance.now() - started);
+      if (search.length !== options.documents) throw new Error('cold search result count mismatch');
+      coldSearchMatches = search.length;
     }
 
     const databaseBytesBeforeReplay = directoryBytes(options.dataDir);
@@ -171,18 +229,20 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     const replayRestartMs = performance.now() - replayStarted;
     const replayOverview = await browseAll(service);
     const replaySearch = await browseAll(service, true);
-    const replayDocuments = replayOverview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length;
+    const replayDocuments = replayOverview.filter(isPerformanceDocument).length;
     if (replayDocuments !== options.documents || replaySearch.length !== options.documents) throw new Error('replay result count mismatch');
     return {
       schema_version: 1,
       mode: 'local-simulation',
       environment: { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length },
-      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, marker, read_workload: 'all_pages_summary' },
-      metrics: { publish: latency(publishTimes), search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
+      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, marker, read_workload: 'all_pages_summary', search_queries: [...SEARCH_QUERIES], search_probes: 'multi_query' },
+      metrics: { publish: latency(publishTimes), search: latency(searchTimes), search_warm: latency(searchWarmTimes), search_cold: latency(searchColdTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
         documents_generated: generated.length,
-        documents_retrieved: overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-')).length,
+        documents_retrieved: overview.filter(isPerformanceDocument).length,
         search_matches: options.documents,
+        search_query_matches: searchQueryMatches,
+        cold_search_matches: coldSearchMatches,
         replay_documents_retrieved: replayDocuments,
         replay_search_matches: replaySearch.length,
       },
@@ -194,8 +254,8 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
   }
 }
 
-function parseCli(args: string[]): { options: PerformanceSmokeOptions; out?: string; ownedData: boolean } {
-  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--out']);
+function parseCli(args: string[]): { options: PerformanceSmokeOptions; out?: string; ownedData: boolean; baselinePath?: string; thresholdText?: string } {
+  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--baseline', '--threshold', '--out']);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
@@ -212,12 +272,15 @@ function parseCli(args: string[]): { options: PerformanceSmokeOptions; out?: str
     const value = values.get(name);
     return value === undefined ? undefined : Number(value);
   };
-  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups') }, out, ownedData };
+  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups') }, out, ownedData, baselinePath: values.get('--baseline'), thresholdText: values.get('--threshold') };
 }
 
 function isMain(): boolean {
   return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
+
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'read_workload', 'search_probes'] as const;
+const COMPARABLE_METRICS = ['publish', 'search', 'search_warm', 'search_cold', 'overview', 'replay_restart_ms'] as const;
 
 if (isMain()) {
   let dataDir: string | undefined;
@@ -226,12 +289,25 @@ if (isMain()) {
     const parsed = parseCli(process.argv.slice(2));
     dataDir = parsed.options.dataDir;
     ownedData = parsed.ownedData;
+    const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
+    if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
     const result = await runPerformanceSmoke(parsed.options);
-    const output = JSON.stringify(result, null, 2);
+    let comparison: { baseline: string; regressions: string[]; metrics: { metric: string; baseline_ms: number; current_ms: number; ratio: number; threshold: number | null }[] } | undefined;
+    if (parsed.baselinePath) {
+      const verdict = compareMetrics(loadBaselineJson(parsed.baselinePath), result, COMPARABLE_DATASET_FIELDS, COMPARABLE_METRICS, thresholds);
+      comparison = { baseline: parsed.baselinePath, regressions: verdict.regressions, metrics: verdict.entries };
+    }
+    const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
     if (parsed.out) { mkdirSync(resolve(parsed.out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(parsed.out, `${output}\n`, { mode: 0o600 }); }
     process.stdout.write(`${output}\n`);
-  } catch {
-    process.stderr.write('performance smoke failed: invalid input or local measurement failure\n');
+    if (comparison && comparison.regressions.length) {
+      process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges and that --data is a new empty directory)';
+    process.stderr.write(`performance smoke failed: ${detail}${guidance}\n`);
     process.exitCode = 1;
   } finally {
     if (ownedData && dataDir) rmSync(dataDir, { recursive: true, force: true });
