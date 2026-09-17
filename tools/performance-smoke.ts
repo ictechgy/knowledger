@@ -11,9 +11,10 @@ import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
-const MAX_DOCUMENTS = 10_000;
+const MAX_DOCUMENTS = 100_000;
 const MAX_SAMPLES = 1_000;
 const MAX_BODY_BYTES = 256 * 1024;
+const MAX_SLOT_GROUPS = 256;
 const DEFAULT_DOCUMENTS = 8;
 const DEFAULT_SAMPLES = 3;
 const DEFAULT_BODY_BYTES = 1024;
@@ -23,13 +24,14 @@ export interface PerformanceSmokeOptions {
   documents?: number;
   samples?: number;
   bodyBytes?: number;
+  slotGroups?: number;
 }
 
 export interface PerformanceSmokeResult {
   schema_version: 1;
   mode: 'local-simulation';
   environment: { node: string; platform: string; arch: string; cpu_count: number };
-  dataset: { documents_requested: number; body_bytes: number; samples: number; marker: string; read_workload: 'all_pages_summary' };
+  dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary' };
   metrics: {
     publish: LatencyMetric;
     search: LatencyMetric;
@@ -47,33 +49,33 @@ export interface PerformanceSmokeResult {
   assessment: { functional_pass: true; performance: 'measurement_only'; fabric_sla_proven: false };
 }
 
-interface LatencyMetric { samples: number; p50_ms: number; p95_ms: number; max_ms: number }
+export interface LatencyMetric { samples: number; p50_ms: number; p95_ms: number; max_ms: number }
 
 const actor = actorIdentity(PERSONAS[1]);
-const marker = 'performance-smoke-marker';
+export const marker = 'performance-smoke-marker';
 
 function boundedInteger(value: unknown, name: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} is outside the allowed range`);
   return value;
 }
 
-function percentile(values: number[], fraction: number): number {
+export function percentile(values: number[], fraction: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   if (!sorted.length) return 0;
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
 }
 
-function latency(values: number[]): LatencyMetric {
+export function latency(values: number[]): LatencyMetric {
   return { samples: values.length, p50_ms: percentile(values, 0.5), p95_ms: percentile(values, 0.95), max_ms: Math.max(...values, 0) };
 }
 
-function bodyFor(index: number, bytes: number): string {
+export function bodyFor(index: number, bytes: number): string {
   const prefix = `# Synthetic document ${index}\n\n${marker}\n`;
   if (bytes <= prefix.length) return prefix.slice(0, bytes);
   return prefix + 'x'.repeat(bytes - Buffer.byteLength(prefix, 'utf8'));
 }
 
-function directoryBytes(directory: string): number {
+export function directoryBytes(directory: string): number {
   let total = 0;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
@@ -90,11 +92,12 @@ function validateOptions(options: PerformanceSmokeOptions): Required<Performance
     documents: boundedInteger(options.documents ?? DEFAULT_DOCUMENTS, 'documents', 1, MAX_DOCUMENTS),
     samples: boundedInteger(options.samples ?? DEFAULT_SAMPLES, 'samples', 1, MAX_SAMPLES),
     bodyBytes: boundedInteger(options.bodyBytes ?? DEFAULT_BODY_BYTES, 'bodyBytes', 1, MAX_BODY_BYTES),
+    slotGroups: boundedInteger(options.slotGroups ?? 1, 'slotGroups', 1, MAX_SLOT_GROUPS),
   };
 }
 
 /** Measure the complete paginated traversal, including every returned summary. */
-async function browseAll(service: KnowledgerService, searching = false): Promise<any[]> {
+export async function browseAll(service: KnowledgerService, searching = false): Promise<any[]> {
   const rows: any[] = []; let cursor: string | undefined;
   do {
     const page = searching ? await service.search(actor, { query: marker, limit: 50, cursor }) : await service.overview(actor, { limit: 50, cursor });
@@ -102,6 +105,22 @@ async function browseAll(service: KnowledgerService, searching = false): Promise
     cursor = page.next_cursor ?? undefined;
   } while (cursor);
   return rows;
+}
+
+/** 단일 합성 문서를 초안→검토→게시까지 수행한다. slotGroups>1이면 scope를 순환시켜 슬롯을 섞는다. */
+export async function generateSyntheticDocument(service: KnowledgerService, index: number, options: { documents: number; bodyBytes: number; slotGroups: number }): Promise<void> {
+  const group = options.slotGroups > 1 ? 1 + (index % options.slotGroups) : undefined;
+  const draft = await service.draft(actor, {
+    title: `${marker} synthetic performance document ${index}`,
+    body_markdown: bodyFor(index, options.bodyBytes),
+    context_id: 'context-fulfillment',
+    scope_id: group === undefined ? 'scope-order-2026-001' : `scope-perf-${String(group).padStart(3, '0')}`,
+    usage_scope: 'domain-definition/v1',
+    document_id: `doc-performance-${index}`,
+  });
+  const preview = await service.preview(actor, { draft_id: draft.draft_id });
+  const receipt = await service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: `performance-publish-${index}` });
+  if (receipt.status !== 'committed') throw new Error('synthetic publication did not commit');
 }
 
 export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promise<PerformanceSmokeResult> {
@@ -123,17 +142,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     await seedDemo(service);
     for (let index = 0; index < options.documents; index += 1) {
       const started = performance.now();
-      const draft = await service.draft(actor, {
-        title: `${marker} synthetic performance document ${index}`,
-        body_markdown: bodyFor(index, options.bodyBytes),
-        context_id: 'context-fulfillment',
-        scope_id: 'scope-order-2026-001',
-        usage_scope: 'domain-definition/v1',
-        document_id: `doc-performance-${index}`,
-      });
-      const preview = await service.preview(actor, { draft_id: draft.draft_id });
-      const receipt = await service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: `performance-publish-${index}` });
-      if (receipt.status !== 'committed') throw new Error('synthetic publication did not commit');
+      await generateSyntheticDocument(service, index, options);
       publishTimes.push(performance.now() - started);
     }
 
@@ -168,7 +177,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       schema_version: 1,
       mode: 'local-simulation',
       environment: { node: process.version, platform: process.platform, arch: process.arch, cpu_count: cpus().length },
-      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, marker, read_workload: 'all_pages_summary' },
+      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, marker, read_workload: 'all_pages_summary' },
       metrics: { publish: latency(publishTimes), search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
         documents_generated: generated.length,
@@ -186,7 +195,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
 }
 
 function parseCli(args: string[]): { options: PerformanceSmokeOptions; out?: string; ownedData: boolean } {
-  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--out']);
+  const known = new Set(['--data', '--documents', '--samples', '--body-bytes', '--slot-groups', '--out']);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
@@ -203,7 +212,7 @@ function parseCli(args: string[]): { options: PerformanceSmokeOptions; out?: str
     const value = values.get(name);
     return value === undefined ? undefined : Number(value);
   };
-  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes') }, out, ownedData };
+  return { options: { dataDir, documents: number('--documents'), samples: number('--samples'), bodyBytes: number('--body-bytes'), slotGroups: number('--slot-groups') }, out, ownedData };
 }
 
 function isMain(): boolean {
