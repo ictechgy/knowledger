@@ -20,7 +20,7 @@ import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../ex
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { browseAll, directoryBytes, generateSyntheticDocument, latency, marker } from './performance-smoke.ts';
 import type { LatencyMetric, PerformanceSmokeOptions } from './performance-smoke.ts';
-import { ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { assertDatasetComparable, ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 
 const requireFabric = createRequire(new URL('../packages/fabric/package.json', import.meta.url));
 let protos: any;
@@ -60,7 +60,9 @@ function ensureFabricDeps(): Promise<void> {
 
 const MAX_TX_PER_BLOCK = 500;
 const DEFAULT_TX_PER_BLOCK = 50;
-const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload'] as const;
+// journal_transactions·fabric_blocks는 --journal 내용이 다르면 달라지는 workload 식별자다 —
+// 비교 필드에 포함해 다른 저널로 측정한 baseline이 comparable로 통과하지 않게 한다.
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload', 'journal_transactions', 'fabric_blocks'] as const;
 const COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
 
 interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number; journalPath?: string }
@@ -190,17 +192,22 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
   return value;
 }
 
-export async function runFabricPerformance(input: FabricSmokeOptions): Promise<FabricSmokeResult> {
-  await ensureFabricDeps();
-  if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
-  const dataDir = resolve(input.dataDir);
-  const options = {
+/** Fabric 측정 옵션을 기본값과 함께 정규화하고 범위를 검증한다 — dataset 계획 비교에도 재사용된다. */
+function normalizeOptions(input: FabricSmokeOptions): { documents: number; samples: number; bodyBytes: number; slotGroups: number; txPerBlock: number } {
+  return {
     documents: boundedInteger(input.documents ?? 8, 'documents', 1, 100_000),
     samples: boundedInteger(input.samples ?? 3, 'samples', 1, 1_000),
     bodyBytes: boundedInteger(input.bodyBytes ?? 1024, 'bodyBytes', 1, 256 * 1024),
     slotGroups: boundedInteger(input.slotGroups ?? 1, 'slotGroups', 1, 256),
     txPerBlock: boundedInteger(input.txPerBlock ?? DEFAULT_TX_PER_BLOCK, 'txPerBlock', 1, MAX_TX_PER_BLOCK),
   };
+}
+
+export async function runFabricPerformance(input: FabricSmokeOptions): Promise<FabricSmokeResult> {
+  await ensureFabricDeps();
+  if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
+  const dataDir = resolve(input.dataDir);
+  const options = normalizeOptions(input);
   const journalSource = input.journalPath ? resolve(input.journalPath) : join(dataDir, 'local', 'shared-ledger.sqlite');
   // --journal은 신뢰 입력이 아니다 — 디렉터리를 만들기 전에 존재를 확인한다.
   if (input.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
@@ -373,8 +380,17 @@ if (isMain()) {
     ownedData = parsed.ownedData;
     if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
     const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
-    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경 불일치로 긴 측정을 낭비하지 않기 위해서다.
-    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'fabric-adapter-synthetic') } : undefined;
+    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경·메트릭 키 불일치로 긴 측정을 낭비하지 않기 위해서다.
+    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'fabric-adapter-synthetic', COMPARABLE_METRICS) } : undefined;
+    // 옵션으로 정해지는 dataset 필드도 미리 비교한다 — journal_transactions·fabric_blocks는
+    // 측정 전에 알 수 없으므로 측정 후 assertComparable이 다시 확인한다.
+    if (baseline) {
+      const planned = normalizeOptions(parsed.options);
+      assertDatasetComparable(baseline.data.dataset, {
+        documents_requested: planned.documents, body_bytes: planned.bodyBytes, samples: planned.samples,
+        slot_groups: planned.slotGroups, tx_per_block: planned.txPerBlock, read_workload: 'all_pages_summary',
+      }, COMPARABLE_DATASET_FIELDS);
+    }
     const result = await runFabricPerformance(parsed.options);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {

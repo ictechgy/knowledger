@@ -157,3 +157,84 @@ test('performance smoke CLI rejects incomparable baselines with actionable error
   assert.equal(thresholdWithoutBaseline.status, 1);
   assert.match(thresholdWithoutBaseline.stderr, /--threshold requires --baseline/);
 });
+
+test('compareMetrics handles boundary ratios, baseline zero, and invalid baselines deterministically', async () => {
+  const { compareMetrics, RESULT_SCHEMA_VERSION } = await import('../../tools/perf-compare.ts');
+  const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8 };
+  const dataset = { documents_requested: 2 };
+  const fields = ['documents_requested'] as const;
+  const metrics = ['search'] as const;
+  const baseline = (ms: number) => ({ schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset, metrics: { search: { p95_ms: ms } }, functional_assertions: {} });
+  const current = (ms: number) => ({ mode: 'local-simulation', environment, dataset, metrics: { search: { p95_ms: ms } } });
+  // 정확히 +10% 경계는 부동소수점 오차로 회귀 판정되면 안 된다.
+  assert.deepEqual(compareMetrics(baseline(100), current(110), fields, metrics, { search: 0.1 }).regressions, []);
+  // 경계를 넘는 값은 회귀다.
+  assert.equal(compareMetrics(baseline(100), current(111), fields, metrics, { search: 0.1 }).regressions.length, 1);
+  // baseline 0 + 양수 현재값은 명시 문구와 null ratio를 기록한다.
+  const zeroBase = compareMetrics(baseline(0), current(5), fields, metrics, { search: 0 });
+  assert.equal(zeroBase.regressions.length, 1);
+  assert.match(zeroBase.regressions[0], /baseline 0 -> nonzero/);
+  assert.equal(zeroBase.entries[0].ratio, null);
+  // 빠진 메트릭·구 스키마·다른 mode는 명확한 입력 오류다.
+  assert.throws(() => compareMetrics({ schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset, metrics: {}, functional_assertions: {} }, current(1), fields, metrics, {}), /metric baseline\.metrics\.search is missing/);
+  assert.throws(() => compareMetrics({ ...baseline(1), schema_version: 1 }, current(1), fields, metrics, {}), /schema_version/);
+  assert.throws(() => compareMetrics({ ...baseline(1), mode: 'fabric-adapter-synthetic' }, current(1), fields, metrics, {}), /mode/);
+});
+
+test('reportCliResult preserves the measured result when comparison input fails', async () => {
+  const { reportCliResult, RESULT_SCHEMA_VERSION, ComparisonInputError } = await import('../../tools/perf-compare.ts');
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-report-preserve-'));
+  try {
+    const outPath = join(root, 'out.json');
+    const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8 };
+    const result = { mode: 'local-simulation', environment, dataset: { documents_requested: 2 }, metrics: { search: { p95_ms: 1 } } };
+    const baseline = { schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset: { documents_requested: 3 }, metrics: { search: { p95_ms: 1 } }, functional_assertions: {} };
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const originalExitCode = process.exitCode;
+    try {
+      process.stdout.write = (() => true) as typeof process.stdout.write;
+      assert.throws(
+        () => reportCliResult({ result, baseline: { path: 'baseline.json', data: baseline }, thresholds: {}, datasetFields: ['documents_requested'], metricNames: ['search'], outPath }),
+        ComparisonInputError,
+      );
+    } finally {
+      process.stdout.write = originalWrite;
+      process.exitCode = originalExitCode;
+    }
+    const written = JSON.parse(readFileSync(outPath, 'utf8'));
+    assert.equal(written.mode, 'local-simulation');
+    assert.equal(written.comparison, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('performance-fabric CLI compares against a baseline when optional deps are installed', async t => {
+  const { spawnSync } = await import('node:child_process');
+  const { createRequire } = await import('node:module');
+  const requireFabric = createRequire(new URL('../../packages/fabric/package.json', import.meta.url));
+  try {
+    requireFabric.resolve('@hyperledger/fabric-protos');
+  } catch {
+    t.skip('optional packages/fabric dependencies are not installed');
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-fabric-compare-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const tool = join(process.cwd(), 'tools', 'performance-fabric.ts');
+  const flags = ['--documents', '2', '--samples', '1', '--body-bytes', '1'];
+  const baseline = spawnSync(process.execPath, [tool, ...flags, '--out', 'baseline.json'], { cwd: root, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(baseline.status, 0, baseline.stderr);
+  // 실제 타이밍 지터에 의존하지 않도록 baseline 메트릭을 큰 값으로 덮어쓴다.
+  const baselineData = JSON.parse(readFileSync(join(root, 'baseline.json'), 'utf8'));
+  for (const name of Object.keys(baselineData.metrics)) {
+    const metric = baselineData.metrics[name];
+    baselineData.metrics[name] = metric && typeof metric === 'object' ? { ...metric, p95_ms: 1e12 } : 1e12;
+  }
+  writeFileSync(join(root, 'baseline.json'), JSON.stringify(baselineData));
+  const rerun = spawnSync(process.execPath, [tool, ...flags, '--baseline', 'baseline.json', '--threshold', 'ingest_total_ms=10,search=10,overview=10,replay_restart_ms=10', '--out', 'comparison.json'], { cwd: root, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(rerun.status, 0, rerun.stderr);
+  const compared = JSON.parse(rerun.stdout);
+  assert.equal(compared.mode, 'fabric-adapter-synthetic');
+  assert.deepEqual(compared.comparison.regressions, []);
+});

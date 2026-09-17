@@ -136,7 +136,7 @@ export function loadBaselineJson(baselinePath: string): Record<string, any> {
   try {
     raw = readFileSync(baselinePath, 'utf8');
   } catch (cause) {
-    throw new ComparisonInputError(`cannot read baseline file "${baselinePath}": ${(cause as Error).message}. Create one first with the same tool and dataset flags, e.g. node tools/performance-smoke.ts --documents 8 --samples 3 --out baseline.json, then pass --baseline baseline.json`);
+    throw new ComparisonInputError(`cannot read baseline file "${baselinePath}": ${(cause as Error).message}. Create one first with the same tool and dataset flags, e.g. --out baseline.json, then pass --baseline baseline.json`);
   }
   let parsed: unknown;
   try {
@@ -190,13 +190,17 @@ export interface MetricComparison {
   threshold: number | null;
 }
 
-/** 메트릭 값은 단순 ms 숫자이거나 p95_ms를 담은 LatencyMetric이다. */
+/** 메트릭 값은 단순 ms 숫자이거나 p95_ms를 담은 LatencyMetric이다. 키 자체가 없으면 "missing"으로 보고한다. */
 function metricMs(value: unknown, label: string): number {
+  if (value === undefined) {
+    throw new ComparisonInputError(`metric ${label} is missing; regenerate the baseline with the same tool version`);
+  }
   return typeof value === 'number'
     ? validateMetricValue(value, label)
     : validateMetricValue((value as { p95_ms?: unknown } | undefined)?.p95_ms, `${label}.p95_ms`);
 }
 
+/** 증가율을 사람이 읽을 수 있는 형태로 만든다 — baseline 0의 무한대는 명시 문구로 둔다. */
 function formatIncrease(ratio: number): string {
   return Number.isFinite(ratio) ? `+${(ratio * 100).toFixed(1)}%` : 'baseline 0 -> nonzero';
 }
@@ -222,7 +226,9 @@ export function compareMetrics(
     const currentMs = metricMs(current.metrics[metric], `current.metrics.${metric}`);
     const ratio = increaseRatio(currentMs, baselineMs);
     const threshold = thresholds[metric] ?? null;
-    if (threshold !== null && ratio > threshold) {
+    // 부동소수점 경계 — 110/100-1 = 0.1000000000000000055처럼 정확한 경계값이
+    // 허용 비율을 살짝 넘는 것을 회귀로 오판하지 않게 허용 오차를 둔다.
+    if (threshold !== null && ratio > threshold + Number.EPSILON * Math.max(1, threshold)) {
       regressions.push(`${metric}: ${baselineMs.toFixed(3)} -> ${currentMs.toFixed(3)} (${formatIncrease(ratio)} > ${(threshold * 100).toFixed(1)}% allowed)`);
     }
     entries.push({ metric, baseline_ms: baselineMs, current_ms: currentMs, ratio: Number.isFinite(ratio) ? ratio : null, threshold });
@@ -231,19 +237,50 @@ export function compareMetrics(
 }
 
 /**
- * Baseline 파일을 로드하고 스키마·mode·environment 호환성까지 검증한다.
+ * Baseline 파일을 로드하고 스키마·mode·environment·필수 메트릭 키까지 검증한다.
  * dataset 필드는 측정 결과가 있어야 비교할 수 있지만, 파일 부재·스키마 오류·
- * 다른 머신의 baseline은 측정 전에 잡아 긴 벤치마크 실행을 낭비하지 않는다.
+ * 다른 머신의 baseline·빠진 메트릭은 측정 전에 잡아 긴 벤치마크 실행을 낭비하지 않는다.
  */
 export function loadValidatedBaseline(
   baselinePath: string,
   expectedMode: string,
+  metricNames: readonly string[],
   environment: Record<string, any> = currentEnvironment(),
 ): Record<string, any> {
   const baseline = loadBaselineJson(baselinePath);
   validateBaselineShape(baseline, expectedMode);
   assertEnvironmentComparable(baseline.environment as Record<string, any>, environment);
+  const metrics = baseline.metrics as Record<string, unknown>;
+  for (const metric of metricNames) {
+    metricMs(metrics[metric], `baseline.metrics.${metric}`);
+  }
   return baseline;
+}
+
+/**
+ * 옵션·상수에서 미리 알 수 있는 dataset 필드를 baseline과 비교한다.
+ * planned에 없는 필드(측정 후에만 알 수 있는 값)는 건너뛰고 assertComparable이
+ * 측정 후에 다시 확인한다 — 잘못된 데이터셋 플래그는 측정 전에 거절한다.
+ */
+export function assertDatasetComparable(
+  baselineDataset: unknown,
+  planned: Record<string, any>,
+  datasetFields: readonly string[],
+): void {
+  if (!baselineDataset || typeof baselineDataset !== 'object' || Array.isArray(baselineDataset)) {
+    throw new ComparisonInputError('baseline is missing the "dataset" section; regenerate the baseline with the same tool');
+  }
+  const record = baselineDataset as Record<string, any>;
+  const mismatches: string[] = [];
+  for (const field of datasetFields) {
+    if (!(field in planned)) continue;
+    if (record[field] !== planned[field]) {
+      mismatches.push(`dataset.${field} ${JSON.stringify(record[field])} -> ${JSON.stringify(planned[field])}`);
+    }
+  }
+  if (mismatches.length) {
+    throw new ComparisonInputError(`baseline dataset is not comparable with this run's options. Differences: ${mismatches.join('; ')}. Re-measure both runs with identical dataset options or keep baselines separate.`);
+  }
 }
 
 /** reportCliResult가 요구하는 결과 형태 — 두 성능 도구의 결과 타입이 구조적으로 만족한다. */

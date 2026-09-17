@@ -8,7 +8,7 @@ import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
-import { ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
+import { assertDatasetComparable, ComparisonInputError, currentEnvironment, loadValidatedBaseline, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from './perf-compare.ts';
 import type { Actor } from '../packages/storage/local-ledger.ts';
 
 const MAX_DOCUMENTS = 100_000;
@@ -96,7 +96,8 @@ export function directoryBytes(directory: string): number {
   return total;
 }
 
-function validateOptions(options: PerformanceSmokeOptions): Required<PerformanceSmokeOptions> {
+/** CLI 옵션을 기본값과 함께 정규화하고 범위를 검증한다 — dataset 계획 비교에도 재사용된다. */
+export function validateOptions(options: PerformanceSmokeOptions): Required<PerformanceSmokeOptions> {
   if (!isAbsolute(options.dataDir)) throw new Error('dataDir must be absolute');
   return {
     dataDir: resolve(options.dataDir),
@@ -171,6 +172,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
   const searchColdTimes: number[] = [];
   const overviewTimes: number[] = [];
   let searchQueryMatches: Record<string, number> = {};
+  let measuredSearchMatches = 0;
   let coldSearchMatches = 0;
   try {
     await service.initialize();
@@ -189,6 +191,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       const search = await browseAll(service, true);
       searchTimes.push(performance.now() - started);
       if (search.length !== options.documents) throw new Error('search result count mismatch');
+      measuredSearchMatches = search.length;
       started = performance.now();
       overview = await browseAll(service);
       overviewTimes.push(performance.now() - started);
@@ -198,12 +201,11 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     // warm 검색은 marker 매치 캐시 엔트리가 살아 있을 때 바로 측정한다 — measureSearchQueryMatches가
     // 상한이 있는 매치 캐시에 다른 검색어를 채워 marker 엔트리를 밀어내므로, warm 루프를 복수
     // 검색어 측정보다 먼저 둬야 모든 샘플이 실제 cache-hit 경로를 탄다.
-    const warmOverview = await browseAll(service);
     for (let sample = 0; sample < options.samples; sample += 1) {
       const started = performance.now();
       const search = await browseAll(service, true);
       searchWarmTimes.push(performance.now() - started);
-      if (search.length !== warmOverview.filter(isPerformanceDocument).length) throw new Error('warm search result count mismatch');
+      if (search.length !== options.documents) throw new Error('warm search result count mismatch');
     }
 
     // 동일 체크포인트에서 복수 검색어를 재검색한다 — 캐시 적중 여부와 무관하게 실제 결과 수를 기록한다.
@@ -250,7 +252,7 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
       functional_assertions: {
         documents_generated: generated.length,
         documents_retrieved: overview.filter(isPerformanceDocument).length,
-        search_matches: options.documents,
+        search_matches: measuredSearchMatches,
         search_query_matches: searchQueryMatches,
         cold_search_matches: coldSearchMatches,
         replay_documents_retrieved: replayDocuments,
@@ -298,8 +300,16 @@ if (isMain()) {
     ownedData = parsed.ownedData;
     if (parsed.thresholdText && !parsed.baselinePath) throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
     const thresholds = parsed.thresholdText ? parseThresholds(parsed.thresholdText, COMPARABLE_METRICS) : {};
-    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경 불일치로 긴 측정을 낭비하지 않기 위해서다.
-    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'local-simulation') } : undefined;
+    // baseline은 측정 전에 검증한다 — 파일 부재·스키마·환경·메트릭 키 불일치로 긴 측정을 낭비하지 않기 위해서다.
+    const baseline = parsed.baselinePath ? { path: parsed.baselinePath, data: loadValidatedBaseline(parsed.baselinePath, 'local-simulation', COMPARABLE_METRICS) } : undefined;
+    // 옵션으로 정해지는 dataset 필드도 미리 비교한다 — 잘못된 플래그 조합은 측정 전에 거절한다.
+    if (baseline) {
+      const planned = validateOptions(parsed.options);
+      assertDatasetComparable(baseline.data.dataset, {
+        documents_requested: planned.documents, body_bytes: planned.bodyBytes, samples: planned.samples,
+        slot_groups: planned.slotGroups, marker, read_workload: 'all_pages_summary', search_probes: 'multi_query',
+      }, COMPARABLE_DATASET_FIELDS);
+    }
     const result = await runPerformanceSmoke(parsed.options);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {

@@ -119,9 +119,27 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   - 회귀·비회귀 CLI 테스트가 실제 타이밍에 의존하던 것을 baseline 메트릭 덮어쓰기로
     결정적으로 만들고, 단언과 반대였던 테스트 이름을 바로잡았다. cold probe는 첫 cold
     서비스에 합쳐 서비스 인스턴스 수를 줄였다.
-- Node24 경로를 적용해 `npm run check`: **304 tests / 303 passed / 0 failed / 1 기존 GC 전용 skipped**.
+- ultra-review 2라운드(claude×2 APPROVE, codex×2·grok×1 CHANGES_REQUESTED, agy 유효
+  샤드 5개 APPROVE)에서 추가로 확인한 항목과 수정:
+  - fabric 비교 dataset 필드에 `journal_transactions`·`fabric_blocks`가 빠져 다른
+    `--journal` workload의 baseline이 comparable로 통과할 수 있었다 — 두 필드를 비교
+    대상에 추가했다.
+  - 부동소수점 경계(110/100-1 > 0.1)로 정확한 경계값이 회귀로 오판될 수 있었다 —
+    임계값 비교에 허용 오차를 뒀다.
+  - baseline 메트릭 키와 옵션 파생 dataset 필드도 측정 전에 검증한다
+    (`loadValidatedBaseline`에 메트릭 목록 전달 + `assertDatasetComparable` 계획 비교).
+  - `search_matches`도 요청값 대신 실측 마지막 건수를 기록하고, warm 루프의 불필요한
+    추가 overview 순회를 제거했다. `metricMs`는 키 누락을 "missing"으로 보고하고,
+    `loadBaselineJson` 안내는 도구별 예시 대신 일반 문구로 바꿨다.
+  - `assertComparable`이 단독 호출에도 mode·dataset 섹션을 스스로 검증하고,
+    `loadBaselineJson`이 비객체 JSON을 거절한다.
+  - `compareMetrics`·`reportCliResult` 단위 테스트와 fabric CLI 조건부 비교 테스트를
+    추가했다(선택적 Fabric 의존성이 없는 환경에서는 skip). `--baseline` 단독 사용은
+    회귀 판정 없이 비교 수치만 기록하는 annotation 모드다.
+- Node24 경로를 적용해 `npm run check`: **307 tests / 306 passed / 0 failed / 1 기존 GC 전용 skipped**.
   포함된 설계·문서 검사 통과. `npm run check:types` 통과.
-- `node --test test/automation/experiments.test.ts`: 9/9 통과(신규 거절 경로 단언 추가).
+- `node --test test/automation/experiments.test.ts`: 12/12 통과(신규 거절 경로·결정적 비교·
+  reportCliResult 보존·fabric 조건부 비교 단언 추가).
 - `node tools/performance-fabric.ts --documents 2 --samples 1 --body-bytes 1`로 baseline 생성 및
   `--baseline` + `--threshold` 비교 실행 각각 exit0(합성 어댑터 기능 확인일 뿐 성능 개선·
   실제 Fabric 커밋 증명이 아니다).
