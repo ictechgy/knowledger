@@ -35,8 +35,28 @@ refs는 상태 객체를 공유하는 포인터 배열이고 검색 ids는 불�
 합성 저널을 실제 block projector·adapter로 재생한 것이며 네트워크 커밋 증명이 아니다.
 Fabric 블록 인제스트는 201블록·30.6s(블록당 ~152ms)였다.
 
+### Fabric 10만 문서 인제스트 결함 수정
+
+Fabric 10만 측정에서 두 번째 O(상태×블록) 결함을 발견했다 — `FabricBlockProjector.applyBlock`이
+블록마다 체인코드 상태 전체를 깊은 복제하고 `VerifiedBrowseIndex.prepare`가 색인 전체를
+복사·정렬했다. 인제스트가 65블록/분에서 19블록/분으로 계속 감속했다. 둘 다 쓰기 델타만
+스테이징하는 오버레이로 바꿨고, 저널 재생 단독 측정에서 커밋당 색인 비용이 2.3→36.7ms로
+선형 증가하던 곡선이 1.3-1.6ms로 평탄해졌다.
+
+| 항목 | fabric 100k(수정 후) |
+| --- | ---: |
+| 블록 인제스트 | 2,001블록·1,328s(블록당 ~664ms) |
+| search 전 페이지 p50 | 10,973ms |
+| overview 전 페이지 p50 | 12,559ms |
+| projection 재시작 재생 | 60.2s |
+| projection DB | 2.32GB |
+
+읽기 지연은 로컬 100k와 동급으로, 두 캐시 수정이 Fabric 경로에도 적용됨을 확인했다.
+기능 단언(10만 생성·조회·검색 일치·재시작 후 동일 개수)은 모두 통과했다. 인제스트의 남은
+비용은 블록 디코드·검증·SQL 기록으로 블록 크기에 비례한다.
+
 근거는 `.artifacts/large-scale-reads/`의 `local-10k-mixed8.json`, `fabric-10k.json`,
-`local-100k-pagination.json`이다.
+`local-100k-pagination.json`, `fabric-100k.json`이다.
 
 ## 대규모 읽기 경로 최적화 — 2026-09-17
 
