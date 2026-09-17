@@ -63,8 +63,8 @@ const DEFAULT_TX_PER_BLOCK = 50;
 // journal_source·journal_digest·journal_transactions·fabric_blocks는 --journal 내용이 다르면
 // 달라지는 workload 식별자다 — 개수만 비교하면 내용이 다른 동일 개수 저널이 comparable로
 // 통과하므로 원본 종류와 내용 다이제스트까지 비교 필드에 포함한다.
-const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload', 'journal_source', 'journal_transactions', 'fabric_blocks', 'journal_digest'] as const;
-const COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const;
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'tx_per_block', 'read_workload', 'journal_source', 'journal_transactions', 'fabric_blocks', 'journal_digest'] as const satisfies readonly (keyof FabricSmokeResult['dataset'])[];
+const COMPARABLE_METRICS = ['ingest_total_ms', 'search', 'overview', 'replay_restart_ms'] as const satisfies readonly (keyof FabricSmokeResult['metrics'])[];
 
 interface FabricSmokeOptions extends PerformanceSmokeOptions { txPerBlock?: number; journalPath?: string }
 
@@ -203,24 +203,31 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
 }
 
 /** Fabric 측정 옵션을 기본값과 함께 정규화하고 범위를 검증한다 — dataset 계획 비교에도 재사용된다. */
-function normalizeOptions(input: FabricSmokeOptions): { documents: number; samples: number; bodyBytes: number; slotGroups: number; txPerBlock: number } {
+function normalizeOptions(input: FabricSmokeOptions): Required<FabricSmokeOptions> {
+  if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
   return {
+    dataDir: resolve(input.dataDir),
     documents: boundedInteger(input.documents ?? 8, 'documents', 1, 100_000),
     samples: boundedInteger(input.samples ?? 3, 'samples', 1, 1_000),
     bodyBytes: boundedInteger(input.bodyBytes ?? 1024, 'bodyBytes', 1, 256 * 1024),
     slotGroups: boundedInteger(input.slotGroups ?? 1, 'slotGroups', 1, 256),
     txPerBlock: boundedInteger(input.txPerBlock ?? DEFAULT_TX_PER_BLOCK, 'txPerBlock', 1, MAX_TX_PER_BLOCK),
+    journalPath: input.journalPath ? resolve(input.journalPath) : '',
   };
+}
+
+/** 저널 원본 종류 — 계획 비교와 측정 결과가 같은 판정을 쓰도록 한 곳에서 정한다. */
+function journalSourceOf(options: { journalPath?: string }): 'generated' | 'external' {
+  return options.journalPath ? 'external' : 'generated';
 }
 
 export async function runFabricPerformance(input: FabricSmokeOptions): Promise<FabricSmokeResult> {
   await ensureFabricDeps();
-  if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
-  const dataDir = resolve(input.dataDir);
   const options = normalizeOptions(input);
-  const journalSource = input.journalPath ? resolve(input.journalPath) : join(dataDir, 'local', 'shared-ledger.sqlite');
+  const dataDir = options.dataDir;
+  const journalSource = options.journalPath || join(dataDir, 'local', 'shared-ledger.sqlite');
   // --journal은 신뢰 입력이 아니다 — 디렉터리를 만들기 전에 존재를 확인한다.
-  if (input.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
+  if (options.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
   if (existsSync(dataDir)) {
     if (readdirSync(dataDir).length !== 0) throw new Error('dataDir must be a new or empty directory');
   } else mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -233,7 +240,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
 
   // 1) 동일 생성 절차로 로컬 저널을 만든다. --journal이면 기존 저널을 재사용한다.
   const definition = demoDefinition();
-  if (!input.journalPath) {
+  if (!options.journalPath) {
     const localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
     let localVault: PrivateStore | undefined;
     try {
@@ -264,7 +271,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       throw new Error(`cannot open journal read-only (checkpoint the journal by closing its writer first): ${journalSource}`, { cause: error });
     }
     journalDb.exec('BEGIN');
-    if (input.journalPath) verifyJournalDb(journalDb, CHANNEL_ID);
+    if (options.journalPath) verifyJournalDb(journalDb, CHANNEL_ID);
     const ingest = ingestJournal(journalDb, projection, options.txPerBlock);
     journalDb.exec('COMMIT');
     journalDb.close();
@@ -303,7 +310,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
     let overview = await browseAll(opened.service);
     const generated = overview.filter((item: any) => item.payload.document_id.startsWith('doc-performance-'));
     if (generated.length !== options.documents) {
-      throw new Error(input.journalPath
+      throw new Error(options.journalPath
         ? `--journal has ${generated.length} generated documents but --documents=${options.documents}`
         : `generated document count mismatch: expected ${options.documents}, got ${generated.length}`);
     }
@@ -336,7 +343,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       schema_version: RESULT_SCHEMA_VERSION,
       mode: 'fabric-adapter-synthetic',
       environment: currentEnvironment(),
-      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, journal_source: input.journalPath ? 'external' : 'generated', journal_transactions: ingest.transactions, fabric_blocks: ingest.blocks, journal_digest: input.journalPath ? ingest.journalDigest : generatedJournalDigest(options), tx_per_block: options.txPerBlock, marker, read_workload: 'all_pages_summary' },
+      dataset: { documents_requested: options.documents, body_bytes: options.bodyBytes, samples: options.samples, slot_groups: options.slotGroups, journal_source: journalSourceOf(options), journal_transactions: ingest.transactions, fabric_blocks: ingest.blocks, journal_digest: options.journalPath ? ingest.journalDigest : generatedJournalDigest(options), tx_per_block: options.txPerBlock, marker, read_workload: 'all_pages_summary' },
       metrics: { ingest_total_ms: ingest.applyMs, ingest_per_block_ms: ingest.blocks ? ingest.applyMs / ingest.blocks : 0, search: latency(searchTimes), overview: latency(overviewTimes), replay_restart_ms: replayRestartMs, database_bytes: databaseBytesBeforeReplay },
       functional_assertions: {
         documents_generated: generated.length,
@@ -397,10 +404,10 @@ if (isMain()) {
       planned: {
         documents_requested: normalized.documents, body_bytes: normalized.bodyBytes, samples: normalized.samples,
         slot_groups: normalized.slotGroups, tx_per_block: normalized.txPerBlock, read_workload: 'all_pages_summary',
-        journal_source: parsed.options.journalPath ? 'external' : 'generated',
+        journal_source: journalSourceOf(normalized),
       },
     });
-    const result = await runFabricPerformance({ ...parsed.options, ...normalized });
+    const result = await runFabricPerformance(normalized);
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

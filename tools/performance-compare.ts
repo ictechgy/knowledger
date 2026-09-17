@@ -72,10 +72,10 @@ export function validateBaselineShape(baseline: unknown, expectedMode: string): 
     throw new ComparisonInputError(`baseline schema_version ${JSON.stringify(record.schema_version)} is not supported (expected ${RESULT_SCHEMA_VERSION}); regenerate the baseline with the same tool version`);
   }
   assertModeMatches(record.mode, expectedMode);
-  for (const section of ['environment', 'dataset', 'metrics', 'functional_assertions'] as const) {
+  for (const section of ['dataset', 'metrics', 'functional_assertions'] as const) {
     requireSection(record, section);
   }
-  const environment = record.environment as Record<string, unknown>;
+  const environment = requireSection(record, 'environment');
   for (const field of ['node', 'platform', 'arch', 'cpu_model'] as const) {
     if (typeof environment[field] !== 'string') {
       throw new ComparisonInputError(`baseline environment.${field} is missing or is not a string; regenerate the baseline with the same tool`);
@@ -341,6 +341,9 @@ export function prepareCliComparison(spec: {
   datasetFields: readonly string[];
   planned: Record<string, any>;
 }): { baseline?: { path: string; data: Record<string, any> }; thresholds: Record<string, number> } {
+  if (spec.baselinePath !== undefined && spec.baselinePath.trim() === '') {
+    throw new ComparisonInputError('--baseline requires a non-empty file path');
+  }
   if (spec.thresholdText !== undefined && !spec.baselinePath) {
     throw new ComparisonInputError('--threshold requires --baseline <file>; thresholds only apply when comparing against a baseline result');
   }
@@ -368,34 +371,38 @@ export function reportCliResult<T extends ComparableResult>(spec: {
   outPath?: string;
 }): void {
   const { result, baseline, thresholds, datasetFields, metricNames, outPath } = spec;
-  let comparison: { baseline: string; regressions: string[]; metrics: MetricComparison[] } | undefined;
+  let comparison: Record<string, unknown> | undefined;
   let comparisonError: unknown;
+  let regressions: string[] = [];
   if (baseline) {
     try {
       const verdict = compareMetrics(baseline.data, result, datasetFields, metricNames, thresholds);
+      regressions = verdict.regressions;
       comparison = { baseline: baseline.path, regressions: verdict.regressions, metrics: verdict.entries };
     } catch (error) {
+      // 비교 실패도 결과 JSON에 흔적을 남긴다 — comparison 부재는 "--baseline 미지정" 정상 경로와 구분된다.
       comparisonError = error;
+      comparison = { baseline: baseline.path, error: error instanceof Error ? error.message : String(error) };
     }
   }
   const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
   // stdout에 먼저 출력한다 — 이후 파일 쓰기나 경로 검사가 실패해도 측정 결과가 어디에도 남지 않는 일이 없다.
   process.stdout.write(`${output}\n`);
   if (outPath) {
-    // CLI 경로는 prepareCliComparison이 측정 전에 거절하지만, 직접 호출에도 baseline 파괴를 막는다.
-    if (baseline) assertDistinctOutputPath(outPath, baseline.path);
     try {
+      // CLI 경로는 prepareCliComparison이 측정 전에 거절하지만, 직접 호출에도 baseline 파괴를 막는다.
+      if (baseline) assertDistinctOutputPath(outPath, baseline.path);
       mkdirSync(resolve(outPath, '..'), { recursive: true, mode: 0o700 });
       writeFileSync(outPath, `${output}\n`, { mode: 0o600 });
     } catch (error) {
-      // 출력 경로 문제는 측정 안내가 어울리지 않는 입력 오류다 — 선행 비교 오류가 있으면 함께 보고한다.
-      const detail = `failed to write result to --out "${outPath}": ${(error as Error).message}`;
+      // 출력 경로 문제와 쓰기 실패 모두 선행 비교 오류를 가리지 않게 함께 보고한다.
+      const detail = error instanceof ComparisonInputError ? error.message : `failed to write result to --out "${outPath}": ${(error as Error).message}`;
       throw new ComparisonInputError(comparisonError ? `${detail}; comparison had already failed: ${(comparisonError as Error).message}` : detail);
     }
   }
   if (comparisonError) throw comparisonError;
-  if (comparison && comparison.regressions.length) {
-    process.stderr.write(`performance regression detected (${comparison.regressions.length} metric(s) exceeded thresholds):\n  ${comparison.regressions.join('\n  ')}\n`);
+  if (regressions.length) {
+    process.stderr.write(`performance regression detected (${regressions.length} metric(s) exceeded thresholds):\n  ${regressions.join('\n  ')}\n`);
     process.exitCode = 1;
   }
 }

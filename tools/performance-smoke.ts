@@ -20,8 +20,8 @@ const DEFAULT_SAMPLES = 3;
 const DEFAULT_BODY_BYTES = 1024;
 const SEARCH_QUERIES = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 const COLD_CACHE_QUERY = 'cold-cache-probe';
-const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'read_workload', 'search_probes'] as const;
-const COMPARABLE_METRICS = ['publish', 'search', 'search_warm', 'search_cold', 'overview', 'replay_restart_ms'] as const;
+const COMPARABLE_DATASET_FIELDS = ['documents_requested', 'body_bytes', 'samples', 'slot_groups', 'read_workload', 'search_probes'] as const satisfies readonly (keyof PerformanceSmokeResult['dataset'])[];
+const COMPARABLE_METRICS = ['publish', 'search', 'search_warm', 'search_cold', 'overview', 'replay_restart_ms'] as const satisfies readonly (keyof PerformanceSmokeResult['metrics'])[];
 
 export interface PerformanceSmokeOptions {
   dataDir: string;
@@ -140,7 +140,9 @@ function isPerformanceDocument(item: any): boolean {
   return typeof item?.payload?.document_id === 'string' && item.payload.document_id.startsWith('doc-performance-');
 }
 
-/** 복수 검색어 샘플의 실제 결과 수를 측정해 돌려준다. 각 검색어는 전체 페이지를 순회한다. */
+/** 복수 검색어 샘플의 실제 결과 수를 측정해 돌려준다. 각 검색어는 전체 페이지를 순회한다.
+seedDemo 문서도 숫자 검색어에 매치될 수 있으므로 합성 문서만 센다 — 결과 수는 이번 실행이
+생성한 workload의 검색 증거이다(사용 권한 증명이 아니다). */
 async function measureSearchQueryMatches(service: KnowledgerService): Promise<Record<string, number>> {
   const matches: Record<string, number> = {};
   for (const query of SEARCH_QUERIES) {
@@ -150,7 +152,7 @@ async function measureSearchQueryMatches(service: KnowledgerService): Promise<Re
     } catch (cause) {
       throw new Error(`search query "${query}" failed: ${(cause as Error).message}`);
     }
-    matches[query] = rows.length;
+    matches[query] = rows.filter(isPerformanceDocument).length;
   }
   return matches;
 }

@@ -22,7 +22,7 @@ PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`�
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
 - main HEAD `7461542`. 성능 도구 개선은 `feature/perf-baseline-compare` 브랜치에 있다 —
-  `tools/perf-compare.ts` 신규 + `tools/performance-smoke.ts`·`tools/performance-fabric.ts`·
+  `tools/performance-compare.ts` 신규 + `tools/performance-smoke.ts`·`tools/performance-fabric.ts`·
   `test/automation/experiments.test.ts`·`HANDOFF.md` 수정. **PR #3 오픈, CI 통과, 머지 전**.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
@@ -167,10 +167,24 @@ PR #3의 현재 헤드는 `git log -1 --oneline feature/perf-baseline-compare`�
   - 기각한 리뷰 주장: smoke의 dataset에 `journal_transactions`는 존재하지 않는
     필드이고(외부 저널 입력이 없음), `search_matches` 중복 프로퍼티 주장은 오탐
     (tsc 통과), cold 서비스는 이벤트 리스너를 등록하지 않는다.
-- Node24 경로를 적용해 `npm run check`: **308 tests / 307 passed / 0 failed / 1 기존 GC 전용 skipped**.
+- ultra-review 5라운드(claude×2 APPROVE, agy 유효 샤드 3개 중 APPROVE 2·CHANGES_REQUESTED 1;
+  codex quota 소진·grok 타임아웃으로 무효 처리)에서 확인한 항목과 수정:
+  - `search_query_matches`가 숫자 검색어에 매치되는 seedDemo 문서까지 셀 수 있었다 —
+    `isPerformanceDocument`로 필터해 합성 workload 증거만 기록한다.
+  - `COMPARABLE_DATASET_FIELDS`·`COMPARABLE_METRICS`를 `satisfies`로 결과 인터페이스의
+    키에 컴파일 타임 바인딩해 필드 오타·누락을 런타임이 아닌 tsc가 잡게 했다.
+  - 비교 실패는 결과 JSON에 `comparison.error`로 기록해 "--baseline 미지정"과 구별하고,
+    `reportCliResult`의 경로 충돌·쓰기 실패가 모두 선행 비교 오류를 병합한다.
+    빈 `--baseline` 경로와 normalizeOptions 비대칭(fabric은 dataDir·journalPath까지
+    정규화)도 정리했다. `journalSourceOf`로 계획·측정의 journal_source 판정을 공유한다.
+  - `parseThresholds` 단위 테스트를 추가하고 CLI spawn 보일러플레이트를 헬퍼로 정리했다.
+  - 기각한 리뷰 주장: `isPerformanceDocument` 미사용·검색 결과 top-level document_id
+    주장은 오탐(4곳에서 사용, `describeRevision`은 `{payload}` 반환),
+    `generatedJournalDigest`의 marker는 모듈 상수.
+- Node24 경로를 적용해 `npm run check`: **309 tests / 308 passed / 0 failed / 1 기존 GC 전용 skipped**.
   포함된 설계·문서 검사 통과. `npm run check:types` 통과.
-- `node --test test/automation/experiments.test.ts`: 13/13 통과(신규 거절 경로·결정적 비교·
-  reportCliResult 보존·경로 충돌·fabric 조건부 비교 단언 추가).
+- `node --test test/automation/experiments.test.ts`: 14/14 통과(신규 거절 경로·결정적 비교·
+  parseThresholds 단위·reportCliResult 보존·경로 충돌·fabric 조건부 비교 단언 추가).
 - `node tools/performance-fabric.ts --documents 2 --samples 1 --body-bytes 1`로 baseline 생성 및
   `--baseline` + `--threshold` 비교 실행 각각 exit0(합성 어댑터 기능 확인일 뿐 성능 개선·
   실제 Fabric 커밋 증명이 아니다).
