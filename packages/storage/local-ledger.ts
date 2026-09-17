@@ -36,6 +36,36 @@ export interface LedgerEvent {
 const ZERO_HASH = '0'.repeat(64);
 const isBrowseWrite = (key: string) => key.startsWith('kcl:v1:revision:') || key.startsWith('kcl:v1:proposal:') || key.startsWith('kcl:v1:agreement:');
 
+function validateJournalRows(rows: Iterable<{ sequence: number; record_json: string }>, channelId: string): void {
+  let previousHash = ZERO_HASH;
+  let expectedSequence = 1;
+  for (const row of rows) {
+    const event: LedgerEvent = JSON.parse(row.record_json);
+    const { block_hash, ...checkpoint } = event.checkpoint;
+    const unsigned = { checkpoint, previous_hash: event.previous_hash, timestamp: event.timestamp, validation_code: event.validation_code, reducer_version: event.reducer_version, writes: event.writes };
+    if (row.sequence !== expectedSequence || checkpoint.block_number !== expectedSequence || checkpoint.transaction_index !== 0 || checkpoint.channel_id !== channelId || event.previous_hash !== previousHash || hashRecord(unsigned) !== block_hash || event.reducer_version !== 1 || event.validation_code !== 'VALID') {
+      throw new Error('Local journal integrity check failed; projection halted');
+    }
+    for (const [key, value] of event.writes) validateWrite(key, value);
+    previousHash = block_hash;
+    expectedSequence++;
+  }
+}
+
+/** 열려 있는 저널 DB를 읽기 전용으로 검증한다 — 검증과 재생을 같은 스냅샷에 묶을 때 쓴다. */
+export function verifyJournalDb(db: DatabaseSync, channelId: string): void {
+  const stored = db.prepare('SELECT value FROM metadata WHERE key = ?').get('channel_id') as any;
+  if (!stored || stored.value !== channelId) throw new Error('Ledger channel mismatch');
+  const rows = db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
+  validateJournalRows(rows, channelId);
+}
+
+/** 입력 저널 파일을 쓰지 않고 무결성만 검증한다 — 외부에서 받은 저널을 재생하기 전에 쓴다. */
+export function verifyLocalJournal(path: string, channelId: string): void {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { verifyJournalDb(db, channelId); } finally { db.close(); }
+}
+
 function hashRecord(record: Omit<LedgerEvent, 'checkpoint'> & { checkpoint: Omit<Checkpoint, 'block_hash'> }): string {
   return createHash('sha256').update(JSON.stringify(record)).digest('hex');
 }
@@ -269,21 +299,9 @@ export class LocalLedger {
   }
 
   validateHistory(): void {
-    let previousHash = ZERO_HASH;
-    let expectedSequence = 1;
     // 순회는 호출마다 새 문장을 준비한다 — 진행 중인 반복자를 공유하면 재진입 시 서로를 리셋한다.
     const rows = this.db.prepare('SELECT sequence, record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
-    for (const row of rows) {
-      const event: LedgerEvent = JSON.parse(row.record_json);
-      const { block_hash, ...checkpoint } = event.checkpoint;
-      const unsigned = { checkpoint, previous_hash: event.previous_hash, timestamp: event.timestamp, validation_code: event.validation_code, reducer_version: event.reducer_version, writes: event.writes };
-      if (row.sequence !== expectedSequence || checkpoint.block_number !== expectedSequence || checkpoint.transaction_index !== 0 || checkpoint.channel_id !== this.channelId || event.previous_hash !== previousHash || hashRecord(unsigned) !== block_hash || event.reducer_version !== 1 || event.validation_code !== 'VALID') {
-        throw new Error('Local journal integrity check failed; projection halted');
-      }
-      for (const [key, value] of event.writes) validateWrite(key, value);
-      previousHash = block_hash;
-      expectedSequence++;
-    }
+    validateJournalRows(rows, this.channelId);
   }
 
   /** Rebuild only derived tables from the journal; no ledger transaction is changed. */

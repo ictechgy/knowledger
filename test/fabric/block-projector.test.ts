@@ -216,6 +216,33 @@ test("rejects an invalid write atomically and preserves state and cursor", { ski
   assert.deepEqual(projector.entries(), before);
 });
 
+test("a shallow fork isolates the candidate's state map from the parent", { skip: !fabricProtosAvailable }, () => {
+  const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  const epoch = keyFor.eligibilityEpoch();
+  const slot = { channel_id: channel, document_id: "doc-fork", context_id: "ctx-fork", scope_id: "scope-fork", usage_scope: "domain-definition/v1" };
+  const slotKeyName = keyFor.activeSlot(slot);
+  projector.applyBlock(block(0, [transaction({ txId: "tx-fork-base", writes: [
+    { key: epoch, value: 0 },
+    { key: slotKeyName, value: { agreement_id: null } },
+  ] })]));
+  const checkpoint = projector.checkpoint();
+  const candidate = projector.fork();
+  candidate.applyBlock(block(1, [transaction({ txId: "tx-fork-next", writes: [
+    { key: epoch, value: 1 },
+    { key: slotKeyName, value: { agreement_id: null } },
+  ] })], Buffer.from(checkpoint!.block_hash, "hex")));
+  // 후보의 커밋은 부모 상태를 바꾸지 않는다 — 폐기된 후보가 부모를 오염시키면 안 된다.
+  assert.equal(projector.read(epoch), 0);
+  assert.equal(candidate.read(epoch), 1);
+  assert.equal(projector.checkpoint()?.block_number, 0);
+  assert.equal(candidate.checkpoint()?.block_number, 1);
+  // read()는 복제본을 돌려주므로 호출자의 in-place 변형이 공유 엔트리를 오염하지 않는다.
+  const leaked = candidate.read(slotKeyName) as { agreement_id: string | null };
+  leaked.agreement_id = "mutated-by-caller";
+  assert.deepEqual(candidate.read(slotKeyName), { agreement_id: null });
+  assert.deepEqual(projector.read(slotKeyName), { agreement_id: null });
+});
+
 test("requires a complete transaction validation filter and channel match", { skip: !fabricProtosAvailable }, () => {
   const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
   const tx = transaction({ txId: "tx-channel", channelId: "other-channel", writes: [] });

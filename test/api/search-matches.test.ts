@@ -17,10 +17,10 @@ test('oversized results stay cached for offset pagination as a single large entr
   const cache = new SearchMatchCache();
   const large = Array.from({ length: 12_000 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
   cache.put('large-first', large);
-  // 상한 초과 결과도 페이지마다 전체 원장 재스캔을 피하려면 유지해야 한다 — 기존 항목은 비운다.
+  // 상한 초과 결과도 페이지마다 전체 원장 재스캔을 피하려면 유지해야 한다 — 일반 작업 세트는 남는다.
   cache.put('oversized', [...large, ...large]);
   assert.equal(cache.get('oversized')?.length, 24_000);
-  assert.equal(cache.get('large-first'), undefined, 'oversized results clear smaller entries');
+  assert.equal(cache.get('large-first')?.length, 12_000, 'oversized results keep the normal working set');
   assert.equal(cache.get('oversized')?.length, 24_000, 'repeated reads keep serving the same snapshot');
 });
 
@@ -49,6 +49,20 @@ test('re-putting the oversized key with a normal result resets oversized trackin
   for (let index = 0; index < 9; index++) cache.put(`normal-${index}`, [`revision-${index}`]);
   assert.equal(cache.get('big'), undefined, 'a downsized entry is no longer protected');
   assert.deepEqual(cache.get('normal-8'), ['revision-8']);
+});
+
+test('results beyond the oversized byte cap are not cached at all', () => {
+  const cache = new SearchMatchCache({ maxIds: 4, maxBytes: 1_024, maxOversizedBytes: 4_096 });
+  cache.put('small', ['revision-one']);
+  // 건수 상한은 넘지만 바이트 상한도 넘는 결과는 상주 대상이 아니다 — 아무것도 캐시되지 않는다.
+  const huge = Array.from({ length: 64 }, (_, index) => `sha256:${index.toString(16).padStart(64, '0')}`);
+  cache.put('too-big', huge);
+  assert.equal(cache.get('too-big'), undefined);
+  assert.equal(cache.stats.oversized, false);
+  assert.deepEqual(cache.get('small'), ['revision-one'], 'rejected oversized results keep the working set');
+  // 상한 안의 대형 결과는 여전히 상주한다.
+  cache.put('big-ok', huge.slice(0, 8));
+  assert.equal(cache.stats.oversized, true);
 });
 
 test('byte-only oversized entries are not cached and keep the normal working set', () => {

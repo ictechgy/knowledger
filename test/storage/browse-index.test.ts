@@ -187,12 +187,12 @@ test('normal revision queries cannot evict the resident oversized selection', ()
   const tail = index.query({ kind: 'revisions', mode: 'all', at, offset: total - 1, limit: 1 });
   assert.equal(tail.total, total);
   assert.equal(tail.items.length, 1);
-  // 더 새로운 체크포인트의 대형 결과만이 상주 대형 항목을 교체한다.
+  // 더 새로운 체크포인트의 대형 결과만이 상주 대형 항목을 교체하고 일반 항목은 남는다.
   const later = revision('revision-mixed-later', slot('doc-mixed-later'));
   commit(index, checkpoint(2), [[keyFor.revision(later.revision_digest), later]]);
   index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 });
   assert.equal(index.revisionCacheStats.oversized, true);
-  assert.equal(index.revisionCacheStats.entries, 1, 'only the newest oversized selection stays resident');
+  assert.ok(index.revisionCacheStats.entries > 1, 'a newer oversized result replaces the resident one without wiping normal entries');
   // 비순차 커밋은 상주 대형 항목도 무효화한다 — 그 항목의 at가 새 쓰기를 볼 수 있으므로.
   const outOfOrder = revision('revision-mixed-ooo', slot('doc-mixed-ooo'));
   commit(index, checkpoint(0), [[keyFor.revision(outOfOrder.revision_digest), outOfOrder]]);
@@ -284,6 +284,18 @@ test('a sequential commit of an earlier duplicate still lowers the published che
   commit(index, checkpoint(3), [[key, value]]);
   assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 })
     .items[0].published_checkpoint.block_number, 1);
+  // proposal·agreement도 순차 커밋에서 같은 규칙이 적용된다.
+  const prop = proposal('proposal-seq-demoted', value, '2026-09-16T01:00:00.000Z');
+  const propKey = keyFor.proposal(prop.proposal_id);
+  commit(index, checkpoint(6), [[propKey, prop]]);
+  commit(index, checkpoint(5), [[propKey, prop]]);
+  assert.equal(index.query({ kind: 'proposals', at: checkpoint(5), offset: 0, limit: 10 }).total, 1);
+  const agr = agreement('agreement-seq-demoted', prop.proposal_id, value, '2026-09-16T02:00:00.000Z');
+  const agrKey = keyFor.agreement(agr.agreement_id);
+  commit(index, checkpoint(8), [[agrKey, agr]]);
+  commit(index, checkpoint(7), [[agrKey, agr]]);
+  const annotations = index.query({ kind: 'revision-annotations', at: checkpoint(7), revision_digests: [value.revision_digest] });
+  assert.equal(annotations[0].agreement?.agreement_id, 'agreement-seq-demoted');
 });
 
 test('duplicate keys within one prepare keep the earliest published checkpoint', () => {
@@ -324,6 +336,43 @@ test('a byte-only oversized selection is not cached and keeps the working set', 
   assert.equal(result.total, 0);
   assert.equal(index.revisionCacheStats.entries, 1, 'byte-overflow selections are not cached');
   assert.equal(index.revisionCacheStats.oversized, false);
+});
+
+test('selections beyond the oversized byte cap are not cached at all', () => {
+  // 건수 상한은 넘지만 추정 바이트가 대형 상한도 넘는 선택 집합은 상주 대상이 아니다.
+  const index = new VerifiedBrowseIndex(CHANNEL, { maxRefs: 4, maxBytes: 1_024, maxOversizedBytes: 8_192 });
+  const total = 64;
+  const writes: [string, unknown][] = [];
+  for (let index_ = 0; index_ < total; index_++) {
+    const value = revision(`revision-cap-${index_}`, slot(`doc-cap-${index_}`));
+    writes.push([keyFor.revision(value.revision_digest), value]);
+  }
+  commit(index, checkpoint(1), writes);
+  index.query({ kind: 'revisions', mode: 'document', document_id: 'doc-cap-0', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.entries, 1);
+  // 64 refs × 16B + 키가 대형 상한(8,192B)을 넘지 않으면 상주한다.
+  index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(index.revisionCacheStats.oversized, true);
+  // 대형 바이트 상한을 넘는 선택 집합은 캐시되지 않고 작업 세트도 유지된다.
+  const tiny = new VerifiedBrowseIndex(CHANNEL, { maxRefs: 4, maxBytes: 1_024, maxOversizedBytes: 32 });
+  commit(tiny, checkpoint(1), writes.slice(0, 8));
+  tiny.query({ kind: 'revisions', mode: 'document', document_id: 'doc-cap-0', at: checkpoint(1), offset: 0, limit: 10 });
+  tiny.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 });
+  assert.equal(tiny.revisionCacheStats.oversized, false, 'oversized selections past the byte cap are not cached');
+  assert.equal(tiny.revisionCacheStats.entries, 1, 'the normal working set survives');
+});
+
+test('non-string selectors are rejected before cache lookup so they cannot alias omitted filters', () => {
+  const index = new VerifiedBrowseIndex(CHANNEL);
+  const value = revision('revision-selector', slot('doc-selector'));
+  commit(index, checkpoint(1), [[keyFor.revision(value.revision_digest), value]]);
+  // scope_id:null은 생략과 같은 캐시 키로 별칭됐다 — 허용하면 빈 결과가
+  // 필터 없는 질의의 캐시 항목으로 저장돼 이후 정상 질의를 오염시킨다.
+  assert.throws(() => index.query({ kind: 'revisions', mode: 'all', scope_id: null as unknown as string, at: checkpoint(1), offset: 0, limit: 10 }), /selector/i);
+  const stats = index.revisionCacheStats;
+  assert.equal(stats.entries, 0, 'rejected queries are not cached');
+  assert.equal(stats.misses, 0, 'rejected queries do not count as misses');
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(1), offset: 0, limit: 10 }).total, 1);
 });
 
 test('no-op commits keep cached selections valid', () => {

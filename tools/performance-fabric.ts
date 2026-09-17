@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { LocalLedger } from '../packages/storage/local-ledger.ts';
+import { LocalLedger, verifyJournalDb } from '../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../packages/storage/private-store.ts';
 import { KnowledgerService } from '../apps/api/service.ts';
 import { BOOTSTRAP_ACTOR, CHANNEL_ID, demoDefinition, demoFixtures } from '../examples/order-workflow/config.ts';
@@ -156,36 +156,31 @@ function blockBytes(number: number, entries: Uint8Array[], previousHashHex: stri
   return { bytes: block.serializeBinary(), hash: fabricBlockHeaderHash(header) };
 }
 
-/** 로컬 저널을 순서대로 읽어 합성 블록을 만들어 projection에 재생한다. */
-function ingestJournal(localLedgerPath: string, projection: { applyBlock(block: Uint8Array): void }, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number } {
-  const journal = new DatabaseSync(localLedgerPath, { readOnly: true });
-  try {
-    const rows = journal.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
-    let pending: Uint8Array[] = [];
-    let blockNumber = 0;
-    let previousHash = '';
-    let transactions = 0;
-    let applyMs = 0;
-    const flush = () => {
-      if (!pending.length) return;
-      const built = blockBytes(blockNumber++, pending, previousHash);
-      const started = performance.now();
-      projection.applyBlock(built.bytes);
-      applyMs += performance.now() - started;
-      previousHash = built.hash;
-      pending = [];
-    };
-    for (const row of rows) {
-      const event = JSON.parse(row.record_json);
-      pending.push(transaction(event.checkpoint.transaction_id, event.timestamp, event.writes));
-      transactions++;
-      if (pending.length >= txPerBlock) flush();
-    }
-    flush();
-    return { transactions, blocks: blockNumber, tipHash: previousHash, applyMs };
-  } finally {
-    journal.close();
+/** 이미 열린 저널 스냅샷을 순서대로 읽어 합성 블록을 만들어 projection에 재생한다. */
+function ingestJournal(journal: DatabaseSync, projection: { applyBlock(block: Uint8Array): void }, txPerBlock: number): { transactions: number; blocks: number; tipHash: string; applyMs: number } {
+  const rows = journal.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate() as Iterable<any>;
+  let pending: Uint8Array[] = [];
+  let blockNumber = 0;
+  let previousHash = '';
+  let transactions = 0;
+  let applyMs = 0;
+  const flush = () => {
+    if (!pending.length) return;
+    const built = blockBytes(blockNumber++, pending, previousHash);
+    const started = performance.now();
+    projection.applyBlock(built.bytes);
+    applyMs += performance.now() - started;
+    previousHash = built.hash;
+    pending = [];
+  };
+  for (const row of rows) {
+    const event = JSON.parse(row.record_json);
+    pending.push(transaction(event.checkpoint.transaction_id, event.timestamp, event.writes));
+    transactions++;
+    if (pending.length >= txPerBlock) flush();
   }
+  flush();
+  return { transactions, blocks: blockNumber, tipHash: previousHash, applyMs };
 }
 
 function boundedInteger(value: unknown, name: string, min: number, max: number): number {
@@ -205,14 +200,8 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
     txPerBlock: boundedInteger(input.txPerBlock ?? DEFAULT_TX_PER_BLOCK, 'txPerBlock', 1, MAX_TX_PER_BLOCK),
   };
   const journalSource = input.journalPath ? resolve(input.journalPath) : join(dataDir, 'local', 'shared-ledger.sqlite');
-  // --journal은 신뢰 입력이 아니다 — 디렉터리를 만들기 전에 존재를 확인하고,
-  // LocalLedger 생성자의 rebuildProjection→validateHistory로 채널·시퀀스·
-  // 해시체인·쓰기 검증을 전부 수행한 뒤 닫는다.
-  if (input.journalPath) {
-    if (!existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
-    const verifier = new LocalLedger(journalSource, CHANNEL_ID);
-    verifier.close();
-  }
+  // --journal은 신뢰 입력이 아니다 — 디렉터리를 만들기 전에 존재를 확인한다.
+  if (input.journalPath && !existsSync(journalSource)) throw new Error(`--journal path does not exist: ${journalSource}`);
   if (existsSync(dataDir)) {
     if (readdirSync(dataDir).length !== 0) throw new Error('dataDir must be a new or empty directory');
   } else mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -227,15 +216,16 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   const definition = demoDefinition();
   if (!input.journalPath) {
     const localLedger = new LocalLedger(localLedgerPath, CHANNEL_ID);
-    const localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
-    const localService = new KnowledgerService(localLedger, localVault, definition);
+    let localVault: PrivateStore | undefined;
     try {
+      localVault = new PrivateStore(join(localDir, 'private-local.sqlite'));
+      const localService = new KnowledgerService(localLedger, localVault, definition);
       await localService.initialize();
       await seedDemo(localService);
       for (let index = 0; index < options.documents; index += 1) await generateSyntheticDocument(localService, index, options);
     } finally {
+      try { localVault?.close(); } catch { /* 첫 실패를 보존한다 */ }
       try { localLedger.close(); } catch { /* 첫 실패를 보존한다 */ }
-      try { localVault.close(); } catch { /* 첫 실패를 보존한다 */ }
     }
   }
 
@@ -243,8 +233,17 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
   //    이 지점부터 예외 경로에서도 projection·서비스 자원을 닫아야 한다.
   let projection = new SqliteFabricProjection(projectionPath, { channel_id: CHANNEL_ID, chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
   let opened: { ledger: InstanceType<typeof FabricApplicationLedger>; vault: PrivateStore; service: KnowledgerService } | undefined;
+  let journalDb: DatabaseSync | undefined;
   try {
-    const ingest = ingestJournal(journalSource, projection, options.txPerBlock);
+    // --journal은 검증과 재생을 같은 읽기 트랜잭션 스냅샷에 묶는다 — 검증 사이에
+    // 파일이 바뀌어 섞이지 않는다. 자체 생성 저널은 LocalLedger 생성자가 검증했다.
+    journalDb = new DatabaseSync(journalSource, { readOnly: true });
+    journalDb.exec('BEGIN');
+    if (input.journalPath) verifyJournalDb(journalDb, CHANNEL_ID);
+    const ingest = ingestJournal(journalDb, projection, options.txPerBlock);
+    journalDb.exec('COMMIT');
+    journalDb.close();
+    journalDb = undefined;
 
     // 3) Fabric 어댑터 위에서 동일한 전체 페이지 읽기 workload를 측정한다.
     const source = {
@@ -324,6 +323,7 @@ export async function runFabricPerformance(input: FabricSmokeOptions): Promise<F
       assessment: { functional_pass: true, performance: 'measurement_only', fabric_sla_proven: false, note: 'Synthetic journal replay through the real block projector and adapter; not a network commit proof.' },
     };
   } finally {
+    try { journalDb?.close(); } catch { /* 첫 실패를 보존한다 */ }
     try { await opened?.ledger.close(); } catch { /* 첫 실패를 보존한다 */ }
     try { opened?.vault.close(); } catch { /* 첫 실패를 보존한다 */ }
     // ledger.close()는 projection을 함께 닫는다 — 서비스를 열기 전에 실패한 경로를 위해 idempotent close를 호출한다.
