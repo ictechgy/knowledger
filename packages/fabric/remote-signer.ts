@@ -271,7 +271,7 @@ export function createAttestationSerializer(context: SigningAttestationContext):
   owned[SERIALIZER_OWNER] = owner;
   let queue: Promise<void> = Promise.resolve();
   const isOwner = () => owned[SERIALIZER_OWNER] === owner;
-  return <T>(attestation: Attestation | undefined, operation: () => Promise<T>): Promise<T> => {
+  const serializer = <T>(attestation: Attestation | undefined, operation: () => Promise<T>): Promise<T> => {
     // After releaseAttestationSerializer a reconnect may claim the context for
     // a new client; a stale serializer must fail closed rather than install an
     // attestation into a context it no longer owns.
@@ -290,6 +290,10 @@ export function createAttestationSerializer(context: SigningAttestationContext):
     queue = run.then(() => undefined, () => undefined);
     return run;
   };
+  // Tag the serializer with its claim so a later release can verify it still
+  // owns the context before clearing it.
+  (serializer as AttestationSerializer & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER] = owner;
+  return serializer;
 }
 
 /**
@@ -317,9 +321,15 @@ export function closeAllResources(operations: ReadonlyArray<() => unknown>, labe
  * installing into a reclaimed context, while an already-installed operation
  * reads back an empty slot and its unattested request is rejected by
  * protected keys.
+ *
+ * When the claiming serializer is supplied, the release only clears its own
+ * claim: a repeated close from an old client cannot release a replacement
+ * serializer that has since claimed the same context.
  */
-export function releaseAttestationSerializer(context: SigningAttestationContext): void {
-  delete (context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER];
+export function releaseAttestationSerializer(context: SigningAttestationContext, serializer?: AttestationSerializer): void {
+  const owned = context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object };
+  if (serializer !== undefined && owned[SERIALIZER_OWNER] !== (serializer as AttestationSerializer & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER]) return;
+  delete owned[SERIALIZER_OWNER];
   context.current = undefined;
 }
 

@@ -235,7 +235,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) {
-          audit?.({ record_type: "signing_rejected", reason: "certificate_mismatch", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+          audit?.({ record_type: "signing_rejected", reason: "certificate_mismatch", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, digest: typeof request.digest === "string" ? request.digest : null, certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         const digest = base64(request.digest, 32);
@@ -288,7 +288,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         }
         audit?.({
           record_type: attestation === undefined ? "signing" : "signing_attestation", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id,
-          attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+          attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null },
           signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }),
         });
         response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }) });
@@ -296,7 +296,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         // A signing exception or timeout may still have invoked the key;
         // record the failure best-effort (the audit write itself may be the
         // cause, so it must not throw here).
-        try { audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null }); } catch { /* audit may itself be the failure */ }
+        try { audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, digest: typeof request.digest === "string" ? request.digest : null, certificate_sha256: request.certificate === undefined ? null : createHash("sha256").update(Buffer.from(String(request.certificate), "base64url")).digest("hex") }); } catch { /* audit may itself be the failure */ }
         response(socket, { ok: false, error: "rejected" });
       } finally { release(); }
     })();
@@ -425,6 +425,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
   const keys = loadKeys(references);
   const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath, [socketPath, ...(options.reservedPaths ?? []), ...references.flatMap(reference => [reference.certificate_path, reference.private_key_path])]);
   let active = 0;
+  const drainWaiters = new Set<() => void>();
   const connections = new Set<Socket>();
   const server: Server = createServer(socket => {
     if (connections.size >= MAX_CONNECTIONS) {
@@ -437,7 +438,13 @@ export async function startSigningService(options: { socketPath: string; keys: r
       if (active >= MAX_CONCURRENCY) return false;
       active += 1;
       return true;
-    }, () => { active -= 1; }, auditLog?.audit);
+    }, () => {
+      active -= 1;
+      if (active === 0) {
+        for (const waiter of drainWaiters) waiter();
+        drainWaiters.clear();
+      }
+    }, auditLog?.audit);
   });
   server.maxConnections = MAX_CONNECTIONS;
   let owned = false;
@@ -474,6 +481,16 @@ export async function startSigningService(options: { socketPath: string; keys: r
       closed = true;
       for (const connection of connections) connection.destroy();
       await new Promise<void>(resolveClosed => server.close(() => resolveClosed()));
+      // Let in-flight signing handlers finish so their audit records land
+      // before the descriptor closes; bounded by the request timeout (two
+      // signWithTimeout calls per handler at most) so shutdown cannot stall.
+      if (active > 0) {
+        await new Promise<void>(resolve => {
+          const deadline = setTimeout(resolve, 2 * REQUEST_TIMEOUT_MS + 1_000);
+          deadline.unref();
+          drainWaiters.add(() => { clearTimeout(deadline); resolve(); });
+        });
+      }
       auditLog?.close();
       if (owned) {
         try {
