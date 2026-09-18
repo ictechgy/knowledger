@@ -1,10 +1,11 @@
-import { createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
+import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseStrictJson } from "../../packages/fabric/canonical.ts";
+import { jcsBytes, parseStrictJson } from "../../packages/fabric/canonical.ts";
+import { assertSigningAttestation, type SigningAttestation } from "../../packages/fabric/remote-signer.ts";
 
 const MAX_FRAME_BYTES = 32 * 1024;
 const MAX_CERTIFICATE_BYTES = 16 * 1024;
@@ -30,12 +31,20 @@ interface LoadedKey {
   validFrom: number;
   validTo: number;
   sign: (digest: Uint8Array) => Promise<Uint8Array>;
+  org_id?: string;
+  actor_id?: string;
+  actor_kind?: "human" | "agent";
+  allowed_actor_kinds: readonly ("human" | "agent")[];
 }
 
 export interface SigningKeyReference {
   key_id: string;
   certificate_path: string;
   private_key_path: string;
+  /** When configured, attested signing must declare this organisation. */
+  org_id?: string;
+  /** Actor kinds permitted for attested signing; defaults to human-only. */
+  allowed_actor_kinds?: readonly ("human" | "agent")[];
 }
 
 interface SignRequest {
@@ -43,11 +52,13 @@ interface SignRequest {
   key_id: string;
   digest: string;
   certificate: string;
+  attestation?: SigningAttestation;
 }
 
 interface SignResponse {
   ok: true;
   signature: string;
+  attestation_signature?: string;
 }
 
 interface ErrorResponse {
@@ -92,13 +103,17 @@ function parseRequest(body: Buffer): SignRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid request");
   const request = value as Partial<SignRequest>;
   const keys = ownKeys(value);
-  if (keys.length !== 4 || !keys.includes("operation") || !keys.includes("key_id") || !keys.includes("digest") || !keys.includes("certificate") || request.operation !== "sign") {
+  const attested = keys.includes("attestation");
+  if (keys.length !== (attested ? 5 : 4) || !keys.includes("operation") || !keys.includes("key_id") || !keys.includes("digest") || !keys.includes("certificate") || request.operation !== "sign") {
     throw new Error("invalid request");
   }
   if (typeof request.key_id !== "string" || !KEY_ID_PATTERN.test(request.key_id)) throw new Error("unknown key");
   base64(request.digest, 32);
   base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
-  return request as SignRequest;
+  try {
+    const attestation = attested ? assertSigningAttestation(request.attestation) : undefined;
+    return { operation: "sign", key_id: request.key_id, digest: request.digest as string, certificate: request.certificate as string, ...(attestation === undefined ? {} : { attestation }) };
+  } catch { throw new Error("invalid request"); }
 }
 
 function assertKeyReferences(value: readonly SigningKeyReference[]): readonly SigningKeyReference[] {
@@ -110,9 +125,27 @@ function assertKeyReferences(value: readonly SigningKeyReference[]): readonly Si
       || typeof entry.private_key_path !== "string" || !isAbsolute(entry.private_key_path)) {
       throw new TypeError("Signing key references must contain unique absolute paths and safe IDs");
     }
+    const kinds = entry.allowed_actor_kinds ?? ["human"];
+    if (entry.org_id !== undefined && (typeof entry.org_id !== "string" || entry.org_id.length === 0 || entry.org_id.length > 128)
+      || !Array.isArray(kinds) || kinds.length === 0 || kinds.length > 2 || new Set(kinds).size !== kinds.length
+      || kinds.some(kind => kind !== "human" && kind !== "agent")) {
+      throw new TypeError("Signing key references must contain a bounded organisation and actor-kind allowlist");
+    }
     ids.add(entry.key_id);
-    return { key_id: entry.key_id, certificate_path: entry.certificate_path, private_key_path: entry.private_key_path };
+    return { key_id: entry.key_id, certificate_path: entry.certificate_path, private_key_path: entry.private_key_path, ...(entry.org_id === undefined ? {} : { org_id: entry.org_id }), allowed_actor_kinds: Object.freeze([...kinds]) };
   }));
+}
+
+function certificateActor(certificate: Buffer): { actor_id?: string; actor_kind?: "human" | "agent" } {
+  try {
+    const { ClientIdentity } = requireFabric("fabric-shim") as { ClientIdentity: new (stub: unknown) => { getAttributeValue(name: string): string | null } };
+    const identity = new ClientIdentity({ getCreator: () => ({ mspid: "", idBytes: certificate }), getChannelID: () => "", getTxID: () => "signing-service-validation" });
+    const actorId = identity.getAttributeValue("kcl.actor_id");
+    const actorKind = identity.getAttributeValue("kcl.actor_kind");
+    if (typeof actorId !== "string" || actorId.length === 0 || actorId.length > 128) return {};
+    if (actorKind !== "human" && actorKind !== "agent") return {};
+    return { actor_id: actorId, actor_kind: actorKind };
+  } catch { return {}; }
 }
 
 function loadKeys(references: readonly SigningKeyReference[]): Map<string, LoadedKey> {
@@ -128,7 +161,8 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || Date.now() < validFrom || Date.now() >= validTo) throw new Error("expired certificate");
       const privateKey = createPrivateKey(readFileSync(reference.private_key_path));
       if (!x509.checkPrivateKey(privateKey)) throw new Error("certificate and key do not match");
-      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey) });
+      const actor = certificateActor(certificate);
+      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: reference.allowed_actor_kinds ?? Object.freeze(["human"]) });
     } catch { throw new Error("Configured signing identity is invalid"); }
   }
   return loaded;
@@ -147,7 +181,22 @@ function pathAlreadyExists(path: string): boolean {
   }
 }
 
-async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire: () => boolean, release: () => void): Promise<void> {
+interface AttestationAudit {
+  (record: Record<string, unknown>): void;
+}
+
+function attestationPayloadDigest(keyId: string, attestation: SigningAttestation, digest: Buffer, certificate: Buffer): Buffer {
+  return createHash("sha256").update(jcsBytes({
+    record_type: "signing_attestation",
+    version: 1,
+    key_id: keyId,
+    attestation,
+    digest: digest.toString("base64url"),
+    certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+  })).digest();
+}
+
+async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire: () => boolean, release: () => void, audit?: AttestationAudit): Promise<void> {
   let input = Buffer.alloc(0);
   let length: number | undefined;
   let handled = false;
@@ -175,12 +224,32 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) { response(socket, { ok: false, error: "rejected" }); return; }
+        const attestation = request.attestation;
+        if (attestation !== undefined
+          && (key.actor_id !== attestation.actor_id || key.actor_kind !== attestation.actor_kind
+            || (key.org_id !== undefined && key.org_id !== attestation.org_id)
+            || !key.allowed_actor_kinds.includes(attestation.actor_kind))) {
+          response(socket, { ok: false, error: "rejected" }); return;
+        }
         const digest = base64(request.digest, 32);
         const signature = await signWithTimeout(key.sign, digest);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           response(socket, { ok: false, error: "rejected" }); return;
         }
-        response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url") });
+        let attestationSignature: Buffer | undefined;
+        if (attestation !== undefined) {
+          const attested = await signWithTimeout(key.sign, attestationPayloadDigest(request.key_id, attestation, digest, certificate));
+          if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(attested instanceof Uint8Array) || attested.byteLength === 0 || attested.byteLength > MAX_SIGNATURE_BYTES) {
+            response(socket, { ok: false, error: "rejected" }); return;
+          }
+          attestationSignature = Buffer.from(attested);
+          audit?.({
+            record_type: "signing_attestation", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id,
+            attestation, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+            signature: Buffer.from(signature).toString("base64url"), attestation_signature: attestationSignature.toString("base64url"),
+          });
+        }
+        response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }) });
       } catch {
         response(socket, { ok: false, error: "rejected" });
       } finally { release(); }
@@ -201,7 +270,24 @@ async function signWithTimeout(sign: (digest: Uint8Array) => Promise<Uint8Array>
   }
 }
 
-export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[] }): Promise<SigningService> {
+const MAX_AUDIT_PATH_BYTES = 1024;
+
+function openAuditLog(path: string): AttestationAudit {
+  if (typeof path !== "string" || path.length === 0 || !isAbsolute(path) || path.includes("\u0000") || Buffer.byteLength(path) > MAX_AUDIT_PATH_BYTES) throw new TypeError("A valid audit log path is required");
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const parentMode = lstatSync(parent).mode & 0o777;
+  if (parentMode !== 0o700) throw new Error("Signing audit log parent directory must be mode 700");
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
+  return record => appendFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+}
+
+export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[]; auditLogPath?: string }): Promise<SigningService> {
   const socketPath = options.socketPath;
   if (typeof socketPath !== "string" || socketPath.length === 0 || !isAbsolute(socketPath) || socketPath.includes("\u0000") || Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) throw new TypeError("A valid Unix socket path is required");
   if (pathAlreadyExists(socketPath)) throw new Error("Signing socket already exists; refusing to replace it");
@@ -209,6 +295,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
+  const audit = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath);
   const keys = loadKeys(assertKeyReferences(options.keys));
   let active = 0;
   const connections = new Set<Socket>();
@@ -223,7 +310,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
       if (active >= MAX_CONCURRENCY) return false;
       active += 1;
       return true;
-    }, () => { active -= 1; });
+    }, () => { active -= 1; }, audit);
   });
   server.maxConnections = MAX_CONNECTIONS;
   let owned = false;
@@ -271,6 +358,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let socketPath: string | undefined;
   let configPath: string | undefined;
+  let auditLogPath: string | undefined;
   let demo = false;
   let demoKeyId: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
@@ -284,21 +372,22 @@ async function main(): Promise<void> {
     if (!value || value.startsWith('--')) throw new Error('Signing service options require values');
     if (option === '--socket' && socketPath === undefined) socketPath = value;
     else if (option === '--config' && configPath === undefined) configPath = value;
+    else if (option === '--audit-log' && auditLogPath === undefined) auditLogPath = value;
     else if (option === '--key-id' && demoKeyId === undefined) demoKeyId = value;
     else throw new Error('Unknown or duplicate signing service option');
   }
   if (!socketPath || (!demo && !configPath) || (demo && configPath) || (!demo && demoKeyId !== undefined)) {
-    throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH (--config KEY_REFS_JSON | --demo) [--key-id ID]');
+    throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH (--config KEY_REFS_JSON | --demo) [--key-id ID] [--audit-log ABSOLUTE_PATH]');
   }
   let service: SigningService;
   if (demo) {
     const wrapper = await import("../../examples/order-workflow/signing-service.ts");
-    service = await wrapper.startDevelopmentSigningService({ socketPath, keyIds: demoKeyId === undefined ? undefined : [demoKeyId] });
+    service = await wrapper.startDevelopmentSigningService({ socketPath, keyIds: demoKeyId === undefined ? undefined : [demoKeyId], auditLogPath });
   } else {
     const config = JSON.parse(readFileSync(resolve(process.cwd(), configPath!), "utf8")) as unknown;
     const references = Array.isArray(config) ? config : (config && typeof config === "object" && "keys" in config ? (config as { keys: unknown }).keys : undefined);
     if (!Array.isArray(references)) throw new Error("Signing key configuration must be an array or an object with keys");
-    service = await startSigningService({ socketPath, keys: references as SigningKeyReference[] });
+    service = await startSigningService({ socketPath, keys: references as SigningKeyReference[], auditLogPath });
   }
   const stop = (): void => { void service.close().finally(() => process.exit(0)); };
   process.once("SIGINT", stop);

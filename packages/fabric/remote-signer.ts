@@ -10,6 +10,55 @@ const MAX_SOCKET_PATH_BYTES = 104;
 
 export type SigningKeyId = string;
 
+/** Decision context the organisation gateway attests before using its key. */
+export interface SigningAttestation {
+  org_id: string;
+  actor_id: string;
+  actor_kind: "human" | "agent";
+  command_id: string;
+  command_type: string;
+  command_digest: string;
+  phase: "proposal" | "submit";
+  tx_id?: string;
+}
+
+/** Mutable per-connection slot the gateway client fills before each signing call. */
+export interface SigningAttestationContext {
+  current?: SigningAttestation;
+}
+
+const MAX_ATTESTATION_FIELD_CHARS = 128;
+const COMMAND_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
+function attestationField(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_ATTESTATION_FIELD_CHARS) {
+    throw new TypeError(`Signing attestation ${name} is outside the supported bounds`);
+  }
+  return value;
+}
+
+export function assertSigningAttestation(value: unknown): SigningAttestation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Signing attestation must be an object");
+  const attestation = value as Partial<SigningAttestation>;
+  const keys = Object.keys(value);
+  const required = ["org_id", "actor_id", "actor_kind", "command_id", "command_type", "command_digest", "phase"];
+  if (!required.every(key => keys.includes(key)) || !keys.every(key => required.includes(key) || key === "tx_id")) {
+    throw new TypeError("Signing attestation has missing or unknown fields");
+  }
+  const orgId = attestationField(attestation.org_id, "org_id");
+  const actorId = attestationField(attestation.actor_id, "actor_id");
+  const commandId = attestationField(attestation.command_id, "command_id");
+  const commandType = attestationField(attestation.command_type, "command_type");
+  if (attestation.actor_kind !== "human" && attestation.actor_kind !== "agent") throw new TypeError("Signing attestation actor_kind is outside the supported bounds");
+  if (typeof attestation.command_digest !== "string" || !COMMAND_DIGEST_PATTERN.test(attestation.command_digest)) throw new TypeError("Signing attestation command_digest is outside the supported bounds");
+  if (attestation.phase !== "proposal" && attestation.phase !== "submit") throw new TypeError("Signing attestation phase is outside the supported bounds");
+  return {
+    org_id: orgId, actor_id: actorId, actor_kind: attestation.actor_kind,
+    command_id: commandId, command_type: commandType, command_digest: attestation.command_digest, phase: attestation.phase,
+    ...(attestation.tx_id === undefined ? {} : { tx_id: attestationField(attestation.tx_id, "tx_id") }),
+  };
+}
+
 export type RemoteSignerErrorCode =
   | "invalid_request"
   | "unknown_key"
@@ -33,6 +82,8 @@ export interface RemoteSignerOptions {
   keyId: SigningKeyId;
   certificate: Uint8Array;
   timeoutMs?: number;
+  /** Per-request decision context; called before every signing frame is sent. */
+  attestation?: () => SigningAttestation | undefined;
 }
 
 interface SignRequest {
@@ -40,11 +91,13 @@ interface SignRequest {
   key_id: SigningKeyId;
   digest: string;
   certificate: string;
+  attestation?: SigningAttestation;
 }
 
 interface SignResponse {
   ok: true;
   signature: string;
+  attestation_signature?: string;
 }
 
 interface ErrorResponse {
@@ -107,7 +160,8 @@ function decodeResponse(body: Buffer): Buffer {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new RemoteSignerError("protocol_error");
   const response = parsed as { ok?: unknown; signature?: unknown; error?: unknown };
-  if (response.ok === true && ownKeys(parsed).length === 2 && ownKeys(parsed).includes("signature")) {
+  if (response.ok === true && (ownKeys(parsed).length === 2 || (ownKeys(parsed).length === 3 && ownKeys(parsed).includes("attestation_signature"))) && ownKeys(parsed).includes("signature")) {
+    if ("attestation_signature" in parsed) decodeBase64Url((parsed as { attestation_signature?: unknown }).attestation_signature, undefined, 4 * 1024);
     return decodeBase64Url(response.signature, undefined, 4 * 1024);
   }
   if (response.ok === false && ownKeys(parsed).length === 2 && ownKeys(parsed).includes("error")) {
@@ -138,11 +192,19 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
     if (!(digest instanceof Uint8Array) || digest.byteLength !== 32) {
       return Promise.reject(new RemoteSignerError("invalid_request", "A 32-byte digest is required"));
     }
+    let attestation: SigningAttestation | undefined;
+    try {
+      const supplied = options.attestation?.();
+      attestation = supplied === undefined ? undefined : assertSigningAttestation(supplied);
+    } catch {
+      return Promise.reject(new RemoteSignerError("invalid_request", "Signing attestation is outside the supported bounds"));
+    }
     const request: SignRequest = {
       operation: "sign",
       key_id: options.keyId,
       digest: Buffer.from(digest).toString("base64url"),
       certificate: certificate.toString("base64url"),
+      ...(attestation === undefined ? {} : { attestation }),
     };
     return new Promise<Uint8Array>((resolve, reject) => {
       const socket = connectSocket({ path: options.socketPath });

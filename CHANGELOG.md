@@ -5,6 +5,21 @@ All notable changes to Knowledger are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Organisation signing-gateway attestation: the remote sign request can carry a
+  decision attestation (actor, organisation, command binding, Fabric phase and
+  transaction ID). The signing service verifies it against the certificate's
+  `kcl.actor_*` attributes and the key's configured `org_id` before signing,
+  restricts attested signing to human actors by default via
+  `allowed_actor_kinds`, and issues an `attestation_signature` receipt plus a
+  JSONL audit record (`--audit-log`) as the organisation's testimony.
+- `SigningAttestation`/`SigningAttestationContext` protocol types and
+  `decisionAttestation` helper; the gateway client refreshes the shared
+  attestation context before proposal and submit signing calls.
+
 ## [0.2.0] — 2026-09-18
 
 ### Added

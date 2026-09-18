@@ -11,10 +11,10 @@ export const DEVELOPMENT_SIGNING_KEY_IDS = [
 
 export type DevelopmentSigningKeyId = typeof DEVELOPMENT_SIGNING_KEY_IDS[number];
 
-const approvedIdentities: Record<DevelopmentSigningKeyId, { domain: string }> = {
-  "person-sales-owner": { domain: "sales.kcl.test" },
-  "person-fulfillment-owner": { domain: "fulfillment.kcl.test" },
-  "person-settlement-owner": { domain: "settlement.kcl.test" },
+const approvedIdentities: Record<DevelopmentSigningKeyId, { domain: string; org_id: string }> = {
+  "person-sales-owner": { domain: "sales.kcl.test", org_id: "SalesMSP" },
+  "person-fulfillment-owner": { domain: "fulfillment.kcl.test", org_id: "FulfillmentMSP" },
+  "person-settlement-owner": { domain: "settlement.kcl.test", org_id: "SettlementMSP" },
 };
 
 function selectedKeyIds(value: readonly string[] | undefined): readonly DevelopmentSigningKeyId[] {
@@ -40,10 +40,11 @@ function references(keyIds: readonly DevelopmentSigningKeyId[]) {
       key_id: keyId,
       certificate_path: resolve(msp, "signcerts", `${user}-cert.pem`),
       private_key_path: resolve(keyDir, keyFiles[0].name),
+      org_id: approvedIdentities[keyId].org_id,
     };
   });
 }
 
-export async function startDevelopmentSigningService(options: { socketPath: string; keyIds?: readonly string[] }): Promise<SigningService> {
-  return startSigningService({ socketPath: options.socketPath, keys: references(selectedKeyIds(options.keyIds)) });
+export async function startDevelopmentSigningService(options: { socketPath: string; keyIds?: readonly string[]; auditLogPath?: string }): Promise<SigningService> {
+  return startSigningService({ socketPath: options.socketPath, keys: references(selectedKeyIds(options.keyIds)), auditLogPath: options.auditLogPath });
 }

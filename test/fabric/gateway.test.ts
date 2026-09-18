@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { idempotencyDigest } from "../../packages/domain/index.ts";
-import { FabricGatewayTransport, connectOfficialFabricGateway } from "../../packages/fabric/gateway.ts";
+import { decisionAttestation, FabricGatewayTransport, connectOfficialFabricGateway } from "../../packages/fabric/gateway.ts";
+import { assertSigningAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { SqliteOutbox } from "../../packages/fabric/sqlite-outbox.ts";
 import type { DurableOutbox, FabricGatewayClient, GatewayCommand, GatewayProposal } from "../../packages/fabric/types.ts";
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -136,6 +137,35 @@ test("official SDK adapter sends Execute JSON without transport-only actor metad
   await client.newProposal(command("cmd-official"));
   assert.equal(seen?.name, "Execute");
   assert.deepEqual(JSON.parse(seen?.argument ?? "{}"), { command_id: "cmd-official", type: "fence", input: { nonce: "cmd-official" } });
+});
+
+test("official gateway refreshes the signing attestation at each signing phase", async () => {
+  const context: SigningAttestationContext = {};
+  const built: Array<{ phase: string; txId: string | undefined }> = [];
+  const fakeContract = {
+    newProposal() {
+      return { getTransactionId: () => "tx-attested", async endorse() { return { async submit() { return { async getStatus() { return { code: 0 }; } }; }, async getResult() { return new Uint8Array(); } }; } };
+    },
+    async evaluateTransaction() { return new Uint8Array(); },
+  };
+  const client = await connectOfficialFabricGateway({
+    client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer: async digest => digest },
+    module: { connect() { return { getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
+    attestation: {
+      context,
+      build: (cmd, phase, txId) => { built.push({ phase, txId }); return decisionAttestation({ org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" }, cmd, phase, txId); },
+    },
+  });
+  const cmd = command("cmd-attested");
+  const endorsement = await (await client.newProposal(cmd)).endorse();
+  await endorsement.submit();
+  assert.deepEqual(built, [{ phase: "proposal", txId: undefined }, { phase: "proposal", txId: "tx-attested" }, { phase: "submit", txId: "tx-attested" }]);
+  const current = assertSigningAttestation(context.current);
+  assert.equal(current.phase, "submit");
+  assert.equal(current.tx_id, "tx-attested");
+  assert.equal(current.actor_id, "person-sales-owner");
+  assert.equal(current.command_digest, idempotencyDigest(cmd));
 });
 
 test("SQLite outbox persists recoverable attempts", async () => {

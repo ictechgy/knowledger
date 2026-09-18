@@ -24,10 +24,10 @@ export async function createDevelopmentAuthRuntime(options: { dataDir: string; o
   try {
     const runtime = await createFabricTestRuntime(options.dataDir, {
       organization,
-      signerProvider: (actor, certificate) => {
+      signerProvider: (actor, certificate, attestation) => {
         const keyId = DEVELOPMENT_SIGNING_KEY_IDS.find(id => id === actor.actor_id);
         if (!keyId) throw new Error('No development signing key is bound to this actor');
-        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate });
+        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate, attestation: () => attestation?.current });
       },
       authorizeActor: actor => authentication.assertCurrentActor(actor),
     });

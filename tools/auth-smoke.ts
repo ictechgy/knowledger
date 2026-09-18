@@ -59,9 +59,9 @@ try {
   let submissionReached: (() => void) | undefined;
   let submissionGate: Promise<void> | undefined;
   const runtime = await createFabricTestRuntime(dataDir, {
-    signerProvider: (actor, certificate) => {
+    signerProvider: (actor, certificate, attestation) => {
       const keyId = DEVELOPMENT_SIGNING_KEY_IDS.find(id => id === actor.actor_id); assert.ok(keyId);
-      return createRemoteSigner({ socketPath, keyId, certificate });
+      return createRemoteSigner({ socketPath, keyId, certificate, attestation: () => attestation?.current });
     },
     authorizeActor: async (actor, phase) => {
       if (phase === 'submit' && pauseNextSubmit) { pauseNextSubmit = false; submissionReached?.(); await submissionGate; }

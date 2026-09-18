@@ -32,6 +32,7 @@ Bootstrap 시에는 창립 참여 조직들이 channel genesis/config hash, 초�
 - Fabric MSP는 Member/Admin/Client/Peer 같은 네트워크 principal을 다룬다. `물류 DomainOwner` 같은 업무 역할은 versioned application RoleBinding으로 관리한다.
 - RoleBinding은 context, role, organization, subject, binding version을 결속한다. chaincode는 외부 SSO/LDAP에 질의하지 않는다.
 - v1 조직 gateway는 `이 actor가 이 화면에서 이 결정을 했다`고 **조직이 증언**한다. 원장이 개별 인간의 물리적 확인을 암호학적으로 직접 입증한다고 표현하지 않는다. gateway 탈취는 그 조직의 승인 귀속을 위협한다.
+- 개발용 구현에서 이 증언은 sign 요청의 `attestation` 필드로 전달된다. 조직 signing service는 서명 전에 attestation의 actor·org가 인증서 `kcl.actor_*` 속성과 키 설정의 `org_id`·`allowed_actor_kinds`(기본 human)와 일치하는지 확인하고, 서명된 Fabric digest·attestation 서명·결정 요약을 조직 감사 기록으로 남긴다. `command_digest`는 revision digest·slot·policy version·membership epoch·role binding version을 포함한 입력 전체를 결속한다. 세션 신선도·domain role·usage scope의 1차 검증은 애플리케이션 인증의 단계별 `assertCurrentActor` 재검사·도메인 검증·chaincode에 남아 있으며, 운영 gateway는 이들을 독립 재검증하는 단계로 발전한다.
 - 사람의 독립 서명이 필요한 환경에서는 등록된 사용자 키/WebAuthn·하드웨어 키와 detached approval signature를 추가 설계해야 한다. v1 채택 전 그 요구가 있으면 별도 구현 gate로 올린다.
 - AI는 draft/proposal 작성 identity만 갖는다. publish, approve, policy change, signing key 사용을 자기 도구 권한으로 얻지 않는다.
 - 키는 조직별 KMS/HSM 또는 동등한 통제 안에 둔다. 한 중앙 운영자가 모든 private key를 보유하는 배치는 분산 신뢰로 인정하지 않는다.
