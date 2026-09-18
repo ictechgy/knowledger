@@ -155,7 +155,11 @@ then fails instead of merging, so signing fails closed until the operator
 repairs the file and restarts the service. The file is opened once with no-follow
 semantics, validated by descriptor,
 appended with a single write call per record, flushed before the response is
-acknowledged and closed with the service. Record timestamps are service-asserted
+acknowledged and closed with the service — records arriving after close fail
+the request rather than being dropped, and a startup failure removes an
+empty log the service itself created. Rejection records emitted after a
+signature was already produced carry the emitted signature bytes so any
+leaked signature can be matched against the ledger. Record timestamps are service-asserted
 operational metadata, not part of the signed evidence. The gateway client
 serialises every signer-bearing SDK call on a connection — endorse, submit,
 status and evaluate — installing the attestation inside the same critical

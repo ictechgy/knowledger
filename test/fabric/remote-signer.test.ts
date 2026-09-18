@@ -379,11 +379,17 @@ test("remote signer rejects malformed attestation receipts", async t => {
   const directory = mkdtempSync(join(tmpdir(), "knowledger-attested-receipts-"));
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
-    for (const payload of [
-      { ok: true, signature: Buffer.from("sig").toString("base64url"), attestation_signature: "!!!" },
-      { ok: true, signature: Buffer.from("sig").toString("base64url"), extra_receipt: "AA" },
+    const privateKey = createPrivateKey(readFileSync(identity.private_key_path));
+    // The primary signature is genuinely valid for each request digest, so a
+    // rejection can only come from the receipt checks being exercised.
+    for (const receipt of [
+      { attestation_signature: "!!!" },
+      { extra_receipt: "AA" },
     ]) {
-      const mock = await mockSigningSocket(async () => payload);
+      const mock = await mockSigningSocket(async request => {
+        const requestDigest = Buffer.from(String(request.digest), "base64url");
+        return { ok: true, signature: sign("sha256", requestDigest, privateKey).toString("base64url"), ...receipt };
+      });
       try {
         const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
         await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
