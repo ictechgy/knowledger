@@ -195,7 +195,14 @@ test("development signing service derives its audit log beside the socket when n
     // the documented location — signing-audit/audit.jsonl beside the socket.
     const derived = join(directory, "signing-audit", "audit.jsonl");
     assert.ok(existsSync(derived), "derived audit log exists beside the socket");
-    assert.ok(readFileSync(derived, "utf8").includes("signing_attestation"));
+    const records = readFileSync(derived, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+    const signed = records.find(record => record.record_type === "signing_attestation");
+    // A query-phase record must carry the read-only shape auditors reconcile:
+    // phase "query" and none of the decision-only command/tx_id fields.
+    const attestation = signed?.attestation as Record<string, unknown> | undefined;
+    assert.equal(attestation?.phase, "query");
+    assert.equal(signed?.phase, "query");
+    assert.equal(attestation !== undefined && !("command_id" in attestation) && !("tx_id" in attestation), true, "query records carry no decision-only fields");
   } finally { await service.close(); }
 });
 
@@ -771,6 +778,11 @@ test("signing service refuses non-EC keys for attested signing", async t => {
     // produce them, so the misconfigured key must fail at load.
     await assert.rejects(
       () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath: join(directory, "audit.jsonl") }),
+      (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && /EC private key/.test(String((error.cause as Error | undefined)?.message)));
+    // An organisation-bound key without require_attestation can still serve
+    // attested requests, so the same EC rule applies at load.
+    await assert.rejects(
+      () => startSigningService({ socketPath: join(directory, "sign2.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl") }),
       (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && /EC private key/.test(String((error.cause as Error | undefined)?.message)));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
