@@ -124,10 +124,18 @@ canonical decision payload — the signer verifies it cryptographically and
 rejects missing or forged receipts, and may hand the verified receipt and its
 canonical evidence to an `onAttestationReceipt` callback so the application can
 retain the proof. With `--audit-log ABSOLUTE_PATH` the service also appends a
-JSONL audit record the organisation retains as its testimony. The audit file
-must not collide with any configured key, certificate or socket path; it is
-opened once with no-follow semantics, validated by descriptor, appended with
-complete writes, and closed with the service. The gateway client serialises
+JSONL audit record the organisation retains as its testimony. The service
+sees only an opaque digest, so the attested phase and command binding are
+caller-asserted evidence; auditors reconcile each record's `tx_id`/digest
+against the ledger (a write signed under a `query` claim appears on the ledger
+without a matching attested transaction). An operational gateway re-derives
+the binding from the proposal bytes before signing. Attested keys fail fast at
+load when the certificate's `actor_kind` is outside `allowed_actor_kinds` or
+the key is not EC (receipts are ECDSA evidence). The audit file must not
+collide with any configured key, certificate or socket path — including hard
+links — and a non-regular target is refused before open; it is opened once
+with no-follow semantics, validated by descriptor, appended with complete
+writes, and closed with the service. The gateway client serialises
 every signer-bearing SDK call on a connection — endorse, submit, status and
 evaluate — installing the attestation inside the same critical section the
 signer consumes it from, so a concurrent read can never overwrite or steal an

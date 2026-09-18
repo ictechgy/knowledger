@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson } from "../../packages/fabric/canonical.ts";
@@ -170,10 +170,20 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       // A key that serves attested requests must be able to bind its actor
       // attributes; failing here distinguishes misconfiguration from a rejected
       // attestation at request time.
-      if ((reference.org_id !== undefined || reference.require_attestation === true) && (actor.actor_id === undefined || actor.actor_kind === undefined)) {
+      const attested = reference.org_id !== undefined || reference.require_attestation === true;
+      if (attested && (actor.actor_id === undefined || actor.actor_kind === undefined)) {
         throw new Error(`certificate is missing the actor attributes required for attested signing${actorError === undefined ? "" : `: ${actorError}`}`);
       }
-      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: reference.allowed_actor_kinds ?? Object.freeze(["human"]), require_attestation: reference.require_attestation === true });
+      const allowedActorKinds = reference.allowed_actor_kinds ?? Object.freeze(["human"]);
+      if (attested && actor.actor_kind !== undefined && !allowedActorKinds.includes(actor.actor_kind)) {
+        throw new Error("certificate actor_kind is outside the configured allowed_actor_kinds");
+      }
+      // Attestation receipts are verified as ECDSA over sha256(canonical
+      // evidence); non-EC keys (e.g. Ed25519) cannot produce them.
+      if (attested && privateKey.asymmetricKeyType !== "ec") {
+        throw new Error("attested signing requires an EC private key");
+      }
+      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: allowedActorKinds, require_attestation: reference.require_attestation === true });
     } catch (error) { throw new Error("Configured signing identity is invalid", { cause: error }); }
   }
   return loaded;
@@ -228,7 +238,12 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         const attestation = request.attestation;
         // Attested signing always requires a configured organisation binding;
         // otherwise a caller could have any claimed organisation signed into
-        // the evidence record.
+        // the evidence record. The service sees an opaque digest, so the
+        // attested phase and command binding are caller-asserted evidence:
+        // auditors reconcile tx_id/digest in this record against the ledger
+        // (a write signed under a "query" claim appears on the ledger without
+        // a matching attested tx_id). An operational gateway re-derives the
+        // binding from the proposal bytes before signing.
         const attestationRejected = attestation === undefined
           ? key.require_attestation
           : key.org_id === undefined
@@ -295,8 +310,7 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing audit log parent directory must be mode 700");
   // Audit appends must never land on key material, certificates or the service
-  // socket: check resolved paths (and inodes for existing files) against every
-  // configured filesystem object.
+  // socket: check resolved paths against every configured filesystem object.
   const resolvedAudit = resolve(path);
   for (const reserved of reservedPaths) {
     if (resolve(reserved) === resolvedAudit) throw new Error("Signing audit log path collides with a configured file");
@@ -307,12 +321,30 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
       if ((error as { code?: string }).code !== "ENOENT") throw error;
     }
   }
+  // A pre-existing non-regular target (FIFO, socket, device) must fail before
+  // open: O_WRONLY on a FIFO would block forever waiting for a reader.
+  try {
+    if (!lstatSync(path).isFile()) throw new Error("Signing audit log must be a regular file with mode 600");
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
   // Open once and keep the descriptor: re-opening per record would let a
   // symlink or inode replacement slip between validation and append.
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
+    // Path equality cannot catch a hard link, so compare the opened inode
+    // itself against every reserved file that exists on disk.
+    for (const reserved of reservedPaths) {
+      try {
+        const target = statSync(reserved);
+        if (target.dev === stat.dev && target.ino === stat.ino) throw new Error("Signing audit log path collides with a configured file");
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("collides")) throw error;
+        if ((error as { code?: string }).code !== "ENOENT") throw error;
+      }
+    }
   } catch (error) {
     closeSync(fd);
     throw error;

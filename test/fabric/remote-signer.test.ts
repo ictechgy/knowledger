@@ -3,13 +3,13 @@ import { createPrivateKey, generateKeyPairSync, sign, verify, X509Certificate } 
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fs from 'node:fs';
 import { connect, createServer, type Server, type Socket } from "node:net";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { startSigningService } from "../../infra/fabric/signing-service.ts";
-import { attestationPayload, attestationPayloadDigest, attestationSlot, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import { attestationPayload, attestationPayloadDigest, attestationSlot, createAttestationSerializer, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
@@ -269,11 +269,11 @@ function devAttestation(overrides: Partial<SigningAttestation> = {}): SigningAtt
 const opensslAvailable = (): boolean => spawnSync('openssl', ['version']).status === 0;
 
 /** Self-signed certificate carrying the same kcl.actor_* attribute encoding the development fixture uses. */
-function generateAttestedIdentity(directory: string, attrs: Record<string, string>): { certificate_path: string; private_key_path: string; certificate: Buffer } {
-  const privateKeyPath = join(directory, "key.pem");
-  const certificatePath = join(directory, "cert.pem");
-  const configPath = join(directory, "openssl.cnf");
-  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+function generateAttestedIdentity(directory: string, attrs: Record<string, string>, keyType: "ec" | "ed25519" = "ec", name = attrs["kcl.actor_id"] ?? "identity"): { certificate_path: string; private_key_path: string; certificate: Buffer } {
+  const privateKeyPath = join(directory, `key-${name}-${keyType}.pem`);
+  const certificatePath = join(directory, `cert-${name}-${keyType}.pem`);
+  const configPath = join(directory, `openssl-${name}-${keyType}.cnf`);
+  const { privateKey } = keyType === "ec" ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' }) : generateKeyPairSync('ed25519');
   fs.writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
   const attrsHex = Buffer.from(JSON.stringify({ attrs }), 'utf8').toString('hex');
   fs.writeFileSync(configPath, `oid_section = oids\n[ req ]\ndistinguished_name = dn\n[ dn ]\n[ oids ]\nkclAttrs = 1.2.3.4.5.6.7.8.1\n[ v3 ]\nkclAttrs = DER:${attrsHex}\n`, { mode: 0o600 });
@@ -472,22 +472,61 @@ test("signing service audits a rejected attestation attempt", async t => {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+/** Real paths currently held open by this process (Linux /proc or lsof). */
+function openFileTargets(): string[] | undefined {
+  const realpath = (target: string): string => { try { return fs.realpathSync(target); } catch { return target; } };
+  try {
+    return readdirSync("/proc/self/fd")
+      .map(fd => { try { return readlinkSync(`/proc/self/fd/${fd}`); } catch { return undefined; } })
+      .filter((target): target is string => target !== undefined)
+      .map(realpath);
+  } catch { /* /proc is unavailable outside Linux. */ }
+  const listed = spawnSync("lsof", ["-p", String(process.pid), "-F", "n"], { encoding: "utf8" });
+  if (listed.status === 0) {
+    return listed.stdout.split("\n").filter(line => line.startsWith("n")).map(line => realpath(line.slice(1)));
+  }
+  return undefined;
+}
+
 test("signing service closes the audit descriptor on shutdown", async t => {
   if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-close-"));
+  let service: Awaited<ReturnType<typeof startSigningService>> | undefined;
+  // Keep close() in the cleanup path even when an assertion fails: a running
+  // service would pin the test process open.
+  t.after(async () => { await service?.close(); });
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
     const auditLogPath = join(directory, "audit.jsonl");
-    const openFds = (): number | undefined => { try { return readdirSync("/proc/self/fd").length; } catch { return undefined; } };
-    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
-    const fdsWhileOpen = openFds();
+    service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
     const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devQueryAttestation() });
     assert.ok((await signer(Buffer.alloc(32, 12))).byteLength > 0);
+    const auditRealPath = fs.realpathSync(auditLogPath);
+    const targetsWhileOpen = openFileTargets();
+    if (targetsWhileOpen !== undefined) assert.ok(targetsWhileOpen.includes(auditRealPath), "audit file is held open while the service runs");
     await service.close();
     assert.ok(readFileSync(auditLogPath, "utf8").includes("signing_attestation"));
-    const fdsAfterClose = openFds();
-    if (fdsWhileOpen !== undefined && fdsAfterClose !== undefined) assert.ok(fdsAfterClose < fdsWhileOpen, "audit descriptor is released on close");
+    const targetsAfterClose = openFileTargets();
+    if (targetsAfterClose !== undefined) assert.ok(!targetsAfterClose.includes(auditRealPath), "audit descriptor is released on close");
     await service.close();
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service rejects hard-linked and non-regular audit paths", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-hard-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const keys = [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }];
+    // A hard link has a different resolved path but the same inode: opening it
+    // for appends would still corrupt the key file.
+    const hardLink = join(directory, "audit-hardlink.jsonl");
+    linkSync(identity.private_key_path, hardLink);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign.sock"), keys, auditLogPath: hardLink }), /collides/);
+    // A FIFO would block O_WRONLY forever; the pre-open check must refuse it.
+    const fifo = join(directory, "audit.fifo");
+    assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign2.sock"), keys, auditLogPath: fifo }), /regular file/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -507,18 +546,37 @@ test("signing service enforces the actor-kind allowlist for attested signing", a
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-kinds-"));
   try {
     const agentIdentity = generateAttestedIdentity(directory, { "kcl.actor_id": "agent-worker", "kcl.actor_kind": "agent" });
-    // Default policy (human-only) rejects an agent attestation.
-    const strict = await startSigningService({ socketPath: join(directory, "strict.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP" }] });
-    try {
-      const signer = createRemoteSigner({ socketPath: strict.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devAttestation({ actor_id: "agent-worker", actor_kind: "agent" }) });
-      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
-    } finally { await strict.close(); }
-    // An explicit allowlist admits the same attestation.
+    const humanIdentity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    // A certificate whose actor_kind can never satisfy the allowlist is a
+    // configuration error: the service fails fast instead of serving a key
+    // whose every attested request would be rejected.
+    const invalidCause = (pattern: RegExp) => (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && pattern.test(String((error.cause as Error | undefined)?.message));
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "strict.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP" }] }), invalidCause(/allowed_actor_kinds/));
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "agent-only.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: humanIdentity.certificate_path, private_key_path: humanIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }] }), invalidCause(/allowed_actor_kinds/));
+    // An explicit allowlist admits the same attestation for both phases.
     const permissive = await startSigningService({ socketPath: join(directory, "permissive.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }] });
     try {
-      const signer = createRemoteSigner({ socketPath: permissive.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devAttestation({ actor_id: "agent-worker", actor_kind: "agent" }) });
-      assert.ok((await signer(Buffer.alloc(32, 13))).byteLength > 0);
+      const decided = createRemoteSigner({ socketPath: permissive.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devAttestation({ actor_id: "agent-worker", actor_kind: "agent" }) });
+      assert.ok((await decided(Buffer.alloc(32, 13))).byteLength > 0);
+      const queried = createRemoteSigner({ socketPath: permissive.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devQueryAttestation({ actor_id: "agent-worker", actor_kind: "agent" }) });
+      assert.ok((await queried(Buffer.alloc(32, 14))).byteLength > 0);
+      // ...but an attestation claiming a different kind is still rejected.
+      const impersonating = createRemoteSigner({ socketPath: permissive.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devAttestation({ actor_id: "agent-worker", actor_kind: "human" }) });
+      await assert.rejects(() => impersonating(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
     } finally { await permissive.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service refuses non-EC keys for attested signing", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-ed25519-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" }, "ed25519");
+    // Attestation receipts are ECDSA evidence; an Ed25519 identity cannot
+    // produce them, so the misconfigured key must fail at load.
+    await assert.rejects(
+      () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }] }),
+      (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && /EC private key/.test(String((error.cause as Error | undefined)?.message)));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -585,6 +643,72 @@ test("attestationSlot consumes the context once", () => {
   assert.deepEqual(slot(), attestation);
   assert.equal(slot(), undefined);
   assert.equal(context.current, undefined);
+});
+
+test("createAttestationSerializer serialises install→consume→clear on one slot", async () => {
+  const context: SigningAttestationContext = {};
+  const signed = createAttestationSerializer(context);
+  const take = attestationSlot(context);
+  const decision = devAttestation();
+  const query: QueryAttestation = devQueryAttestation();
+  let releaseDecision: (() => void) | undefined;
+  const decisionGate = new Promise<void>(resolve => { releaseDecision = resolve; });
+  // The decision operation holds the slot while its signer is in-flight; the
+  // queued query must not start (or install) until it finishes.
+  const decisionRun = signed(decision, async () => {
+    assert.equal(context.current, decision);
+    assert.deepEqual(take(), decision);
+    await decisionGate;
+    return "decision";
+  });
+  await Promise.resolve();
+  const queryRun = signed(query, async () => {
+    assert.equal(context.current, query);
+    assert.deepEqual(take(), query);
+    return "query";
+  });
+  await Promise.resolve();
+  assert.equal(context.current, undefined, "the consumed slot stays empty until the decision finishes");
+  releaseDecision?.();
+  assert.equal(await decisionRun, "decision");
+  assert.equal(await queryRun, "query");
+  assert.equal(context.current, undefined);
+});
+
+test("createAttestationSerializer rolls back an unconsumed attestation on failure", async () => {
+  const context: SigningAttestationContext = {};
+  const signed = createAttestationSerializer(context);
+  const decision = devAttestation();
+  await assert.rejects(signed(decision, () => Promise.reject(new Error("no signing point reached"))), /no signing point/);
+  // The failed operation never consumed its attestation; the slot must not
+  // leak it into the next call.
+  assert.equal(context.current, undefined);
+  const next = await signed(devQueryAttestation(), async () => attestationSlot(context)());
+  assert.equal((next as { phase?: string } | undefined)?.phase, "query");
+});
+
+test("dedicated read slots sign concurrently with an in-flight decision", async () => {
+  const writeContext: SigningAttestationContext = {};
+  const queryContext: SigningAttestationContext = {};
+  const writeSigned = createAttestationSerializer(writeContext);
+  const querySigned = createAttestationSerializer(queryContext);
+  const decision = devAttestation();
+  const query: QueryAttestation = devQueryAttestation();
+  let releaseDecision: (() => void) | undefined;
+  const decisionGate = new Promise<void>(resolve => { releaseDecision = resolve; });
+  const decisionRun = writeSigned(decision, async () => {
+    attestationSlot(writeContext)();
+    await decisionGate;
+  });
+  await Promise.resolve();
+  // A separate qscc slot lets read-only signing proceed while the write
+  // decision is still in-flight, without touching its context.
+  const queryRun = querySigned(query, async () => attestationSlot(queryContext)());
+  assert.deepEqual(await queryRun, query);
+  assert.equal(queryContext.current, undefined);
+  releaseDecision?.();
+  await decisionRun;
+  assert.equal(writeContext.current, undefined);
 });
 
 async function rawSignRequest(path: string, request: unknown): Promise<Record<string, unknown>> {

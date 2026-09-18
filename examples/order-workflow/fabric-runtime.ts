@@ -89,6 +89,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
     const qscc = (gateways[1] ?? gateways[0]).getNetwork('kcl-demo').getContract('qscc');
     const qsccBinding = qsccBindings[1] ?? qsccBindings[0];
+    if (qsccBinding === undefined) throw new Error('qscc signing binding is unavailable');
     const ledger = new FabricApplicationLedger({ projection, routes, source: {
       async getTip() {
         // qscc signs through the actor's own slot; the serializer keeps the
