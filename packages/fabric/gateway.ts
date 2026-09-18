@@ -163,13 +163,14 @@ class OfficialGatewayClient implements FabricGatewayClient {
   // countersign because it validates identity and shape only.
   private buildDecision(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined {
     if (this.attestation === undefined) return undefined;
-    // Capture the expected claims before invoking the builder: it receives the
-    // same snapshot object and could mutate it, so the comparison values must
-    // be fixed before the call, not read back afterwards.
+    // Capture the expected claims before invoking the builder, and hand it a
+    // fresh clone: the same snapshot object is reused across proposal and
+    // submit, so a builder mutating it must not detach later phases'
+    // expectations from the endorsed command.
     const expectedId = command.command_id;
     const expectedType = command.type;
     const expectedDigest = idempotencyDigest({ type: command.type, input: command.input });
-    const built = this.attestation.build(command, phase, txId);
+    const built = this.attestation.build(structuredClone(command), phase, txId);
     // A configured builder that declines to produce evidence must not let the
     // write proceed unattested — that is a wiring bug, not a policy choice.
     if (built === undefined) throw new Error("Attestation builder produced no evidence for a signed write");

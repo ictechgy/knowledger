@@ -696,33 +696,35 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     const keyBefore = readFileSync(identity.private_key_path);
     const keyLink = join(directory, "audit-key-link.jsonl");
     symlinkSync(identity.private_key_path, keyLink);
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign3.sock"), keys, auditLogPath: keyLink }), /collides|regular file/);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign3.sock"), keys, auditLogPath: keyLink }), /collides/);
     assert.deepEqual(readFileSync(identity.private_key_path), keyBefore);
     // A symlink to an ordinary file is still refused: O_NOFOLLOW rejects the
-    // final-component link even when its target is not reserved.
+    // final-component link even when its target is not reserved. The reason
+    // differs by platform — open(2) may fail with ELOOP or the stat check may
+    // report a non-regular file.
     const ordinary = join(directory, "ordinary.jsonl");
     fs.writeFileSync(ordinary, "", { mode: 0o600 });
     const ordinaryLink = join(directory, "audit-link.jsonl");
     symlinkSync(ordinary, ordinaryLink);
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign4.sock"), keys, auditLogPath: ordinaryLink }), /collides|regular file|ELOOP|symlink/i);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign4.sock"), keys, auditLogPath: ordinaryLink }), /regular file|ELOOP|symlink/i);
     assert.equal(readFileSync(ordinary, "utf8"), "");
     // A dangling symlink is not a regular file and must be refused.
     const dangling = join(directory, "audit-dangling.jsonl");
     symlinkSync(join(directory, "missing-target"), dangling);
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign5.sock"), keys, auditLogPath: dangling }), /collides|regular file|ELOOP|symlink/i);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign5.sock"), keys, auditLogPath: dangling }), /regular file|ELOOP|symlink/i);
     // A well-formed file that is hard-linked to an unrelated name still has
     // nlink > 1: appends would corrupt whatever the other link points at.
     const aliased = join(directory, "audit-aliased.jsonl");
     fs.writeFileSync(aliased, "", { mode: 0o600 });
     linkSync(aliased, join(directory, "audit-alias-other.jsonl"));
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign6.sock"), keys, auditLogPath: aliased }), /single link|collides|regular file/);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign6.sock"), keys, auditLogPath: aliased }), /single link/);
     // A pre-existing file with a permissive mode is refused; the same path at
     // mode 600 is adopted and appended to. chmod after creation so the mode
     // does not depend on the process umask.
     const wrongMode = join(directory, "audit-wrong-mode.jsonl");
     fs.writeFileSync(wrongMode, "", { mode: 0o644 });
     fs.chmodSync(wrongMode, 0o644);
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign7.sock"), keys, auditLogPath: wrongMode }), /regular file|mode 600/);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign7.sock"), keys, auditLogPath: wrongMode }), /mode 600/);
     fs.chmodSync(wrongMode, 0o600);
     const adopted = await startSigningService({ socketPath: join(directory, "sign8.sock"), keys, auditLogPath: wrongMode });
     await adopted.close();
