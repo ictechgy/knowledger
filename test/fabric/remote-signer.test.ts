@@ -463,7 +463,7 @@ test("signing service enforces required attestation and organisation binding", a
     const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [
       { key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true },
       { key_id: "person-orgless-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path },
-    ] });
+    ], auditLogPath: join(directory, "audit.jsonl") });
     try {
       // A required key refuses an unattested request.
       const raw = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate });
@@ -532,6 +532,24 @@ test("signing service refuses require_attestation without an organisation bindin
       () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: join(directory, "cert.pem"), private_key_path: join(directory, "key.pem"), require_attestation: true }] }),
       (error: unknown) => error instanceof Error && error.message.includes("organisation binding"),
     );
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service refuses attested keys without an audit log", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-noaudit-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    // Receipts alone cannot prove the service ran its checks, so the
+    // evidence sink is mandatory when any key requires attestation.
+    await assert.rejects(
+      () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }] }),
+      (error: unknown) => error instanceof Error && /audit log/.test(error.message),
+    );
+    // A key that merely binds an organisation without requiring attestation
+    // still starts without the log.
+    const service = await startSigningService({ socketPath: join(directory, "sign2.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    await service.close();
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -697,7 +715,7 @@ test("signing service refuses non-EC keys for attested signing", async t => {
     // Attestation receipts are ECDSA evidence; an Ed25519 identity cannot
     // produce them, so the misconfigured key must fail at load.
     await assert.rejects(
-      () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }] }),
+      () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath: join(directory, "audit.jsonl") }),
       (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && /EC private key/.test(String((error.cause as Error | undefined)?.message)));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

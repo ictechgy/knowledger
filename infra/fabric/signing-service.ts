@@ -414,6 +414,12 @@ export async function startSigningService(options: { socketPath: string; keys: r
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
   const references = assertKeyReferences(options.keys);
+  // Attested signing without a service-side audit log leaves the evidence
+  // chain empty: receipts alone cannot prove these checks ran, so the sink
+  // that auditors reconcile against the ledger is mandatory, not advisory.
+  if (options.auditLogPath === undefined && references.some(reference => reference.require_attestation === true)) {
+    throw new Error("Attested signing keys require an audit log: pass --audit-log so the service records the evidence chain");
+  }
   const keys = loadKeys(references);
   const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath, [socketPath, ...(options.reservedPaths ?? []), ...references.flatMap(reference => [reference.certificate_path, reference.private_key_path])]);
   let active = 0;
