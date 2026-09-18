@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, generateKeyPairSync, X509Certificate } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, sign, verify, X509Certificate } from "node:crypto";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fs from 'node:fs';
 import { connect, createServer, type Server, type Socket } from "node:net";
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { startSigningService } from "../../infra/fabric/signing-service.ts";
-import { attestationPayloadDigest, attestationSlot, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import { attestationPayload, attestationPayloadDigest, attestationSlot, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
@@ -247,11 +247,9 @@ test('signer rejects empty, duplicate and unknown key allowlists before opening 
   }
 });
 
-/** Signs a digest the way the organisation key does: ECDSA over the raw digest. */
-function fabricSign(digest: Uint8Array, privateKey: ReturnType<typeof createPrivateKey>): Buffer {
-  const { p256 } = requireFabric('@noble/curves/nist.js');
-  const d = Buffer.from((privateKey.export({ format: 'jwk' }) as { d: string }).d, 'base64url');
-  return Buffer.from(p256.sign(digest, d, { format: 'der', lowS: true, prehash: false }));
+/** Signs the canonical evidence the way the organisation key does: ECDSA over sha256(evidence). */
+function evidenceSign(evidence: Uint8Array, privateKey: ReturnType<typeof createPrivateKey>): Buffer {
+  return sign("sha256", evidence, privateKey);
 }
 
 function devAttestation(overrides: Partial<SigningAttestation> = {}): SigningAttestation {
@@ -296,17 +294,14 @@ test("remote signer sends the decision attestation and verifies its receipt", as
     const mock = await mockSigningSocket(async request => {
       received = request;
       const requestDigest = Buffer.from(String(request.digest), "base64url");
-      const receipt = fabricSign(attestationPayloadDigest(String(request.key_id), request.attestation as Attestation, requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
-      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
+      const receipt = evidenceSign(attestationPayload(String(request.key_id), request.attestation as Attestation, requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
+      return { ok: true, signature: sign("sha256", requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
     });
     try {
       const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation });
       const signature = await signer(digest);
       assert.deepEqual(received?.attestation, attestation);
-      const publicJwk = new X509Certificate(identity.certificate).publicKey.export({ format: 'jwk' });
-      const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, 'base64url'), Buffer.from(publicJwk.y!, 'base64url')]);
-      const { p256 } = requireFabric('@noble/curves/nist.js');
-      assert.equal(p256.verify(signature, digest, rawPublicKey, { format: 'der', prehash: false }), true);
+      assert.equal(verify("sha256", digest, new X509Certificate(identity.certificate).publicKey, signature), true);
     } finally { await mock.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -353,7 +348,7 @@ test("remote signer requires a verified attestation receipt", async t => {
     // Missing receipt: an attested request answered without attestation_signature.
     const silent = await mockSigningSocket(async request => {
       const requestDigest = Buffer.from(String(request.digest), "base64url");
-      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url") };
+      return { ok: true, signature: sign("sha256", requestDigest, privateKey).toString("base64url") };
     });
     try {
       const signer = createRemoteSigner({ socketPath: silent.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
@@ -362,8 +357,8 @@ test("remote signer requires a verified attestation receipt", async t => {
     // Forged receipt: a receipt over different evidence is not accepted.
     const forged = await mockSigningSocket(async request => {
       const requestDigest = Buffer.from(String(request.digest), "base64url");
-      const receipt = fabricSign(attestationPayloadDigest(String(request.key_id), devAttestation({ command_id: "cmd-other" }), requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
-      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
+      const receipt = evidenceSign(attestationPayload(String(request.key_id), devAttestation({ command_id: "cmd-other" }), requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
+      return { ok: true, signature: sign("sha256", requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
     });
     try {
       const signer = createRemoteSigner({ socketPath: forged.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
@@ -372,7 +367,7 @@ test("remote signer requires a verified attestation receipt", async t => {
     // Unattested requests still accept a plain signature response.
     const plain = await mockSigningSocket(async request => {
       const requestDigest = Buffer.from(String(request.digest), "base64url");
-      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url") };
+      return { ok: true, signature: sign("sha256", requestDigest, privateKey).toString("base64url") };
     });
     try {
       const signer = createRemoteSigner({ socketPath: plain.path, keyId: "person-sales-owner", certificate: identity.certificate });

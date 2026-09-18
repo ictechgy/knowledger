@@ -1,14 +1,7 @@
 import { connect as connectSocket } from "node:net";
 import { isAbsolute } from "node:path";
-import { createHash, X509Certificate } from "node:crypto";
-import { createRequire } from "node:module";
+import { createHash, verify, X509Certificate } from "node:crypto";
 import { jcsBytes, parseStrictJson } from "./canonical.ts";
-
-const requireFabric = createRequire(new URL("./package.json", import.meta.url));
-
-interface EcCurve {
-  verify(signature: Uint8Array, digest: Uint8Array, publicKey: Uint8Array, options: { format: "der"; prehash: false }): boolean;
-}
 
 const MAX_FRAME_BYTES = 32 * 1024;
 const MAX_CERTIFICATE_BYTES = 16 * 1024;
@@ -204,31 +197,28 @@ function decodeResponse(body: Buffer): DecodedResponse {
   throw new RemoteSignerError("protocol_error");
 }
 
-/** Canonical payload the organisation key signs as evidence of an attested request. */
-export function attestationPayloadDigest(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Buffer {
-  return createHash("sha256").update(jcsBytes({
+/** Canonical evidence bytes the organisation key attests; external auditors use the same form. */
+export function attestationPayload(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Buffer {
+  return jcsBytes({
     record_type: "signing_attestation",
     version: 1,
     key_id: keyId,
     attestation,
     digest: Buffer.from(digest).toString("base64url"),
     certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
-  })).digest();
+  });
+}
+
+/** Digest of the canonical evidence; the organisation key signs this value as the ECDSA digest. */
+export function attestationPayloadDigest(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Buffer {
+  return createHash("sha256").update(attestationPayload(keyId, attestation, digest, certificate)).digest();
 }
 
 function verifyAttestationReceipt(certificate: Buffer, keyId: string, attestation: Attestation, digest: Uint8Array, receipt: Buffer): boolean {
   try {
-    const publicKey = new X509Certificate(certificate).publicKey;
-    if (publicKey.asymmetricKeyType !== "ec") return false;
-    const jwk = publicKey.export({ format: "jwk" }) as { crv?: string; x?: string; y?: string };
-    if (typeof jwk.x !== "string" || typeof jwk.y !== "string") return false;
-    const { p256, p384 } = requireFabric("@noble/curves/nist.js") as { p256: EcCurve; p384: EcCurve };
-    const curve = jwk.crv === "P-256" ? p256 : jwk.crv === "P-384" ? p384 : undefined;
-    if (curve === undefined) return false;
-    // The organisation key signs the payload digest as a raw ECDSA digest — the
-    // same convention Fabric signing uses — so verification must not hash again.
-    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, "base64url"), Buffer.from(jwk.y, "base64url")]);
-    return curve.verify(receipt, attestationPayloadDigest(keyId, attestation, digest, certificate), point, { format: "der", prehash: false });
+    // The organisation key signs sha256(canonical evidence) as a raw ECDSA
+    // digest — verifying sha256 over the canonical bytes checks the same value.
+    return verify("sha256", attestationPayload(keyId, attestation, digest, certificate), new X509Certificate(certificate).publicKey, receipt);
   } catch {
     return false;
   }
