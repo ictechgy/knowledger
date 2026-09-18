@@ -25,8 +25,11 @@ test('subjectActorResolver binds only the configured issuer and subject', { skip
   assert.equal(resolve('http://127.0.0.1:4320/', 'unknown-subject'), undefined);
   assert.equal(resolve('http://127.0.0.1:9999/', 'dev-sales-owner'), undefined);
   assert.equal(resolve('https://evil.example/', 'dev-sales-owner'), undefined);
-  // Trailing-slash and origin differences are canonicalised by URL parsing.
-  assert.deepEqual(resolve('http://127.0.0.1:4320', 'dev-sales-owner'), sales);
+  // OIDC `iss`는 정확 문자열 일치다 — URL 정규화가 같아지는 별칭은 모두 거부다.
+  assert.equal(resolve('http://127.0.0.1:4320', 'dev-sales-owner'), undefined); // 후행 슬래시 차이
+  assert.equal(resolve('http://127.0.0.1:80/', 'dev-sales-owner'), undefined); // 기본 포트 명시
+  assert.equal(resolve('http://127.0.0.1:4320/./', 'dev-sales-owner'), undefined); // 닷 세그먼트
+  assert.equal(resolve('HTTP://127.0.0.1:4320/', 'dev-sales-owner'), undefined); // 스킴 대소문자
   // malformed 후보 issuer는 예외가 아니라 거부다 — 리졸버는 항상 total 이어야 한다.
   assert.equal(resolve('not-a-url', 'dev-sales-owner'), undefined);
   assert.equal(resolve('', 'dev-sales-owner'), undefined);
@@ -38,11 +41,10 @@ test('createOidcAdapter wires the subject map into the authentication boundary',
   const { startDevelopmentIssuer } = await import('../../examples/order-workflow/issuer.ts');
   const subjects = new Map([['dev-sales-owner', sales]] as const);
   const issuer = await startDevelopmentIssuer({ port: 0, redirectUri: 'http://127.0.0.1:49999/auth/callback' });
-  t.after(() => issuer.close());
   // The adapter produces a real ApplicationAuthentication over the development
   // issuer — the local IdP is one implementation of the SSO boundary.
   const authentication = await adapter.createOidcAdapter({ issuer: issuer.issuer, clientId: 'knowledger-development-client', redirectUri: 'http://127.0.0.1:49999/auth/callback', development: true, subjects });
-  t.after(() => authentication.close());
+  t.after(() => { authentication.close(); issuer.close(); });
   assert.equal(authentication.mode, 'oidc-development');
   assert.equal(authentication.origin, 'http://127.0.0.1:49999');
 });
@@ -57,5 +59,5 @@ test('createOidcAdapter fails fast on an empty subject map and rejects configura
   assert.ok(adapter);
   await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'https://idp.example.com/', clientId: 'c', redirectUri: 'https://app.example.com/cb', subjects: new Map() }), /subject binding/);
   const subjects = new Map([['dev-sales-owner', sales]] as const);
-  await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'not-a-url', clientId: 'c', redirectUri: 'https://app.example.com/cb', subjects }));
+  await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'not-a-url', clientId: 'c', redirectUri: 'https://app.example.com/cb', subjects }), /issuer is not a valid URL/);
 });
