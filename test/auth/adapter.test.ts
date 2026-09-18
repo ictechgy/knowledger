@@ -71,6 +71,8 @@ test('createOidcAdapter fails fast when the configured issuer differs from the p
   const subjects = new Map([['dev-sales-owner', sales]] as const);
   const issuer = await startDevelopmentIssuer({ port: 0, redirectUri: 'http://127.0.0.1:49999/auth/callback' });
   t.after(() => issuer.close());
+  // 개발 issuer는 후행 슬래시 없이 발급한다 — 슬래시 추가가 불일치를 만든다는 전제를 고정한다.
+  assert.ok(!issuer.issuer.endsWith('/'));
   // 후행 슬래시만 다른 설정 issuer는 discovery를 통과하지만 세션 `iss`와는
   // 정확 일치가 아니므로, 모든 로그인이 조용히 거부되기 전에 생성에서 실패해야 한다.
   await assert.rejects(

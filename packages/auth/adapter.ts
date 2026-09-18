@@ -15,6 +15,7 @@ export function subjectActorResolver(issuer: string, subjects: ReadonlyMap<strin
 }
 
 export interface OidcAdapterOptions {
+  /** Must equal the provider's discovered `iss` string exactly — including trailing slash — or construction fails. */
   issuer: string;
   clientId: string;
   redirectUri: string;
@@ -47,8 +48,10 @@ export async function createOidcAdapter(options: OidcAdapterOptions): Promise<Ap
   // 세션은 discovery된 issuer에 바인딩된다 — 설정값과 다르면(후행 슬래시만 달라도)
   // 모든 로그인이 조용히 거부되므로 생성 시점에 두 값을 보여주며 실패한다.
   if (authentication.issuer !== options.issuer) {
-    await authentication.close();
-    throw new Error(`OIDC adapter issuer does not match the provider issuer: configured ${options.issuer}, discovered ${authentication.issuer}`);
+    // close 실패가 불일치 진단 메시지를 덮지 않게 cause로만 첨부한다.
+    let closeError: unknown;
+    try { await authentication.close(); } catch (error) { closeError = error; }
+    throw new Error(`OIDC adapter issuer does not match the provider issuer: configured ${options.issuer}, discovered ${authentication.issuer}`, { cause: closeError });
   }
   return authentication;
 }
