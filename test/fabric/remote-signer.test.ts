@@ -181,6 +181,23 @@ test("development signing service signs with only the approved test identities",
   } finally { await service.close(); }
 });
 
+test("development signing service derives its audit log beside the socket when none is given", async t => {
+  const certificatePath = join(process.cwd(), ".data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem");
+  if (!sdkAvailable || !existsSync(certificatePath)) { t.skip("Fabric SDK and disposable identities are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-derived-audit-"));
+  const service = await startDevelopmentSigningService({ socketPath: join(directory, "sign.sock") });
+  try {
+    const certificate = readFileSync(certificatePath);
+    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devQueryAttestation() });
+    await signer(Buffer.alloc(32, 3));
+    // The derived log must actually record the attested signing evidence at
+    // the documented location — signing-audit/audit.jsonl beside the socket.
+    const derived = join(directory, "signing-audit", "audit.jsonl");
+    assert.ok(existsSync(derived), "derived audit log exists beside the socket");
+    assert.ok(readFileSync(derived, "utf8").includes("signing_attestation"));
+  } finally { await service.close(); }
+});
+
 test("development signing service attests each approved organisation binding and refuses cross-organisation claims", async t => {
   const certFor = (org: string) => join(process.cwd(), `.data/fabric-smoke/crypto/peerOrganizations/${org}.kcl.test/users/User1@${org}.kcl.test/msp/signcerts/User1@${org}.kcl.test-cert.pem`);
   const paths = { sales: certFor("sales"), fulfillment: certFor("fulfillment"), settlement: certFor("settlement") };
@@ -438,7 +455,7 @@ test("signing service rejects attestations that do not match the bound identity"
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-attestation-reject-"));
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
-    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl")});
     try {
       const certificate = identity.certificate;
       for (const broken of [
@@ -546,9 +563,15 @@ test("signing service refuses attested keys without an audit log", async t => {
       () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }] }),
       (error: unknown) => error instanceof Error && /audit log/.test(error.message),
     );
-    // A key that merely binds an organisation without requiring attestation
+    // An organisation-bound key can also serve attested requests, so it
+    // cannot start without the log either.
+    await assert.rejects(
+      () => startSigningService({ socketPath: join(directory, "sign2.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] }),
+      (error: unknown) => error instanceof Error && /audit log/.test(error.message),
+    );
+    // A key with no organisation binding serves only unattested requests and
     // still starts without the log.
-    const service = await startSigningService({ socketPath: join(directory, "sign2.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    const service = await startSigningService({ socketPath: join(directory, "sign3.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path }] });
     await service.close();
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -575,6 +598,21 @@ test("releaseAttestationSerializer lets a later serializer reclaim the context",
   // Releasing without an owner is a no-op so close paths stay idempotent.
   releaseAttestationSerializer(context);
   releaseAttestationSerializer(context);
+});
+
+test("a released serializer fails closed instead of touching a reclaimed context", async () => {
+  const context: SigningAttestationContext = {};
+  const stale = createAttestationSerializer(context);
+  // Queue an operation, then release before its serialised section runs: the
+  // pending call must reject rather than install into a context it no longer
+  // owns, and a later reconnect claims the slot cleanly.
+  const pending = stale(devAttestation(), async () => { await new Promise(resolve => setTimeout(resolve, 20)); return context.current; });
+  releaseAttestationSerializer(context);
+  await assert.rejects(pending, (error: unknown) => error instanceof Error && /released/.test(error.message));
+  const reclaimed = createAttestationSerializer(context);
+  const fresh = devAttestation();
+  assert.equal(await reclaimed(fresh, async () => context.current), fresh);
+  assert.equal(context.current, undefined);
 });
 
 /** Real paths currently held open by this process (Linux /proc or lsof). */
@@ -675,9 +713,19 @@ test("signing service rejects an audit path that collides with configured files"
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-collision-"));
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
-    for (const auditLogPath of [identity.private_key_path, identity.certificate_path, join(directory, "sign.sock")]) {
-      await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath }), /collides|already exists/);
+    // Each iteration gets a fresh socket path so rejection can only come from
+    // the audit-path collision check, never a leftover socket bind.
+    const cases: Array<[string, string]> = [
+      [identity.private_key_path, "s1.sock"],
+      [identity.certificate_path, "s2.sock"],
+    ];
+    for (const [auditLogPath, socketName] of cases) {
+      await assert.rejects(() => startSigningService({ socketPath: join(directory, socketName), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath }), /collides/);
     }
+    // The socket path itself is reserved too: pointing the audit log at the
+    // very socket the service would bind is rejected before listening.
+    const socketPath = join(directory, "s3.sock");
+    await assert.rejects(() => startSigningService({ socketPath, keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: socketPath }), /collides|already exists/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -691,10 +739,10 @@ test("signing service enforces the actor-kind allowlist for attested signing", a
     // configuration error: the service fails fast instead of serving a key
     // whose every attested request would be rejected.
     const invalidCause = (pattern: RegExp) => (error: unknown) => error instanceof Error && error.message === "Configured signing identity is invalid" && pattern.test(String((error.cause as Error | undefined)?.message));
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "strict.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP" }] }), invalidCause(/allowed_actor_kinds/));
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "agent-only.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: humanIdentity.certificate_path, private_key_path: humanIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }] }), invalidCause(/allowed_actor_kinds/));
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "strict.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl")}), invalidCause(/allowed_actor_kinds/));
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "agent-only.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: humanIdentity.certificate_path, private_key_path: humanIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }], auditLogPath: join(directory, "audit.jsonl") }), invalidCause(/allowed_actor_kinds/));
     // An explicit allowlist admits the same attestation for both phases.
-    const permissive = await startSigningService({ socketPath: join(directory, "permissive.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }] });
+    const permissive = await startSigningService({ socketPath: join(directory, "permissive.sock"), keys: [{ key_id: "agent-worker", certificate_path: agentIdentity.certificate_path, private_key_path: agentIdentity.private_key_path, org_id: "SalesMSP", allowed_actor_kinds: ["agent"] }], auditLogPath: join(directory, "audit.jsonl") });
     try {
       const decided = createRemoteSigner({ socketPath: permissive.socketPath, keyId: "agent-worker", certificate: agentIdentity.certificate, attestation: () => devAttestation({ actor_id: "agent-worker", actor_kind: "agent" }) });
       assert.ok((await decided(Buffer.alloc(32, 13))).byteLength > 0);
@@ -725,7 +773,7 @@ test("signing service rejects query attestations that do not match the bound ide
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-query-reject-"));
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
-    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl")});
     try {
       for (const broken of [
         devQueryAttestation({ actor_id: "person-other-owner" }),
@@ -883,7 +931,7 @@ test("signing service rejects malformed attestations as invalid requests", async
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-attestation-invalid-"));
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
-    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl")});
     try {
       const request = (attestation: unknown) => ({ operation: "sign", key_id: "person-sales-owner", digest: Buffer.alloc(32).toString("base64url"), certificate: identity.certificate.toString("base64url"), attestation });
       const { tx_id: _txId, ...withoutTx } = devAttestation();

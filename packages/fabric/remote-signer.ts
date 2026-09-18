@@ -270,8 +270,14 @@ export function createAttestationSerializer(context: SigningAttestationContext):
   const owner = {};
   owned[SERIALIZER_OWNER] = owner;
   let queue: Promise<void> = Promise.resolve();
+  const isOwner = () => owned[SERIALIZER_OWNER] === owner;
   return <T>(attestation: Attestation | undefined, operation: () => Promise<T>): Promise<T> => {
+    // After releaseAttestationSerializer a reconnect may claim the context for
+    // a new client; a stale serializer must fail closed rather than install an
+    // attestation into a context it no longer owns.
+    if (!isOwner()) return Promise.reject(new Error("Signing attestation serializer was released"));
     const run = queue.then(async () => {
+      if (!isOwner()) throw new Error("Signing attestation serializer was released");
       context.current = attestation;
       try {
         return await operation();
@@ -287,10 +293,30 @@ export function createAttestationSerializer(context: SigningAttestationContext):
 }
 
 /**
+ * Runs every cleanup step even when earlier steps throw, so a failed close
+ * never leaves siblings leaked. The first error surfaces after all steps ran.
+ */
+export function closeAllResources(operations: ReadonlyArray<() => unknown>, label: string): void {
+  const errors: unknown[] = [];
+  for (const operation of operations) {
+    try {
+      operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, label);
+}
+
+/**
  * Releases a context's serializer claim at shutdown so a reconnection may
  * rebuild a serializer over the same context object. The caller must not hold
  * in-flight signer-bearing operations when releasing; any unconsumed
- * attestation is cleared so the next owner starts from an empty slot.
+ * attestation is cleared so the next owner starts from an empty slot. The
+ * stale serializer then fails closed: calls still queued reject instead of
+ * installing into a reclaimed context, while an already-installed operation
+ * reads back an empty slot and its unattested request is rejected by
+ * protected keys.
  */
 export function releaseAttestationSerializer(context: SigningAttestationContext): void {
   delete (context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER];

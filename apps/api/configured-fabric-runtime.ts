@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
-import { attestationSlot, createAttestationSerializer, createRemoteSigner, releaseAttestationSerializer } from "../../packages/fabric/remote-signer.ts";
+import { attestationSlot, closeAllResources, createAttestationSerializer, createRemoteSigner, releaseAttestationSerializer } from "../../packages/fabric/remote-signer.ts";
 import type { AttestationSerializer, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
@@ -20,13 +20,8 @@ export function configuredOutboxFile(orgId: string, actorId: string): string {
   return `outbox-${digest}.sqlite`;
 }
 
-/** Runs every cleanup even when earlier ones fail; surfaces the first error. Mirrored in examples/order-workflow/fabric-runtime.ts — keep both in sync. */
 function closeAll(cleanups: ReadonlyArray<() => void>): void {
-  const errors: unknown[] = [];
-  for (const cleanup of cleanups) {
-    try { cleanup(); } catch (error) { errors.push(error); }
-  }
-  if (errors.length > 0) throw errors[0];
+  closeAllResources(cleanups, "fabric runtime cleanup failed");
 }
 
 function configuredIdentity(configuration: ProjectConfiguration, reference: FabricIdentityConfiguration): Actor {
@@ -68,6 +63,8 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
   dataDir: string;
   organization: string;
   authorizeActor: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
+  /** Retains each verified attestation receipt; must be synchronous. */
+  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array) => void;
 }): Promise<{ ledger: FabricApplicationLedger; personas: Persona[] }> {
   if (configuration.ledger.mode !== "fabric" || !configuration.fabric) throw new Error("Fabric ledger configuration is required");
   if (configuration.ledger.channel_id !== configuration.genesis.channel_id) throw new Error("Fabric channel differs from genesis");
@@ -87,11 +84,11 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       assertIdentityAttributes(certificate, actor, configuration.ledger.channel_id);
       const tlsCertificate = readFileSync(reference.tls_ca_path);
       const attestationContext: SigningAttestationContext = {};
-      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: attestationSlot(attestationContext) });
+      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: attestationSlot(attestationContext), onAttestationReceipt: options.onAttestationReceipt });
       // qscc signing gets its own slot and signer so read-only evaluations can
       // never overwrite or steal an in-flight decision attestation.
       const qsccContext: SigningAttestationContext = {};
-      const qsccSigner = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: attestationSlot(qsccContext) });
+      const qsccSigner = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: attestationSlot(qsccContext), onAttestationReceipt: options.onAttestationReceipt });
       const rpc = new grpc.Client(reference.peer_endpoint, grpc.credentials.createSsl(tlsCertificate), {
         "grpc.ssl_target_name_override": reference.peer_host_alias,
         "grpc.default_authority": reference.peer_host_alias,
@@ -104,9 +101,12 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
         client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase), attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
+        // Claim the qscc serializer before publishing the route so a failed
+        // claim cannot leave a route closed twice by nested catch handlers.
+        const qsccSigned = createAttestationSerializer(qsccContext);
         const opened = { client, gateway, outbox, rpc };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => opened.rpc.close(), () => releaseAttestationSerializer(qsccContext)]); } });
-        qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
+        qsccGateways.push({ actor, gateway, signed: qsccSigned });
       } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch { /* the original startup failure wins */ } throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
