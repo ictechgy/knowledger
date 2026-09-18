@@ -9,8 +9,8 @@ import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from './organiz
 import type { DevelopmentOrganization } from './organizations.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
-import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from '../../packages/fabric/gateway.ts';
-import type { FabricWritePhase, GatewayAttestation } from '../../packages/fabric/gateway.ts';
+import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation, signingAttestationConfig } from '../../packages/fabric/gateway.ts';
+import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
 import type { AttestationSerializer, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
 import { closeAllResources, createAttestationSerializer, releaseAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
@@ -20,16 +20,6 @@ import type { Actor } from '../../packages/storage/local-ledger.ts';
 
 function closeAll(cleanups: ReadonlyArray<() => void>): void {
   closeAllResources(cleanups, "fabric runtime cleanup failed");
-}
-
-/**
- * Attestation wiring exists only when a signerProvider consumes the slot:
- * the raw in-process fallback signs nothing into evidence, so installing
- * attestations would fail closed on every signed call.
- */
-export function signingAttestationConfig(actor: Actor, context: SigningAttestationContext, signerProvider: FabricTestRuntimeOptions['signerProvider']): GatewayAttestation | undefined {
-  if (signerProvider === undefined) return undefined;
-  return { context, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) };
 }
 
 export interface FabricTestRuntimeOptions {
@@ -91,7 +81,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       let outbox: SqliteOutbox | undefined;
       let qsccSigned: AttestationSerializer | undefined;
       try {
-        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: signingAttestationConfig(actor, attestationContext, options.signerProvider) });
+        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: signingAttestationConfig(actor, attestationContext, options.signerProvider !== undefined) });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         // Claim the qscc serializer before publishing the route so a failed
