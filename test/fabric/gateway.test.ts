@@ -272,7 +272,9 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
   // installed phase "query" or signed already, so both stay empty.
   const statusPromise = client.getStatus("tx-race", new Uint8Array([1]));
   const resultPromise = client.getAuthoritativeCommandResult({ command_id: "cmd-race", actor_org_id: "SalesMSP" });
-  await Promise.resolve();
+  // A macrotask boundary flushes every queued microtask, so a competing read
+  // that would enter its SDK call has had every chance to do so.
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(signedPhases(), ["proposal"]);
   assert.deepEqual(entered, []);
   assert.equal(context.current, undefined);
@@ -325,7 +327,7 @@ test("a concurrent status lookup cannot steal an in-flight submit attestation", 
   await submitSignSeen;
   // The submit signature is in-flight; the read must queue behind it.
   const statusPromise = client.getStatus("tx-submit-race", new Uint8Array([1]));
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(signedPhases(), ["proposal", "submit"]);
   assert.deepEqual(entered, []);
   releaseSubmitSign?.();

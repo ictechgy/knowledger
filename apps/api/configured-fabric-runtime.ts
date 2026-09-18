@@ -20,7 +20,7 @@ export function configuredOutboxFile(orgId: string, actorId: string): string {
   return `outbox-${digest}.sqlite`;
 }
 
-/** Runs every cleanup even when earlier ones fail; surfaces the first error. */
+/** Runs every cleanup even when earlier ones fail; surfaces the first error. Mirrored in examples/order-workflow/fabric-runtime.ts — keep both in sync. */
 function closeAll(cleanups: ReadonlyArray<() => void>): void {
   const errors: unknown[] = [];
   for (const cleanup of cleanups) {

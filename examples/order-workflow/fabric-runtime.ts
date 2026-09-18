@@ -18,7 +18,7 @@ import type { FabricSigningRoute } from '../../packages/fabric/application-ledge
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 
-/** Runs every cleanup even when earlier ones fail; surfaces the first error. */
+/** Runs every cleanup even when earlier ones fail; surfaces the first error. Mirrored in apps/api/configured-fabric-runtime.ts — keep both in sync. */
 function closeAll(cleanups: ReadonlyArray<() => void>): void {
   const errors: unknown[] = [];
   for (const cleanup of cleanups) {

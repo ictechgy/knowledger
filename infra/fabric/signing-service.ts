@@ -273,11 +273,15 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
           evidenceDigest === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, evidenceDigest),
         ]);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
+          // The key already produced a signature: a post-sign rejection still
+          // needs a record so key use and the audit log cannot diverge.
+          audit?.({ record_type: "signing_rejected", reason: "signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         let attestationSignature: Buffer | undefined;
         if (attestation !== undefined) {
           if (!(attested instanceof Uint8Array) || attested.byteLength === 0 || attested.byteLength > MAX_SIGNATURE_BYTES) {
+            audit?.({ record_type: "signing_rejected", reason: "attestation_signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
             response(socket, { ok: false, error: "rejected" }); return;
           }
           attestationSignature = Buffer.from(attested);
@@ -289,6 +293,10 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         });
         response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }) });
       } catch {
+        // A signing exception or timeout may still have invoked the key;
+        // record the failure best-effort (the audit write itself may be the
+        // cause, so it must not throw here).
+        try { audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null }); } catch { /* audit may itself be the failure */ }
         response(socket, { ok: false, error: "rejected" });
       } finally { release(); }
     })();
