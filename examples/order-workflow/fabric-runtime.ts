@@ -79,17 +79,18 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       let client: Awaited<ReturnType<typeof connectOfficialFabricGateway>> | undefined;
       let gateway: any;
       let outbox: SqliteOutbox | undefined;
+      let qsccSigned: AttestationSerializer | undefined;
       try {
         client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         // Claim the qscc serializer before publishing the route so a failed
         // claim cannot leave a route closed twice by nested catch handlers.
-        const qsccSigned = createAttestationSerializer(qsccContext);
+        qsccSigned = createAttestationSerializer(qsccContext);
         const opened = { client, gateway, outbox };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext, qsccSigned)]); } });
         qsccGateways.push({ actor, gateway, signed: qsccSigned });
-      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
+      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close(), () => { if (qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, qsccSigned); }]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
     // qscc reads are attested under the selected binding's actor — the
