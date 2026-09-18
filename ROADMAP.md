@@ -49,11 +49,16 @@ Design contracts in `docs/` that are not yet implemented:
 
 ## Track C — Adoption and extensions
 
-9. **Additional source connectors** — git repositories or other source
-   formats beyond local Markdown (`docs/23-KB-SOURCE-CONNECTOR.md`).
-10. **Adoption pilot** — the P4 plan measures one concept and one real
-    cross-context workflow: interpretation mixing, time-to-agreement,
-    review effort, disclosure burden, reuse rate (`docs/07-DELIVERY-PLAN.md`).
+9. ~~**Additional source connectors**~~ — `readGitSource` reads the same
+   manifest/snapshot contract from a pinned commit of a local Git
+   repository (`kb-sync --git-ref`); further connectors remain open
+   (`docs/23-KB-SOURCE-CONNECTOR.md`).
+10. **Adoption pilot** — measurement support implemented:
+    `npm run pilot:metrics` derives time-to-agreement, review effort and
+    reuse rate from the verified journal and combines them with an
+    explicit observation log for interpretation mixing and disclosure
+    burden (`docs/28-ADOPTION-PILOT.md`); running an actual pilot remains
+    open (`docs/07-DELIVERY-PLAN.md`).
 
 ## Track D — Project operations
 
