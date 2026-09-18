@@ -28,7 +28,7 @@ export type SigningPhase = 'proposal' | 'submit';
 export interface GatewayAttestation {
   /** Slot shared with the remote signer; refreshed before each signing call. */
   context: SigningAttestationContext;
-  build(command: GatewayCommand, phase: SigningPhase, txId: string): SigningAttestation | undefined;
+  build(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined;
   /** Attestation for read-only signing (evaluate/status); no command binding. */
   buildQuery(): QueryAttestation | undefined;
 }
@@ -148,7 +148,12 @@ class OfficialGatewayClient implements FabricGatewayClient {
     if (command.actor_org_id !== this.mspId) throw new Error('Command organization does not match the signing identity');
     await this.assertAuthorized('proposal');
     const { actor_org_id: _actorOrg, ...wireCommand } = command;
-    const proposal = this.contract.newProposal("Execute", { arguments: [JSON.stringify(wireCommand)] });
+    const wireJson = JSON.stringify(wireCommand);
+    const proposal = this.contract.newProposal("Execute", { arguments: [wireJson] });
+    // Snapshot the attested command at proposal time: a caller mutating the
+    // original object afterwards must not detach the receipt's command digest
+    // from the proposal bytes the peer actually signs.
+    const attestedCommand = JSON.parse(wireJson) as Pick<GatewayCommand, "command_id" | "type" | "input">;
     return {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
@@ -160,11 +165,11 @@ class OfficialGatewayClient implements FabricGatewayClient {
         // audit reconciliation should expect that pairing rather than equal
         // phase names. Authorisation runs inside the serialised section so it
         // is evaluated at signing time, not before the queue wait.
-        const endorsed = await this.signed(this.attestation?.build(command, 'proposal', proposal.getTransactionId()), async () => { await this.assertAuthorized('endorse'); return proposal.endorse(); });
+        const endorsed = await this.signed(this.attestation?.build(attestedCommand, 'proposal', proposal.getTransactionId()), async () => { await this.assertAuthorized('endorse'); return proposal.endorse(); });
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
-            const commit = await this.signed(this.attestation?.build(command, 'submit', proposal.getTransactionId()), async () => { await this.assertAuthorized('submit'); return endorsed.submit(); });
+            const commit = await this.signed(this.attestation?.build(attestedCommand, 'submit', proposal.getTransactionId()), async () => { await this.assertAuthorized('submit'); return endorsed.submit(); });
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
             return commit;
@@ -213,10 +218,10 @@ class OfficialGatewayClient implements FabricGatewayClient {
   close(): void {
     this.commits.clear();
     if (this.attestation) {
-      this.attestation.context.current = undefined;
-      // Release the serializer's ownership claim so a reconnect may reuse the
-      // same caller-provided context object.
-      releaseAttestationSerializer(this.attestation.context);
+      // Release this serializer's ownership claim so a reconnect may reuse the
+      // same caller-provided context object; the release is tagged so a
+      // repeated close cannot evict a replacement serializer's claim.
+      releaseAttestationSerializer(this.attestation.context, this.signed);
     }
     this.gateway.close?.();
   }

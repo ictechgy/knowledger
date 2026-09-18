@@ -87,9 +87,9 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
         // claim cannot leave a route closed twice by nested catch handlers.
         const qsccSigned = createAttestationSerializer(qsccContext);
         const opened = { client, gateway, outbox };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext)]); } });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext, qsccSigned)]); } });
         qsccGateways.push({ actor, gateway, signed: qsccSigned });
-      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch { /* the original startup failure wins */ } throw error; }
+      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
     // qscc reads are attested under the selected binding's actor — the
@@ -113,9 +113,9 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
     return { ledger, personas: PERSONAS.filter(persona => persona.kind === 'human' && (!organization || persona.org_id === organization.org_id)), ...(organization ? { organization } : {}) };
   } catch (error) {
     for (const route of routes) {
-      try { await route.close?.(); } catch { /* keep closing sibling routes */ }
+      try { await route.close?.(); } catch (routeError) { if (error instanceof Error && error.cause === undefined) error.cause = routeError; }
     }
-    try { projection?.close(); } catch { /* the original startup failure wins */ }
+    try { projection?.close(); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; }
     throw error;
   }
 }

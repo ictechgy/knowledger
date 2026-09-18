@@ -187,6 +187,7 @@ test("development signing service derives its audit log beside the socket when n
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-derived-audit-"));
   const service = await startDevelopmentSigningService({ socketPath: join(directory, "sign.sock") });
   try {
+    t.after(() => { try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* cleanup best-effort */ } });
     const certificate = readFileSync(certificatePath);
     const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devQueryAttestation() });
     await signer(Buffer.alloc(32, 3));
@@ -587,17 +588,21 @@ test("a second serializer cannot claim an attestation context", () => {
 
 test("releaseAttestationSerializer lets a later serializer reclaim the context", async () => {
   const context: SigningAttestationContext = {};
-  createAttestationSerializer(context);
-  releaseAttestationSerializer(context);
+  const first = createAttestationSerializer(context);
+  releaseAttestationSerializer(context, first);
   // Reclaiming after release mirrors a reconnect: the new serializer must
   // install and serialise attestations normally.
   const reclaimed = createAttestationSerializer(context);
   const attestation = devAttestation();
   assert.equal(await reclaimed(attestation, async () => context.current), attestation);
   assert.equal(context.current, undefined);
-  // Releasing without an owner is a no-op so close paths stay idempotent.
-  releaseAttestationSerializer(context);
-  releaseAttestationSerializer(context);
+  // Releasing a serializer that no longer owns the context is a no-op: a
+  // repeated close from an old client must not evict the live claim.
+  releaseAttestationSerializer(context, first);
+  assert.equal(await reclaimed(attestation, async () => context.current), attestation);
+  // Releasing the actual owner clears the claim; releasing again is a no-op.
+  releaseAttestationSerializer(context, reclaimed);
+  releaseAttestationSerializer(context, reclaimed);
 });
 
 test("a released serializer fails closed instead of touching a reclaimed context", async () => {
@@ -697,9 +702,11 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     linkSync(aliased, join(directory, "audit-alias-other.jsonl"));
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign6.sock"), keys, auditLogPath: aliased }), /single link|collides|regular file/);
     // A pre-existing file with a permissive mode is refused; the same path at
-    // mode 600 is adopted and appended to.
+    // mode 600 is adopted and appended to. chmod after creation so the mode
+    // does not depend on the process umask.
     const wrongMode = join(directory, "audit-wrong-mode.jsonl");
     fs.writeFileSync(wrongMode, "", { mode: 0o644 });
+    fs.chmodSync(wrongMode, 0o644);
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign7.sock"), keys, auditLogPath: wrongMode }), /regular file|mode 600/);
     fs.chmodSync(wrongMode, 0o600);
     const adopted = await startSigningService({ socketPath: join(directory, "sign8.sock"), keys, auditLogPath: wrongMode });
