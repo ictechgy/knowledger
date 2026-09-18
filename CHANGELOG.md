@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `onAttestationReceipt`, whose own failures stay distinct from malformed
   protocol responses.
 - Signing audit hardening: the audit log path may not collide with configured
-  key, certificate or socket paths — hard links and non-regular targets are
-  refused — records are written completely and the descriptor is released on
+  key, certificate, socket or signing configuration paths — hard links and
+  non-regular targets are refused — records are written completely, flushed
+  before the response is acknowledged and the descriptor is released on
   shutdown. Rejection records carry a `reason` and the configured
   certificate's actor claims. Attested keys fail fast at load when the
   certificate's `actor_kind` is outside `allowed_actor_kinds` or the private

@@ -132,17 +132,21 @@ without a matching attested transaction). An operational gateway re-derives
 the binding from the proposal bytes before signing. Attested keys fail fast at
 load when the certificate's `actor_kind` is outside `allowed_actor_kinds` or
 the key is not EC (receipts are ECDSA evidence). The audit file must not
-collide with any configured key, certificate or socket path — including hard
-links — and a non-regular target is refused before open; it is opened once
-with no-follow semantics, validated by descriptor, appended with complete
-writes, and closed with the service. The gateway client serialises
-every signer-bearing SDK call on a connection — endorse, submit, status and
-evaluate — installing the attestation inside the same critical section the
-signer consumes it from, so a concurrent read can never overwrite or steal an
-in-flight decision attestation. The qscc lookup gateway signs through a
-dedicated slot and signer separate from the write path, and the remote signer
-consumes its slot once per request, so the receipt binds the exact command
-decision and transaction ID without stale reuse.
+collide with any configured key, certificate, socket or signing configuration
+path — including hard links — and a non-regular target is refused before
+open; it is opened once with no-follow semantics, validated by descriptor,
+appended with complete writes, flushed before the response is acknowledged
+and closed with the service. Record timestamps are service-asserted
+operational metadata, not part of the signed evidence. The gateway client
+serialises every signer-bearing SDK call on a connection — endorse, submit,
+status and evaluate — installing the attestation inside the same critical
+section the signer consumes it from, so a concurrent read can never overwrite
+or steal an in-flight decision attestation. A context may be claimed by a
+single serializer, which releases the claim when the connection closes. The
+qscc lookup gateway signs through a dedicated slot and signer separate from
+the write path, and the remote signer consumes its slot once per request, so
+the receipt binds the exact command decision and transaction ID without stale
+reuse.
 
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.

@@ -1,6 +1,6 @@
 import { parseStrictJson } from "./canonical.ts";
 import { idempotencyDigest } from "../domain/index.ts";
-import { createAttestationSerializer } from "./remote-signer.ts";
+import { createAttestationSerializer, releaseAttestationSerializer } from "./remote-signer.ts";
 import type { Attestation, QueryAttestation, SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
 import type {
   Actor,
@@ -202,7 +202,16 @@ class OfficialGatewayClient implements FabricGatewayClient {
     return { payload_digest: record.command_digest, result: record.result };
   }
 
-  close(): void { this.commits.clear(); if (this.attestation) this.attestation.context.current = undefined; this.gateway.close?.(); }
+  close(): void {
+    this.commits.clear();
+    if (this.attestation) {
+      this.attestation.context.current = undefined;
+      // Release the serializer's ownership claim so a reconnect may reuse the
+      // same caller-provided context object.
+      releaseAttestationSerializer(this.attestation.context);
+    }
+    this.gateway.close?.();
+  }
 }
 
 function normalizeLedgerNumber(value: number | bigint | string | undefined): number | string | undefined {
@@ -393,5 +402,12 @@ export async function connectOfficialFabricGateway(options: OfficialGatewayConne
     ...(module.hash?.sha256 ? { hash: module.hash.sha256 } : {}),
   });
   const network = gateway.getNetwork(options.channel_id);
-  return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id, options.authorize, options.attestation);
+  try {
+    // createAttestationSerializer may reject an already-claimed context; the
+    // connected gateway must not leak when client construction fails.
+    return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id, options.authorize, options.attestation);
+  } catch (error) {
+    gateway.close?.();
+    throw error;
+  }
 }

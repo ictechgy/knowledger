@@ -12,7 +12,7 @@ import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
 import type { AttestationSerializer, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
-import { createAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
+import { createAttestationSerializer, releaseAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
 import type { FabricSigningRoute } from '../../packages/fabric/application-ledger.ts';
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
@@ -80,11 +80,15 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         const opened = { client, gateway, outbox };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); rpc.close(); } });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); rpc.close(); releaseAttestationSerializer(qsccContext); } });
         qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
+    // qscc reads are attested under the selected binding's actor — the
+    // fixture's second identity when present, otherwise the first — so audit
+    // consumers should read them as service reads by that signing identity,
+    // not user-initiated actions.
     const qsccBinding = qsccGateways[1] ?? qsccGateways[0];
     if (qsccBinding === undefined) throw new Error('qscc signing binding is unavailable');
     const qscc = qsccBinding.gateway.getNetwork('kcl-demo').getContract('qscc');

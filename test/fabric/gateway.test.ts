@@ -186,6 +186,12 @@ test("official gateway refreshes the signing attestation at each signing phase",
   assert.equal(context.current, undefined);
 });
 
+/** A query attestation must carry exactly the read-only shape — no command binding or tx_id may leak in. */
+function assertQueryShape(attestation: Attestation | undefined): void {
+  assert.ok(attestation !== undefined && attestation.phase === "query", "expected a query attestation");
+  assert.deepEqual(Object.keys(attestation).sort(), ["actor_id", "actor_kind", "org_id", "phase"]);
+}
+
 test("read-only signing paths install a query attestation instead of a stale command context", async () => {
   const context: SigningAttestationContext = {};
   const signed: Array<Attestation | undefined> = [];
@@ -215,6 +221,9 @@ test("read-only signing paths install a query attestation instead of a stale com
   const result = await client.getAuthoritativeCommandResult({ command_id: "cmd-query", actor_org_id: "SalesMSP" });
   assert.equal(result?.payload_digest, "sha256:x");
   assert.deepEqual(signed.map(entry => entry?.phase), ["proposal", "submit", "query", "query"]);
+  // Read-only signatures carry the exact query shape, never a reused decision.
+  assertQueryShape(signed[2]);
+  assertQueryShape(signed[3]);
   assert.equal(context.current, undefined);
   client.close();
   assert.equal(context.current, undefined);
@@ -222,15 +231,16 @@ test("read-only signing paths install a query attestation instead of a stale com
 
 test("a concurrent status lookup cannot steal an in-flight decision attestation", async () => {
   const context: SigningAttestationContext = {};
-  const signedPhases: Array<string | undefined> = [];
+  const signed: Array<Attestation | undefined> = [];
+  const signedPhases = () => signed.map(entry => entry?.phase);
   let releaseEndorseSign: (() => void) | undefined;
   let endorseSignStarted: (() => void) | undefined;
   const endorseGate = new Promise<void>(resolve => { releaseEndorseSign = resolve; });
   const endorseSignSeen = new Promise<void>(resolve => { endorseSignStarted = resolve; });
   const take = attestationSlot(context);
   const signer = async (digest: Uint8Array) => {
-    const attestation = take() as { phase?: string } | undefined;
-    signedPhases.push(attestation?.phase);
+    const attestation = take();
+    signed.push(attestation);
     if (attestation?.phase === "proposal") { endorseSignStarted?.(); await endorseGate; }
     return digest;
   };
@@ -263,7 +273,7 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
   const statusPromise = client.getStatus("tx-race", new Uint8Array([1]));
   const resultPromise = client.getAuthoritativeCommandResult({ command_id: "cmd-race", actor_org_id: "SalesMSP" });
   await Promise.resolve();
-  assert.deepEqual(signedPhases, ["proposal"]);
+  assert.deepEqual(signedPhases(), ["proposal"]);
   assert.deepEqual(entered, []);
   assert.equal(context.current, undefined);
   releaseEndorseSign?.();
@@ -271,21 +281,25 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
   const status = await statusPromise;
   assert.equal(status.status, "VALID");
   assert.equal((await resultPromise)?.payload_digest, "sha256:x");
-  assert.deepEqual(signedPhases, ["proposal", "query", "query"]);
+  assert.deepEqual(signedPhases(), ["proposal", "query", "query"]);
+  // Queued reads signed under the exact query shape, not the stolen decision.
+  assertQueryShape(signed[1]);
+  assertQueryShape(signed[2]);
   assert.equal(context.current, undefined);
 });
 
 test("a concurrent status lookup cannot steal an in-flight submit attestation", async () => {
   const context: SigningAttestationContext = {};
-  const signedPhases: Array<string | undefined> = [];
+  const signed: Array<Attestation | undefined> = [];
+  const signedPhases = () => signed.map(entry => entry?.phase);
   let releaseSubmitSign: (() => void) | undefined;
   let submitSignStarted: (() => void) | undefined;
   const submitGate = new Promise<void>(resolve => { releaseSubmitSign = resolve; });
   const submitSignSeen = new Promise<void>(resolve => { submitSignStarted = resolve; });
   const take = attestationSlot(context);
   const signer = async (digest: Uint8Array) => {
-    const attestation = take() as { phase?: string } | undefined;
-    signedPhases.push(attestation?.phase);
+    const attestation = take();
+    signed.push(attestation);
     if (attestation?.phase === "submit") { submitSignStarted?.(); await submitGate; }
     return digest;
   };
@@ -312,13 +326,14 @@ test("a concurrent status lookup cannot steal an in-flight submit attestation", 
   // The submit signature is in-flight; the read must queue behind it.
   const statusPromise = client.getStatus("tx-submit-race", new Uint8Array([1]));
   await Promise.resolve();
-  assert.deepEqual(signedPhases, ["proposal", "submit"]);
+  assert.deepEqual(signedPhases(), ["proposal", "submit"]);
   assert.deepEqual(entered, []);
   releaseSubmitSign?.();
   await submitPromise;
   const status = await statusPromise;
   assert.equal(status.status, "VALID");
-  assert.deepEqual(signedPhases, ["proposal", "submit", "query"]);
+  assert.deepEqual(signedPhases(), ["proposal", "submit", "query"]);
+  assertQueryShape(signed[2]);
   assert.equal(context.current, undefined);
 });
 
