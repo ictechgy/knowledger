@@ -607,12 +607,12 @@ test("releaseAttestationSerializer lets a later serializer reclaim the context",
   // install and serialise attestations normally.
   const reclaimed = createAttestationSerializer(context);
   const attestation = devAttestation();
-  assert.equal(await reclaimed(attestation, async () => context.current), attestation);
+  assert.equal(await reclaimed(attestation, async () => attestationSlot(context)()), attestation);
   assert.equal(context.current, undefined);
   // Releasing a serializer that no longer owns the context is a no-op: a
   // repeated close from an old client must not evict the live claim.
   releaseAttestationSerializer(context, first);
-  assert.equal(await reclaimed(attestation, async () => context.current), attestation);
+  assert.equal(await reclaimed(attestation, async () => attestationSlot(context)()), attestation);
   // Releasing the actual owner clears the claim; releasing again is a no-op.
   releaseAttestationSerializer(context, reclaimed);
   releaseAttestationSerializer(context, reclaimed);
@@ -629,7 +629,7 @@ test("a released serializer fails closed instead of touching a reclaimed context
   await assert.rejects(pending, (error: unknown) => error instanceof Error && /released/.test(error.message));
   const reclaimed = createAttestationSerializer(context);
   const fresh = devAttestation();
-  assert.equal(await reclaimed(fresh, async () => context.current), fresh);
+  assert.equal(await reclaimed(fresh, async () => attestationSlot(context)()), fresh);
   assert.equal(context.current, undefined);
 });
 
@@ -924,6 +924,16 @@ test("createAttestationSerializer rolls back an unconsumed attestation on failur
   assert.equal(context.current, undefined);
   const next = await signed(devQueryAttestation(), async () => attestationSlot(context)());
   assert.equal((next as { phase?: string } | undefined)?.phase, "query");
+});
+
+test("createAttestationSerializer fails closed when the signer never consumes the attestation", async () => {
+  const context: SigningAttestationContext = {};
+  const signed = createAttestationSerializer(context);
+  // A signer wired to a different context leaves the installed attestation
+  // untouched: the signed artefact would carry no evidence, so the call
+  // rejects instead of returning it, and the slot is cleared afterwards.
+  await assert.rejects(signed(devAttestation(), async () => "signed-artefact"), /not consumed/);
+  assert.equal(context.current, undefined);
 });
 
 test("dedicated read slots sign concurrently with an in-flight decision", async () => {

@@ -28,9 +28,10 @@ export type SigningPhase = 'proposal' | 'submit';
 export interface GatewayAttestation {
   /** Slot shared with the remote signer; refreshed before each signing call. */
   context: SigningAttestationContext;
-  build(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined;
+  /** Decision attestation for the exact write; a missing or mismatched result fails the call before any signature. */
+  build(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation;
   /** Attestation for read-only signing (evaluate/status); no command binding. */
-  buildQuery(): QueryAttestation | undefined;
+  buildQuery(): QueryAttestation;
 }
 
 /** Organisation attestation binding the actor to the exact command decision and transaction. */
@@ -151,12 +152,18 @@ class OfficialGatewayClient implements FabricGatewayClient {
   // countersign because it validates identity and shape only.
   private buildDecision(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined {
     if (this.attestation === undefined) return undefined;
+    // Capture the expected claims before invoking the builder: it receives the
+    // same snapshot object and could mutate it, so the comparison values must
+    // be fixed before the call, not read back afterwards.
+    const expectedId = command.command_id;
+    const expectedType = command.type;
+    const expectedDigest = idempotencyDigest({ type: command.type, input: command.input });
     const built = this.attestation.build(command, phase, txId);
     // A configured builder that declines to produce evidence must not let the
     // write proceed unattested — that is a wiring bug, not a policy choice.
     if (built === undefined) throw new Error("Attestation builder produced no evidence for a signed write");
     const checked = assertSigningAttestation(built);
-    if (checked.phase === "query" || checked.command_id !== command.command_id || checked.command_type !== command.type || checked.command_digest !== idempotencyDigest({ type: command.type, input: command.input }) || checked.phase !== phase || checked.tx_id !== txId) {
+    if (checked.phase === "query" || checked.command_id !== expectedId || checked.command_type !== expectedType || checked.command_digest !== expectedDigest || checked.phase !== phase || checked.tx_id !== txId) {
       throw new Error("Attestation builder returned claims that do not match the signed operation");
     }
     return checked;

@@ -62,7 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first request, and a pre-existing audit file with an unterminated tail is
   refused at startup. An attestation builder returning `undefined` or claims
   that mismatch the signed operation now fails the call locally instead of
-  letting the operation proceed unattested, and a partially written audit
+  letting the operation proceed unattested, a signing call whose attestation
+  is never consumed by the signer fails closed rather than returning a
+  signature without evidence, records arriving after audit-log close fail the
+  request, and a partially written audit
   record marks the log torn so later signing fails closed until the file is
   repaired.
 

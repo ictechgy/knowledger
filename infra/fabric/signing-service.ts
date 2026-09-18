@@ -275,8 +275,14 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
           signWithTimeout(key.sign, digest),
           evidenceDigest === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, evidenceDigest),
         ]);
-        if (signatureResult.status === "rejected") throw signatureResult.reason;
-        if (attestedResult.status === "rejected") throw attestedResult.reason;
+        if (signatureResult.status === "rejected" || attestedResult.status === "rejected") {
+          // One of the two signatures failed while its sibling may have
+          // completed: record whichever bytes the key produced so a leaked
+          // signature can be matched, then fail rather than acknowledging a
+          // partial operation through the generic catch.
+          audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signatureResult.status === "fulfilled" ? Buffer.from(signatureResult.value).toString("base64url") : null, attestation_signature: attestedResult.status === "fulfilled" && attestedResult.value !== undefined ? Buffer.from(attestedResult.value).toString("base64url") : null });
+          response(socket, { ok: false, error: "rejected" }); return;
+        }
         const signature = signatureResult.value;
         const attested = attestedResult.value;
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
@@ -284,7 +290,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
           // needs a record so key use and the audit log cannot diverge, and
           // the emitted bytes are kept so auditors can match any leaked
           // signature against the ledger.
-          audit?.({ record_type: "signing_rejected", reason: "signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signature instanceof Uint8Array ? Buffer.from(signature).toString("base64url") : null });
+          audit?.({ record_type: "signing_rejected", reason: "signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signature instanceof Uint8Array ? Buffer.from(signature).toString("base64url") : null, attestation_signature: attested instanceof Uint8Array ? Buffer.from(attested).toString("base64url") : null });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         let attestationSignature: Buffer | undefined;
