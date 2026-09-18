@@ -719,6 +719,17 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     const adopted = await startSigningService({ socketPath: join(directory, "sign8.sock"), keys, auditLogPath: wrongMode });
     await adopted.close();
     assert.equal(readFileSync(wrongMode, "utf8"), "");
+    // A pre-existing log ending mid-record is refused: appending after a
+    // partial line would merge two records into one unparseable JSONL line.
+    const torn = join(directory, "audit-torn.jsonl");
+    fs.writeFileSync(torn, '{"record_type":"signing","key_id":"person-sales', { mode: 0o600 });
+    fs.chmodSync(torn, 0o600);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign9.sock"), keys, auditLogPath: torn }), /newline-terminated/);
+    // A properly terminated pre-existing log is adopted as before.
+    fs.writeFileSync(torn, '{"record_type":"signing"}\n', { mode: 0o600 });
+    fs.chmodSync(torn, 0o600);
+    const adoptedTorn = await startSigningService({ socketPath: join(directory, "sign10.sock"), keys, auditLogPath: torn });
+    await adoptedTorn.close();
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

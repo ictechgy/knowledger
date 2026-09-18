@@ -1,6 +1,6 @@
 import { parseStrictJson } from "./canonical.ts";
 import { idempotencyDigest } from "../domain/index.ts";
-import { createAttestationSerializer, releaseAttestationSerializer } from "./remote-signer.ts";
+import { assertSigningAttestation, createAttestationSerializer, releaseAttestationSerializer } from "./remote-signer.ts";
 import type { Attestation, QueryAttestation, SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
 import type {
   Actor,
@@ -144,6 +144,29 @@ class OfficialGatewayClient implements FabricGatewayClient {
     catch (error) { throw new FabricAuthorizationCancelled(error); }
   }
 
+  // The attestation builder is caller-supplied runtime code: its output must
+  // be checked against the operation being signed before it is installed,
+  // otherwise a faulty builder could attach arbitrary claims — or a
+  // query-shaped attestation — to a write, which the signing service would
+  // countersign because it validates identity and shape only.
+  private buildDecision(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined {
+    const built = this.attestation?.build(command, phase, txId);
+    if (built === undefined) return undefined;
+    const checked = assertSigningAttestation(built);
+    if (checked.phase === "query" || checked.command_id !== command.command_id || checked.command_type !== command.type || checked.command_digest !== idempotencyDigest({ type: command.type, input: command.input }) || checked.phase !== phase || checked.tx_id !== txId) {
+      throw new Error("Attestation builder returned claims that do not match the signed operation");
+    }
+    return checked;
+  }
+
+  private buildQueryAttestation(): QueryAttestation | undefined {
+    const built = this.attestation?.buildQuery();
+    if (built === undefined) return undefined;
+    const checked = assertSigningAttestation(built);
+    if (checked.phase !== "query") throw new Error("Attestation builder returned a decision attestation for a read-only operation");
+    return checked;
+  }
+
   async newProposal(command: GatewayCommand): Promise<GatewayProposal> {
     if (command.actor_org_id !== this.mspId) throw new Error('Command organization does not match the signing identity');
     await this.assertAuthorized('proposal');
@@ -165,11 +188,11 @@ class OfficialGatewayClient implements FabricGatewayClient {
         // audit reconciliation should expect that pairing rather than equal
         // phase names. Authorisation runs inside the serialised section so it
         // is evaluated at signing time, not before the queue wait.
-        const endorsed = await this.signed(this.attestation?.build(attestedCommand, 'proposal', proposal.getTransactionId()), async () => { await this.assertAuthorized('endorse'); return proposal.endorse(); });
+        const endorsed = await this.signed(this.buildDecision(attestedCommand, 'proposal', proposal.getTransactionId()), async () => { await this.assertAuthorized('endorse'); return proposal.endorse(); });
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
-            const commit = await this.signed(this.attestation?.build(attestedCommand, 'submit', proposal.getTransactionId()), async () => { await this.assertAuthorized('submit'); return endorsed.submit(); });
+            const commit = await this.signed(this.buildDecision(attestedCommand, 'submit', proposal.getTransactionId()), async () => { await this.assertAuthorized('submit'); return endorsed.submit(); });
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
             return commit;
@@ -195,7 +218,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
       if (commit.getTransactionId() !== tx_id) throw new Error('Persisted commit does not match its transaction');
     }
     if (!commit) return { status: "UNKNOWN" };
-    const status = await this.signed(this.attestation?.buildQuery(), () => commit.getStatus());
+    const status = await this.signed(this.buildQueryAttestation(), () => commit.getStatus());
     const valid = status.code === 0 || status.code === "VALID";
     this.commits.delete(tx_id);
     return {
@@ -208,7 +231,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
 
   async getAuthoritativeCommandResult(command: Pick<GatewayCommand, "command_id" | "actor_org_id">): Promise<AuthoritativeCommandResult | undefined> {
     if (command.actor_org_id !== this.mspId) throw new Error('Recovery organization does not match the signing identity');
-    const bytes = await this.signed(this.attestation?.buildQuery(), () => this.contract.evaluateTransaction("GetCommand", command.actor_org_id, command.command_id));
+    const bytes = await this.signed(this.buildQueryAttestation(), () => this.contract.evaluateTransaction("GetCommand", command.actor_org_id, command.command_id));
     if (!bytes || bytes.byteLength === 0) return undefined;
     const record = parseStrictJson(bytes) as Record<string, unknown>;
     if (!record || record.record_type !== 'IdempotencyRecord' || record.command_id !== command.command_id || typeof record.command_digest !== "string" || !("result" in record)) return undefined;
