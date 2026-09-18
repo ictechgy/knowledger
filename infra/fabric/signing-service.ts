@@ -417,7 +417,9 @@ export async function startSigningService(options: { socketPath: string; keys: r
   // Attested signing without a service-side audit log leaves the evidence
   // chain empty: receipts alone cannot prove these checks ran, so the sink
   // that auditors reconcile against the ledger is mandatory, not advisory.
-  if (options.auditLogPath === undefined && references.some(reference => reference.require_attestation === true)) {
+  // Any organisation-bound key can serve attested requests and issue
+  // receipts, so the rule covers org_id, not only require_attestation.
+  if (options.auditLogPath === undefined && references.some(reference => reference.org_id !== undefined || reference.require_attestation === true)) {
     throw new Error("Attested signing keys require an audit log: pass --audit-log so the service records the evidence chain");
   }
   const keys = loadKeys(references);

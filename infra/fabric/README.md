@@ -133,10 +133,12 @@ without a matching attested transaction). An operational gateway re-derives
 the binding from the proposal bytes before signing. Attested keys fail fast at
 load when the certificate's `actor_kind` is outside `allowed_actor_kinds` or
 the key is not EC (receipts are ECDSA evidence).
-`--audit-log` is mandatory whenever an attested key is configured: without the
-service-side record a receipt cannot be reconciled and a caller able to drive
-the socket could mint forged evidence undetected, so the service refuses to
-start an attested key without it. The development wrapper derives a log
+`--audit-log` is mandatory whenever an organisation-bound key is configured:
+without the service-side record a receipt cannot be reconciled and a caller
+able to drive the socket could mint forged evidence undetected, so the
+service refuses to start such a key without it — a bare key with no
+`org_id`/`require_attestation` serves only unattested requests and may start
+without one. The development wrapper derives a log
 beside the socket when no path is given. A record that throws mid-write can
 leave a partial trailing line; consumers should discard a trailing non-JSON
 line rather than the file. The audit file must not

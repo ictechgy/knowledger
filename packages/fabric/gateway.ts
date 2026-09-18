@@ -114,7 +114,12 @@ export interface OfficialGatewayConnectionOptions {
   /** Per-call deadlines; unknown commit status remains recoverable in the outbox. */
   timeouts_ms?: Partial<Record<'evaluate' | 'endorse' | 'submit' | 'commit_status', number>>;
   module?: OfficialGatewayModule;
-  /** Recheck the active authenticated request before each write phase. */
+  /**
+   * Recheck the active authenticated request before each write phase. The
+   * callback runs inside the signing serialiser, so it must not re-enter
+   * signer-bearing calls on this client — doing so queues behind itself and
+   * deadlocks.
+   */
   authorize?: (phase: FabricWritePhase) => Promise<void>;
   /** Organisation decision attestation shared with the signing gateway. */
   attestation?: GatewayAttestation;
