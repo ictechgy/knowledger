@@ -281,14 +281,16 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         const attested = attestedResult.value;
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           // The key already produced a signature: a post-sign rejection still
-          // needs a record so key use and the audit log cannot diverge.
-          audit?.({ record_type: "signing_rejected", reason: "signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+          // needs a record so key use and the audit log cannot diverge, and
+          // the emitted bytes are kept so auditors can match any leaked
+          // signature against the ledger.
+          audit?.({ record_type: "signing_rejected", reason: "signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signature instanceof Uint8Array ? Buffer.from(signature).toString("base64url") : null });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         let attestationSignature: Buffer | undefined;
         if (attestation !== undefined) {
           if (!(attested instanceof Uint8Array) || attested.byteLength === 0 || attested.byteLength > MAX_SIGNATURE_BYTES) {
-            audit?.({ record_type: "signing_rejected", reason: "attestation_signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+            audit?.({ record_type: "signing_rejected", reason: "attestation_signature_invalid", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: Buffer.from(signature).toString("base64url"), attestation_signature: attested instanceof Uint8Array ? Buffer.from(attested).toString("base64url") : null });
             response(socket, { ok: false, error: "rejected" }); return;
           }
           attestationSignature = Buffer.from(attested);
@@ -328,6 +330,8 @@ const MAX_AUDIT_PATH_BYTES = 1024;
 interface AuditLog {
   audit: AttestationAudit;
   close(): void;
+  /** Set when this call created the file: startup failure may unlink it. */
+  createdPath?: string;
 }
 
 function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog {
@@ -410,17 +414,20 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   let torn = false;
   return {
     audit: record => {
-      // In-flight handlers may finish after close(); writing then could hit a
-      // reused descriptor, so late records are dropped instead.
-      if (closed) return;
+      // In-flight handlers may finish after close(); writing then could hit
+      // a reused descriptor, and acknowledging a signature whose record was
+      // silently dropped would break the evidence chain — late records fail
+      // the request instead of being dropped.
+      if (closed) throw new Error("Signing audit log is closed");
       if (torn) throw new Error("Signing audit log is torn by a partially written record");
       const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
       let written = 0;
       try {
         while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
-        // Durably flush before the caller is acknowledged: a crash between a
-        // signed response and this record landing would leave an attested
-        // signature with no matching evidence.
+        // Flush before the caller is acknowledged: a crash between a signed
+        // response and this record landing would leave an attested signature
+        // with no matching evidence. (fsync scope is the platform's; on macOS
+        // it is not a full disk-cache flush.)
         fsyncSync(fd);
       } catch (error) {
         // Only a partial write tears the log: a failed fsync leaves a
@@ -431,6 +438,7 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
       }
     },
     close: () => { if (!closed) { closed = true; closeSync(fd); } },
+    createdPath: preexisting ? undefined : path,
   };
 }
 
@@ -500,6 +508,9 @@ export async function startSigningService(options: { socketPath: string; keys: r
     });
   } catch (error) {
     auditLog?.close();
+    // A startup failure must not leave an empty log this call created —
+    // the same rule openAuditLog applies to its own failed validation.
+    if (auditLog?.createdPath !== undefined) try { unlinkSync(auditLog.createdPath); } catch { /* best-effort cleanup */ }
     throw error;
   }
   let closed = false;
