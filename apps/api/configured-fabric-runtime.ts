@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
-import { attestationSlot, createAttestationSerializer, createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
+import { attestationSlot, createAttestationSerializer, createRemoteSigner, releaseAttestationSerializer } from "../../packages/fabric/remote-signer.ts";
 import type { AttestationSerializer, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
@@ -96,11 +96,14 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         const opened = { client, gateway, outbox, rpc };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); opened.rpc.close(); } });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); opened.rpc.close(); releaseAttestationSerializer(qsccContext); } });
         qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
+    // qscc reads are attested under the first configured binding's actor;
+    // audit consumers should read them as service reads by that signing
+    // identity, not user-initiated actions.
     const qsccBinding = qsccGateways[0];
     // Read-only signing must never fail open: an unattested qscc call would
     // violate protected keys' require_attestation policy and skip evidence.

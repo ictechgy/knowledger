@@ -181,6 +181,31 @@ test("development signing service signs with only the approved test identities",
   } finally { await service.close(); }
 });
 
+test("development signing service attests each approved organisation binding and refuses cross-organisation claims", async t => {
+  const certFor = (org: string) => join(process.cwd(), `.data/fabric-smoke/crypto/peerOrganizations/${org}.kcl.test/users/User1@${org}.kcl.test/msp/signcerts/User1@${org}.kcl.test-cert.pem`);
+  const paths = { sales: certFor("sales"), fulfillment: certFor("fulfillment"), settlement: certFor("settlement") };
+  if (!sdkAvailable || !Object.values(paths).every(existsSync)) { t.skip("Fabric SDK and disposable identities are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-service-orgs-"));
+  const service = await startDevelopmentSigningService({ socketPath: join(directory, "sign.sock") });
+  try {
+    const bindings: Array<{ keyId: DevelopmentSigningKeyId; org: string; msp: string }> = [
+      { keyId: "person-sales-owner", org: "sales", msp: "SalesMSP" },
+      { keyId: "person-fulfillment-owner", org: "fulfillment", msp: "FulfillmentMSP" },
+      { keyId: "person-settlement-owner", org: "settlement", msp: "SettlementMSP" },
+    ];
+    for (const binding of bindings) {
+      const certificate = readFileSync(paths[binding.org as keyof typeof paths]);
+      const attestation = () => ({ org_id: binding.msp, actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const });
+      const signature = await createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation })(Buffer.alloc(32, 9));
+      assert.ok(signature.byteLength > 0, `${binding.keyId} signs its own organisation query attestation`);
+      // A certificate claiming another organisation's binding is refused.
+      const cross = createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation: () => ({ org_id: "SalesMSP", actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const }) });
+      if (binding.msp === "SalesMSP") continue;
+      await assert.rejects(() => cross(Buffer.alloc(32, 9)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+    }
+  } finally { await service.close(); }
+});
+
 test('signing service bounds idle connections and closes partial frames', async t => {
   const path = join(process.cwd(), '.data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem');
   if (!sdkAvailable || !existsSync(path)) { t.skip('Fabric SDK and disposable identities are required'); return; }
@@ -469,6 +494,7 @@ test("signing service audits a rejected attestation attempt", async t => {
       assert.equal(records[0].record_type, "signing_rejected");
       assert.equal(records[0].reason, "attestation_rejected");
       assert.equal(records[0].attestation, null);
+      assert.equal(records[0].certificate_actor.actor_id, "person-sales-owner");
     } finally { await service.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -676,6 +702,10 @@ test("remote signer rejects a receipt attached to an unattested response and rep
       assert.equal(receipts.length, 1);
       assert.deepEqual(receipts[0]?.evidence, attestationPayload("person-sales-owner", attestation, digest, identity.certificate));
       assert.equal(verify("sha256", receipts[0]!.evidence, new X509Certificate(identity.certificate).publicKey, receipts[0]!.receipt), true);
+      // A failing receipt callback surfaces its own error — it must not be
+      // reclassified as a malformed protocol response.
+      const throwing = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: () => { throw new Error("caller retention failed"); } });
+      await assert.rejects(() => throwing(Buffer.alloc(32, 16)), (error: unknown) => error instanceof Error && !(error instanceof RemoteSignerError) && error.message === "caller retention failed");
     } finally { await honest.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -789,6 +819,9 @@ test("signing service rejects malformed attestations as invalid requests", async
       for (const attestation of [
         { ...devAttestation(), command_digest: "bad" },
         { ...devAttestation(), extra: "field" },
+        // A decision attestation without the transaction binding must be
+        // refused on its own, not only when phase is also absent.
+        withoutTx,
         withoutPhase,
         "not-an-object",
       ]) {

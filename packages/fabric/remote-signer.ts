@@ -279,6 +279,15 @@ export function createAttestationSerializer(context: SigningAttestationContext):
 }
 
 /**
+ * Releases a context's serializer claim at shutdown so a reconnection may
+ * rebuild a serializer over the same context object. The caller must not hold
+ * in-flight signer-bearing operations when releasing.
+ */
+export function releaseAttestationSerializer(context: SigningAttestationContext): void {
+  delete (context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER];
+}
+
+/**
  * Create a Fabric Gateway-compatible signer callback. The supplied digest is
  * sent as-is; it is already SHA-256 hashed by the official Gateway SDK.
  */

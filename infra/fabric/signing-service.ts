@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson } from "../../packages/fabric/canonical.ts";
@@ -234,7 +234,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) {
-          audit?.({ record_type: "signing_rejected", reason: "certificate_mismatch", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+          audit?.({ record_type: "signing_rejected", reason: "certificate_mismatch", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         const digest = base64(request.digest, 32);
@@ -257,14 +257,19 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
             || key.org_id !== attestation.org_id
             || !key.allowed_actor_kinds.includes(attestation.actor_kind);
         if (attestationRejected) {
-          audit?.({ record_type: "signing_rejected", reason: "attestation_rejected", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+          audit?.({ record_type: "signing_rejected", reason: "attestation_rejected", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
           response(socket, { ok: false, error: "rejected" }); return;
         }
+        // Compute the evidence digest before starting either signature: an
+        // exception here must not orphan an in-flight signing operation. One
+        // request slot covers both signatures deliberately — an attested
+        // request is a single logical signing operation.
+        const evidenceDigest = attestation === undefined ? undefined : attestationPayloadDigest(request.key_id, attestation, digest, certificate);
         // The Fabric digest and the attestation evidence are signed
         // independently; issuing them together keeps latency at one round.
         const [signature, attested] = await Promise.all([
           signWithTimeout(key.sign, digest),
-          attestation === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, attestationPayloadDigest(request.key_id, attestation, digest, certificate)),
+          evidenceDigest === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, evidenceDigest),
         ]);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           response(socket, { ok: false, error: "rejected" }); return;
@@ -278,7 +283,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         }
         audit?.({
           record_type: attestation === undefined ? "signing" : "signing_attestation", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id,
-          attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+          attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
           signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }),
         });
         response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }) });
@@ -318,14 +323,19 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   // Audit appends must never land on key material, certificates or the service
   // socket: check resolved paths against every configured filesystem object.
   const resolvedAudit = resolve(path);
+  let realAudit: string | undefined;
+  try { realAudit = realpathSync(path); } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
   for (const reserved of reservedPaths) {
     if (resolve(reserved) === resolvedAudit) throw new Error("Signing audit log path collides with a configured file");
+    if (realAudit === undefined) continue;
+    let realReserved: string;
     try {
-      if (realpathSync(reserved) === realpathSync(path)) throw new Error("Signing audit log path collides with a configured file");
+      realReserved = realpathSync(reserved);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("collides")) throw error;
-      if ((error as { code?: string }).code !== "ENOENT") throw error;
+      if ((error as { code?: string }).code === "ENOENT") continue;
+      throw error;
     }
+    if (realReserved === realAudit) throw new Error("Signing audit log path collides with a configured file");
   }
   // A pre-existing non-regular target (FIFO, socket, device) must fail before
   // open: O_WRONLY on a FIFO would block forever waiting for a reader.
@@ -343,13 +353,14 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
     // Path equality cannot catch a hard link, so compare the opened inode
     // itself against every reserved file that exists on disk.
     for (const reserved of reservedPaths) {
+      let target;
       try {
-        const target = statSync(reserved);
-        if (target.dev === stat.dev && target.ino === stat.ino) throw new Error("Signing audit log path collides with a configured file");
+        target = statSync(reserved);
       } catch (error) {
-        if (error instanceof Error && error.message.includes("collides")) throw error;
-        if ((error as { code?: string }).code !== "ENOENT") throw error;
+        if ((error as { code?: string }).code === "ENOENT") continue;
+        throw error;
       }
+      if (target.dev === stat.dev && target.ino === stat.ino) throw new Error("Signing audit log path collides with a configured file");
     }
   } catch (error) {
     closeSync(fd);
@@ -364,12 +375,16 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
       const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
       let written = 0;
       while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
+      // Durably flush before the caller is acknowledged: a crash between a
+      // signed response and this record landing would leave an attested
+      // signature with no matching evidence.
+      fsyncSync(fd);
     },
     close: () => { if (!closed) { closed = true; closeSync(fd); } },
   };
 }
 
-export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[]; auditLogPath?: string }): Promise<SigningService> {
+export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[]; auditLogPath?: string; reservedPaths?: readonly string[] }): Promise<SigningService> {
   const socketPath = options.socketPath;
   if (typeof socketPath !== "string" || socketPath.length === 0 || !isAbsolute(socketPath) || socketPath.includes("\u0000") || Buffer.byteLength(socketPath) > MAX_SOCKET_PATH_BYTES) throw new TypeError("A valid Unix socket path is required");
   if (pathAlreadyExists(socketPath)) throw new Error("Signing socket already exists; refusing to replace it");
@@ -379,7 +394,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
   const references = assertKeyReferences(options.keys);
   const keys = loadKeys(references);
-  const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath, [socketPath, ...references.flatMap(reference => [reference.certificate_path, reference.private_key_path])]);
+  const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath, [socketPath, ...(options.reservedPaths ?? []), ...references.flatMap(reference => [reference.certificate_path, reference.private_key_path])]);
   let active = 0;
   const connections = new Set<Socket>();
   const server: Server = createServer(socket => {
@@ -473,10 +488,13 @@ async function main(): Promise<void> {
     const wrapper = await import("../../examples/order-workflow/signing-service.ts");
     service = await wrapper.startDevelopmentSigningService({ socketPath, keyIds: demoKeyId === undefined ? undefined : [demoKeyId], auditLogPath });
   } else {
-    const config = JSON.parse(readFileSync(resolve(process.cwd(), configPath!), "utf8")) as unknown;
+    const resolvedConfig = resolve(process.cwd(), configPath!);
+    const config = JSON.parse(readFileSync(resolvedConfig, "utf8")) as unknown;
     const references = Array.isArray(config) ? config : (config && typeof config === "object" && "keys" in config ? (config as { keys: unknown }).keys : undefined);
     if (!Array.isArray(references)) throw new Error("Signing key configuration must be an array or an object with keys");
-    service = await startSigningService({ socketPath, keys: references as SigningKeyReference[], auditLogPath });
+    // The configuration file itself is reserved: an audit path colliding with
+    // it would corrupt the next start.
+    service = await startSigningService({ socketPath, keys: references as SigningKeyReference[], auditLogPath, reservedPaths: [resolvedConfig] });
   }
   const stop = (): void => { void service.close().finally(() => process.exit(0)); };
   process.once("SIGINT", stop);
