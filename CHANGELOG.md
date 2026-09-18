@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issuer or the adapter fails at construction. The API runtime, the
   order-workflow auth runtime, and the auth smoke tool all build the
   `ApplicationAuthentication` boundary through the adapter.
+- Vector candidate search read model (`POST …/vector-search`): a derived
+  `VectorCandidateIndex` port ranks document candidates by embedding
+  similarity while every candidate is re-verified against verified ledger
+  state at the request checkpoint — the index never authorizes knowledge.
+  `document_ids` required refs always resolve directly against the verified
+  browse index, results carry `candidate_source` and a `complete` flag (an
+  empty index page is never proof that no knowledge exists), and stale index
+  digests are dropped. `LocalVectorIndex` provides the in-process development
+  adapter; `PgVectorIndex` targets pgvector with an `index_version`-scoped
+  schema and lazily loaded `pg` dependency.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

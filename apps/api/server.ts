@@ -18,6 +18,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
+import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
 type RequestSession = Session | AuthenticatedSession;
@@ -46,6 +47,9 @@ export interface AppOptions {
   dataDir: string; definition: ApplicationDefinition; ledger?: ApplicationLedger; personas?: Persona[];
   authentication?: ApplicationAuthentication; organization?: RuntimeScopeOrganization;
   binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
+  vectorIndex?: VectorCandidateIndex;
+  embedQuery?: (text: string) => readonly number[];
+  embedRevision?: (title: string, body: string) => readonly number[];
 }
 
 export async function createApp(options: AppOptions) {
@@ -76,7 +80,7 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KnowledgerService(ledger, vault, definition, personas);
+    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision });
     await service.initialize();
   } catch (error) {
     try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } }
@@ -241,6 +245,7 @@ export async function createApp(options: AppOptions) {
           [`${root}/revisions`]: () => service.publish(actor, input),
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),
           [`${root}/search`]: () => service.search(actor, input),
+          [`${root}/vector-search`]: () => service.vectorSearch(actor, input),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);

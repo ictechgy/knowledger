@@ -4,6 +4,8 @@ import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { BrowseQuery, BrowseResult, RevisionBrowseRef, ProposalBrowseRef, AgreementBrowseRef, RevisionBrowseAnnotation } from '../../packages/storage/browse-contract.ts';
 import { ScanningBrowseQueries } from '../../packages/storage/scanning-browse.ts';
+import { cosineSimilarity, developmentEmbedding } from '../../packages/storage/vector-index.ts';
+import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
@@ -59,12 +61,19 @@ export class KnowledgerService {
   private readonly cursorKey = randomBytes(32);
   private scanningBrowse: ScanningBrowseQueries | undefined;
   private readonly searchMatches = new SearchMatchCache();
+  private readonly vectorIndex: VectorCandidateIndex | undefined;
+  private readonly embedQuery: (text: string) => readonly number[];
+  private readonly embedRevision: (title: string, body: string) => readonly number[];
 
-  constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas) {
+  constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
+    options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[]; embedRevision?: (title: string, body: string) => readonly number[] } = {}) {
     this.definition = definition;
     this.ledger = ledger;
     this.vault = vault;
     this.personas = personas;
+    this.vectorIndex = options.vectorIndex;
+    this.embedQuery = options.embedQuery ?? (text => developmentEmbedding(text));
+    this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));
   }
   async refresh(): Promise<void> {
     try { await this.ledger.refresh(); }
@@ -845,6 +854,71 @@ export class KnowledgerService {
     const results = await Promise.all(refs.map(reference => this.describeRevision(this.pageRevision(reference, context), context)));
     this.actor(actor);
     return { view: 'summary', results, total: matches.length, next_cursor: this.nextCursor(page, matches.length), checkpoint: page.checkpoint };
+  }
+
+  /**
+   * 벡터 후보 검색. 벡터 색인은 후보를 제안할 뿐 자격을 결정하지 않는다 —
+   * 모든 후보는 요청 체크포인트의 검증된 원장 상태로 재검증되고,
+   * document_ids로 지정된 필수 참조는 색인과 무관하게 항상 원장에서 해상한다.
+   * 색인이 비어 있어도 "지식이 없다"는 뜻이 아니다 — complete는 후보 수집 범위만 알린다.
+   */
+  async vectorSearch(actor: Actor, input: any) {
+    onlyFields(input, ['query', 'document_ids', 'context_id', 'scope_id', 'usage_scope', 'limit', 'cursor']);
+    if (typeof input.query !== 'string' || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하여야 합니다.');
+    for (const field of ['context_id', 'scope_id', 'usage_scope']) if (input[field] !== undefined && (typeof input[field] !== 'string' || input[field].length > 100)) throw new ApiError('INVALID_INPUT', '올바른 검색 범위가 필요합니다.');
+    if (input.document_ids !== undefined && (!Array.isArray(input.document_ids) || input.document_ids.length > 50 || input.document_ids.some((id: unknown) => typeof id !== 'string' || !ID.test(id)))) throw new ApiError('INVALID_INPUT', '올바른 문서 참조 목록이 필요합니다.');
+    await this.refresh(); this.actor(actor);
+    const filter = { query: input.query, document_ids: input.document_ids ?? null, context_id: input.context_id ?? null, scope_id: input.scope_id ?? null, usage_scope: input.usage_scope ?? null };
+    const page = this.page(actor, 'vector-search', input, filter);
+    const context = this.browseContext(page.checkpoint);
+    const embedding = this.embedQuery(input.query);
+    const scores = new Map<string, number | null>();
+
+    // 필수 문서 참조는 벡터 색인을 거치지 않고 검증된 브라우즈 색인에서 직접 해상한다.
+    for (const documentId of input.document_ids ?? []) {
+      const found = this.queryBrowse({ kind: 'revisions', mode: 'document', document_id: documentId, at: page.checkpoint, offset: 0, limit: 50 });
+      for (const reference of found.items) scores.set(reference.revision_digest, null);
+    }
+
+    if (this.vectorIndex) {
+      // 외부 색인은 후보 제안기다 — 색인이 놓친 문서를 없다고 단정할 수 없다.
+      for (const candidate of await this.vectorIndex.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: 200 })) {
+        if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
+      }
+    } else {
+      // 외부 색인이 없으면 검증된 개정본을 체크포인트에서 전수 열거해 점수를 매긴다 —
+      // 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
+      let offset = 0;
+      while (true) {
+        const batch = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000,
+          context_id: input.context_id || undefined, scope_id: input.scope_id || undefined, usage_scope: input.usage_scope || undefined });
+        const prefetched = this.ledger.readMany?.(batch.items.map(reference => reference.key), page.checkpoint);
+        for (const reference of batch.items) {
+          const revision = prefetched ? prefetched.get(reference.key) : this.ledger.read(reference.key, page.checkpoint);
+          this.checkIndexedRevision(reference, revision);
+          scores.set(reference.revision_digest, cosineSimilarity(embedding, this.embedRevision(revision.payload.title, revision.payload.body_markdown)));
+        }
+        offset += batch.items.length;
+        if (offset >= batch.total) break;
+        if (!batch.items.length) throw new ApiError('PROJECTION_INVALID', '검증된 원장 조회를 계속할 수 없습니다.', 503);
+      }
+    }
+
+    // 색인이 제안한 다이제스트 중 체크포인트에서 검증되지 않는 것은 낡은 후보로 버린다.
+    const ranked: { digest: string; score: number | null }[] = [];
+    for (const [digest, score] of scores) {
+      this.annotate(context, [digest]);
+      if (context.annotations.get(digest)?.revision) ranked.push({ digest, score });
+    }
+    ranked.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.digest.localeCompare(b.digest));
+
+    const selected = ranked.slice(page.offset, page.offset + page.limit);
+    const refs = selected.map(item => this.revisionRef(item.digest, context));
+    this.prefetchRevisionSet(context, refs);
+    const results = await Promise.all(refs.map(async (reference, index) => ({ ...(await this.describeRevision(this.pageRevision(reference, context), context)), score: selected[index]!.score })));
+    this.actor(actor);
+    return { view: 'summary', results, total: ranked.length, next_cursor: this.nextCursor(page, ranked.length), checkpoint: page.checkpoint,
+      candidate_source: this.vectorIndex ? 'external-index' : 'derived-scan', complete: this.vectorIndex === undefined };
   }
 
   async resolve(actor: Actor, input: any) {
