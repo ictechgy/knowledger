@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { startSigningService, type SigningService } from "../../infra/fabric/signing-service.ts";
 
 export const DEVELOPMENT_SIGNING_KEY_IDS = [
@@ -49,5 +49,9 @@ function references(keyIds: readonly DevelopmentSigningKeyId[]) {
 }
 
 export async function startDevelopmentSigningService(options: { socketPath: string; keyIds?: readonly string[]; auditLogPath?: string }): Promise<SigningService> {
-  return startSigningService({ socketPath: options.socketPath, keys: references(selectedKeyIds(options.keyIds)), auditLogPath: options.auditLogPath });
+  // Every development key requires attestation, so the evidence sink is not
+  // optional: callers may choose the path, otherwise the service keeps its
+  // audit log beside the socket in its own mode-700 directory.
+  const auditLogPath = options.auditLogPath ?? join(dirname(options.socketPath), "signing-audit", "audit.jsonl");
+  return startSigningService({ socketPath: options.socketPath, keys: references(selectedKeyIds(options.keyIds)), auditLogPath });
 }
