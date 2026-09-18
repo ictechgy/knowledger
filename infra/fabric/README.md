@@ -139,7 +139,10 @@ leave a partial trailing line; consumers should discard a trailing non-JSON
 line rather than the file. The audit file must not
 collide with any configured key, certificate, socket or signing configuration
 path — including hard links — and a non-regular target is refused before
-open; it is opened once with no-follow semantics, validated by descriptor,
+open; a pre-existing file must be a regular file with mode 600 and a single
+link, and a fresh path is created exclusively so a raced-in file fails the
+open rather than being adopted. The file is opened once with no-follow
+semantics, validated by descriptor,
 appended with complete writes, flushed before the response is acknowledged
 and closed with the service. Record timestamps are service-asserted
 operational metadata, not part of the signed evidence. The gateway client

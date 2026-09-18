@@ -351,7 +351,9 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   // symlink or inode replacement slip between validation and append.
   // O_NONBLOCK closes the lstat→open window in which a swapped FIFO would
   // otherwise block the open; it has no effect on regular-file writes.
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  // O_EXCL on a fresh path turns the lstat→open race into an error instead of
+  // opening (and later unlinking) a file another process created meanwhile.
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK | (preexisting ? 0 : constants.O_EXCL), 0o600);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
@@ -367,6 +369,10 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
       }
       if (target.dev === stat.dev && target.ino === stat.ino) throw new Error("Signing audit log path collides with a configured file");
     }
+    // nlink > 1 means another name reaches the same inode: audit appends would
+    // corrupt whatever that link points at even when it is not a configured
+    // file, so only single-link targets are accepted.
+    if (stat.nlink !== 1) throw new Error("Signing audit log must be a regular file with a single link");
   } catch (error) {
     closeSync(fd);
     // A file this call created must not linger after failed validation.

@@ -18,6 +18,15 @@ import type { FabricSigningRoute } from '../../packages/fabric/application-ledge
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
 import type { Actor } from '../../packages/storage/local-ledger.ts';
 
+/** Runs every cleanup even when earlier ones fail; surfaces the first error. */
+function closeAll(cleanups: ReadonlyArray<() => void>): void {
+  const errors: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try { cleanup(); } catch (error) { errors.push(error); }
+  }
+  if (errors.length > 0) throw errors[0];
+}
+
 export interface FabricTestRuntimeOptions {
   organization?: DevelopmentOrganization;
   /** Remote signer factory; the attestation slot is required because development keys all demand attested signing. */
@@ -80,9 +89,9 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         const opened = { client, gateway, outbox };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); rpc.close(); releaseAttestationSerializer(qsccContext); } });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext)]); } });
         qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
-      } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
+      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch { /* the original startup failure wins */ } throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
     // qscc reads are attested under the selected binding's actor — the
@@ -105,8 +114,10 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
     await ledger.recoverPending();
     return { ledger, personas: PERSONAS.filter(persona => persona.kind === 'human' && (!organization || persona.org_id === organization.org_id)), ...(organization ? { organization } : {}) };
   } catch (error) {
-    for (const route of routes) await route.close?.();
-    projection?.close();
+    for (const route of routes) {
+      try { await route.close?.(); } catch { /* keep closing sibling routes */ }
+    }
+    try { projection?.close(); } catch { /* the original startup failure wins */ }
     throw error;
   }
 }
