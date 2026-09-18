@@ -101,7 +101,9 @@ HTTPS 배포, 조직별 key 권한·vault와 운영 정책을 연결해야 한�
 `run` 컨텍스트·`assertCurrentActor` 재검증). `packages/auth/adapter.ts`의
 `createOidcAdapter`가 이 경계의 표준 구현을 만든다 — 설정의
 `authentication.mode: 'oidc'`이 이 어댑터를 선택하고, issuer·client_id·
-subject 바인딩은 모두 프로젝트 설정에서 온다. 개발 로그인 서버는 이 경계의
+subject 바인딩은 모두 프로젝트 설정에서 온다. 설정 issuer는 제공자가
+discovery로 알려주는 `iss` 문자열과 정확히 같아야 한다 — 후행 슬래시만
+달라도 어댑터는 생성 시점에 실패한다. 개발 로그인 서버는 이 경계의
 한 로컬 구현일 뿐이며, 실제 회사 SSO는 같은 어댑터로 HTTPS issuer·
 실제 subject 바인딩·`authorization_version_claim`을 설정해 연결한다.
 새 인증 방식은 같은 인터페이스를 구현하는 어댑터를 추가하고 설정 `mode`를

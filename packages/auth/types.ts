@@ -12,6 +12,8 @@ export interface AuthenticatedSession {
 export interface ApplicationAuthentication {
   readonly mode: 'oidc-development' | 'oidc';
   readonly origin: string;
+  /** The issuer identifier discovered from the provider — the exact `iss` string sessions are bound to. */
+  readonly issuer: string;
   handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>;
   session(req: IncomingMessage): Promise<AuthenticatedSession | undefined>;
   run<T>(session: AuthenticatedSession, operation: () => Promise<T>): Promise<T>;
