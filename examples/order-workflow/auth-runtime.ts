@@ -1,4 +1,4 @@
-import { OidcAuthentication } from '../../packages/auth/oidc.ts';
+import { createOidcAdapter } from '../../packages/auth/adapter.ts';
 import { attestationSlot, createRemoteSigner } from '../../packages/fabric/remote-signer.ts';
 import { DEVELOPMENT_SIGNING_KEY_IDS } from './signing-service.ts';
 import { createFabricTestRuntime } from './fabric-runtime.ts';
@@ -17,10 +17,8 @@ export async function createDevelopmentAuthRuntime(options: { dataDir: string; o
     if (!persona) throw new Error('Development organization has no human signing persona');
     return [selected.subject, actorIdentity(persona)] as const;
   }));
-  const authentication = await OidcAuthentication.create({ issuer: options.issuer, clientId: 'knowledger-development-client', redirectUri: `${options.origin}/auth/callback`, development: true,
-    authorizationVersionClaim: 'account_version',
-    resolveActor: (issuer, subject) => new URL(issuer).href === new URL(options.issuer).href ? subjects.get(subject) : undefined,
-  });
+  const authentication = await createOidcAdapter({ issuer: options.issuer, clientId: 'knowledger-development-client', redirectUri: `${options.origin}/auth/callback`, development: true,
+    authorizationVersionClaim: 'account_version', subjects });
   try {
     const runtime = await createFabricTestRuntime(options.dataDir, {
       organization,

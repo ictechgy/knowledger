@@ -95,6 +95,18 @@ npm run auth:smoke
 외부 SSO나 KMS로 전환할 때는 이 프로토콜·signer 인터페이스를 유지하면서 실제 계정 저장,
 HTTPS 배포, 조직별 key 권한·vault와 운영 정책을 연결해야 한다. 현재 CLI는 loopback 개발용이다.
 
+## SSO 어댑터 경계
+
+애플리케이션의 인증 경계는 `ApplicationAuthentication` 인터페이스다(세션 조회·
+`run` 컨텍스트·`assertCurrentActor` 재검증). `packages/auth/adapter.ts`의
+`createOidcAdapter`가 이 경계의 표준 구현을 만든다 — 설정의
+`authentication.mode: 'oidc'`이 이 어댑터를 선택하고, issuer·client_id·
+subject 바인딩은 모두 프로젝트 설정에서 온다. 개발 로그인 서버는 이 경계의
+한 로컬 구현일 뿐이며, 실제 회사 SSO는 같은 어댑터로 HTTPS issuer·
+실제 subject 바인딩·`authorization_version_claim`을 설정해 연결한다.
+새 인증 방식은 같은 인터페이스를 구현하는 어댑터를 추가하고 설정 `mode`를
+확장해 도입한다 — 애플리케이션 코드는 어댑터별 세부를 알지 않는다.
+
 구현 참고: [openid-client](https://github.com/panva/openid-client),
 [oidc-provider](https://github.com/panva/node-oidc-provider),
 [Fabric Gateway signer](https://hyperledger.github.io/fabric-gateway/main/api/node/).

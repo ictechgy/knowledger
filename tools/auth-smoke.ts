@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDevelopmentIssuer } from '../examples/order-workflow/issuer.ts';
-import { OidcAuthentication } from '../packages/auth/oidc.ts';
+import { createOidcAdapter } from '../packages/auth/adapter.ts';
 import { createDemoApp as createApp } from '../examples/order-workflow/application.ts';
 import { createFabricTestRuntime } from '../examples/order-workflow/fabric-runtime.ts';
 import { createDevelopmentAuthRuntime } from '../examples/order-workflow/auth-runtime.ts';
@@ -53,8 +53,8 @@ try {
   const origin = `http://127.0.0.1:${await freePort()}`;
   issuer = await startDevelopmentIssuer({ port: 0, redirectUri: `${origin}/auth/callback` });
   const subjects = new Map(['dev-sales-owner', 'dev-fulfillment-owner', 'dev-settlement-owner'].map((subject, index) => [subject, actorIdentity(PERSONAS[index])]));
-  const authentication = await OidcAuthentication.create({ issuer: issuer.issuer, clientId: 'knowledger-development-client', redirectUri: `${origin}/auth/callback`, development: true,
-    authorizationVersionClaim: 'account_version', resolveActor: (receivedIssuer, subject) => receivedIssuer === issuer!.issuer ? subjects.get(subject) : undefined });
+  const authentication = await createOidcAdapter({ issuer: issuer.issuer, clientId: 'knowledger-development-client', redirectUri: `${origin}/auth/callback`, development: true,
+    authorizationVersionClaim: 'account_version', subjects });
   let pauseNextSubmit = false;
   let submissionReached: (() => void) | undefined;
   let submissionGate: Promise<void> | undefined;

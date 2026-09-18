@@ -35,10 +35,9 @@ export async function createConfiguredApp(input: ProjectConfiguration, options: 
         return [binding.subject,{org_id:actor.org_id,actor_id:actor.actor_id,kind:actor.kind}] as const;
       }));
       if (subjects.size===0) throw new Error('Selected organization has no login binding');
-      const { OidcAuthentication } = await import('../../packages/auth/oidc.ts');
-      authentication = await OidcAuthentication.create({issuer:auth.issuer,clientId:auth.client_id,redirectUri:`${origin}/auth/callback`,development:auth.allow_insecure_loopback===true,
-        authorizationVersionClaim:auth.authorization_version_claim,
-        resolveActor:(issuer,subject)=>new URL(issuer).href===new URL(auth.issuer).href?subjects.get(subject):undefined});
+      const { createOidcAdapter } = await import('../../packages/auth/adapter.ts');
+      authentication = await createOidcAdapter({issuer:auth.issuer,clientId:auth.client_id,redirectUri:`${origin}/auth/callback`,development:auth.allow_insecure_loopback===true,
+        authorizationVersionClaim:auth.authorization_version_claim,subjects});
     }
     if (fabric) {
       const { createConfiguredFabricRuntime } = await import('./configured-fabric-runtime.ts');
