@@ -123,7 +123,8 @@ Each attested signature produces an `attestation_signature` receipt over the
 canonical decision payload — the signer verifies it cryptographically and
 rejects missing or forged receipts, and may hand the verified receipt and its
 canonical evidence to an `onAttestationReceipt` callback so the application can
-retain the proof. With `--audit-log ABSOLUTE_PATH` the service also appends a
+retain the proof. The callback must be synchronous — a promise return fails
+the signing request. With `--audit-log ABSOLUTE_PATH` the service also appends a
 JSONL audit record the organisation retains as its testimony. The service
 sees only an opaque digest, so the attested phase and command binding are
 caller-asserted evidence; auditors reconcile each record's `tx_id`/digest
@@ -154,7 +155,10 @@ single serializer, which releases the claim when the connection closes. The
 qscc lookup gateway signs through a dedicated slot and signer separate from
 the write path, and the remote signer consumes its slot once per request, so
 the receipt binds the exact command decision and transaction ID without stale
-reuse.
+reuse. qscc reads are attested under one configured binding's identity (the
+API runtime uses the first; the example fixture prefers the second when
+present), so audit consumers should read them as service reads by that
+signing identity rather than user actions.
 
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.
