@@ -751,6 +751,11 @@ test("signing service rejects an audit path that collides with configured files"
     // very socket the service would bind is rejected before listening.
     const socketPath = join(directory, "s3.sock");
     await assert.rejects(() => startSigningService({ socketPath, keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: socketPath }), /collides/);
+    // The signing configuration file is likewise reserved so audit appends
+    // can never overwrite the service's own configuration.
+    const configPath = join(directory, "signing-config.json");
+    fs.writeFileSync(configPath, "{}", { mode: 0o600 });
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "s4.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: configPath, reservedPaths: [configPath] }), /collides/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -964,6 +969,7 @@ test("signing service rejects malformed attestations as invalid requests", async
   try {
     const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
     const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: join(directory, "audit.jsonl")});
+    let neverDir: string | undefined;
     try {
       const request = (attestation: unknown) => ({ operation: "sign", key_id: "person-sales-owner", digest: Buffer.alloc(32).toString("base64url"), certificate: identity.certificate.toString("base64url"), attestation });
       const { tx_id: _txId, ...withoutTx } = devAttestation();
@@ -981,9 +987,11 @@ test("signing service rejects malformed attestations as invalid requests", async
       }
       // The client applies the same shape check before any socket round-trip:
       // a decision attestation without tx_id fails locally as invalid_request.
+      // The socket is never connected; a per-test path keeps the name unique.
+      neverDir = mkdtempSync(join(tmpdir(), "kcl-nv-"));
       const { tx_id: _droppedTx, ...clientWithoutTx } = devAttestation();
-      const signer = createRemoteSigner({ socketPath: join(tmpdir(), "kcl-never.sock"), keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => clientWithoutTx as Attestation });
+      const signer = createRemoteSigner({ socketPath: join(neverDir, "s.sock"), keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => clientWithoutTx as Attestation });
       await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "invalid_request" && /missing or unknown fields/.test(error.message));
-    } finally { await service.close(); }
+    } finally { await service.close(); if (neverDir !== undefined) fs.rmSync(neverDir, { recursive: true, force: true }); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

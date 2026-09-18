@@ -272,6 +272,9 @@ test("official gateway rejects attestation builder output that mismatches the si
     () => decisionAttestation(actor, { command_id: "cmd-other", type: cmd.type, input: cmd.input }, "proposal", "tx-built"),
     () => decisionAttestation(actor, cmd, "proposal", "tx-other"),
     () => decisionAttestation(actor, cmd, "submit", "tx-built"),
+    // Same command identity with a forged digest is refused on the recomputed
+    // digest check, not merely on id/phase comparison.
+    () => ({ ...decisionAttestation(actor, cmd, "proposal", "tx-built"), command_digest: "sha256:" + "0".repeat(64) }),
   ];
   for (const build of mismatched) {
     const client = await connect({ build: build as unknown as GatewayAttestation["build"], buildQuery: () => queryAttestation(actor) });
@@ -279,6 +282,14 @@ test("official gateway rejects attestation builder output that mismatches the si
     await assert.rejects(() => proposal.endorse(), /do not match the signed operation/);
     client.close();
   }
+  assert.equal(signCalls, 0);
+  // A configured builder that produces no attestation is a wiring bug: the
+  // write must not proceed unattested.
+  const emptyClient = await connect({ build: () => undefined, buildQuery: () => undefined });
+  const emptyProposal = await emptyClient.newProposal(cmd);
+  await assert.rejects(() => emptyProposal.endorse(), /produced no evidence/);
+  await assert.rejects(() => emptyClient.getStatus("tx-built", new Uint8Array([1])), /produced no evidence/);
+  emptyClient.close();
   assert.equal(signCalls, 0);
   // The same contract applies to read-only builders: a decision-shaped output
   // for a query is refused before any signing call.

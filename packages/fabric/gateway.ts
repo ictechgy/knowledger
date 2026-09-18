@@ -150,8 +150,11 @@ class OfficialGatewayClient implements FabricGatewayClient {
   // query-shaped attestation — to a write, which the signing service would
   // countersign because it validates identity and shape only.
   private buildDecision(command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation | undefined {
-    const built = this.attestation?.build(command, phase, txId);
-    if (built === undefined) return undefined;
+    if (this.attestation === undefined) return undefined;
+    const built = this.attestation.build(command, phase, txId);
+    // A configured builder that declines to produce evidence must not let the
+    // write proceed unattested — that is a wiring bug, not a policy choice.
+    if (built === undefined) throw new Error("Attestation builder produced no evidence for a signed write");
     const checked = assertSigningAttestation(built);
     if (checked.phase === "query" || checked.command_id !== command.command_id || checked.command_type !== command.type || checked.command_digest !== idempotencyDigest({ type: command.type, input: command.input }) || checked.phase !== phase || checked.tx_id !== txId) {
       throw new Error("Attestation builder returned claims that do not match the signed operation");
@@ -160,8 +163,9 @@ class OfficialGatewayClient implements FabricGatewayClient {
   }
 
   private buildQueryAttestation(): QueryAttestation | undefined {
-    const built = this.attestation?.buildQuery();
-    if (built === undefined) return undefined;
+    if (this.attestation === undefined) return undefined;
+    const built = this.attestation.buildQuery();
+    if (built === undefined) throw new Error("Attestation builder produced no evidence for a signed read");
     const checked = assertSigningAttestation(built);
     if (checked.phase !== "query") throw new Error("Attestation builder returned a decision attestation for a read-only operation");
     return checked;

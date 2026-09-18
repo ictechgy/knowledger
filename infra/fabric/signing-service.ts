@@ -403,18 +403,32 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
     throw error;
   }
   let closed = false;
+  // A write that throws mid-line leaves a newline-less fragment; appending
+  // after it would merge the next record into an unparseable line, so once a
+  // record fails partway the log is torn and every later record fails too —
+  // signing fails closed rather than acknowledging without intact evidence.
+  let torn = false;
   return {
     audit: record => {
       // In-flight handlers may finish after close(); writing then could hit a
       // reused descriptor, so late records are dropped instead.
       if (closed) return;
+      if (torn) throw new Error("Signing audit log is torn by a partially written record");
       const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
       let written = 0;
-      while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
-      // Durably flush before the caller is acknowledged: a crash between a
-      // signed response and this record landing would leave an attested
-      // signature with no matching evidence.
-      fsyncSync(fd);
+      try {
+        while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
+        // Durably flush before the caller is acknowledged: a crash between a
+        // signed response and this record landing would leave an attested
+        // signature with no matching evidence.
+        fsyncSync(fd);
+      } catch (error) {
+        // Only a partial write tears the log: a failed fsync leaves a
+        // complete (if unflushed) line and a write that landed nothing leaves
+        // no fragment to merge into.
+        if (written > 0 && written < line.byteLength) torn = true;
+        throw error;
+      }
     },
     close: () => { if (!closed) { closed = true; closeSync(fd); } },
   };
