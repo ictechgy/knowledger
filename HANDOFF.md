@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-18 KST (PR #6 조직 signing gateway 머지 완료)_
+_Last updated: 2026-09-18 KST (Track A–C 구현 완료, PR #7–#11 스택 CI 통과)_
 
 ## Goal
 
@@ -29,6 +29,14 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   성능 도구 개선 PR #3(`b073c81`)·정리 PR #4(`e636166`)·v0.2.0 릴리스 PR #5(`16c06f6`)도 포함됐다.
   `infra/fabric`의 `knowledger-chaincode` 0.1.0은 배포된 `kcl_0.1.0` 계약이라 범프하지 않았다.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
+- **로드맵 PR 스택(모두 OPEN·MERGEABLE·CI 통과, 머지 순서는 아래부터)**:
+  PR #7 `feature/sso-adapter`→main(A2 SSO 어댑터 경계, `createOidcAdapter` 공유 팩토리),
+  PR #8 `feature/vector-search`→main(A3 벡터 검색 read model, `VectorCandidateIndex`·
+  pgvector 어댑터·원장 eligibility 재검증), PR #9 `feature/model-egress`→vector-search
+  (A4 `modelEgress` 서버 정책 게이트, resolve/revalidate 현재 권한 재확인),
+  PR #10 `feature/ops-drills`→model-egress(Track B 백업 리허설·이중 도메인 드릴 CI),
+  PR #11 `feature/track-c`→ops-drills(Track C `readGitSource` 고정 커밋 커넥터·
+  `adoption-metrics` 파일럿 측정). 아직 리뷰·머지되지 않았다.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
   앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
   재시작 중 발견된 두 결함을 수정했다: peer gRPC keepalive(`26e75a8`)와 원장 갱신 상한
@@ -285,7 +293,11 @@ python3 -B tools/check_docs.py
    트랙A 첫 항목. 조직 바인딩 서명 키·일회성 attestation·암호 검증 영수증·
    필수 감사 로그·qscc 전용 슬롯을 갖춘 원격 서명 경계를 도입했다.
    `feature/org-signing-gateway` 브랜치는 머지 완료.
-7. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+7. **Track A 잔여·B·C 구현 완료 — PR #7–#11 스택이 리뷰·머지 대기 중**(위 PR 스택
+   항목 참조). 로컬 검증 371 tests/0 fail, 원격 CI 전 잡 통과. 알려진 브라우저
+   플레이크 `workspace.spec.mjs:288`은 재실행으로 통과했다. 머지는 PR #7부터
+   순서대로 진행하고 base retarget이 필요하면 PR을 아래 머지된 대상으로 바꾼다.
+8. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
@@ -293,8 +305,11 @@ python3 -B tools/check_docs.py
 공개 저장소는 https://github.com/ictechgy/knowledger, 릴리스 `v0.1.0`·`v0.2.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
-다음 방향은 오픈소스 성장 — ROADMAP.md의 4개 트랙(A 프로토콜 완성도·B 운영 성숙·C 채택·D 프로젝트 운영)에서 다음 항목을 고른다.
-대기 중인 브랜치는 없다.
+Track A 잔여(A2–A4)·B(드릴 CI)·C(Git 커넥터·파일럿 측정)는 PR #7–#11 스택으로 구현 완료 —
+모두 OPEN·CI 통과 상태이며 아직 리뷰·머지되지 않았다. 머지 순서: #7→main, #8→main,
+#9→#8, #10→#9, #11→#10 (아래 PR부터 순차 진행, 필요시 base retarget).
+남은 로드맵은 B7 인증서 유지보수(2027년1월)·B8 알려진 한계·Track D(릴리스 케이던스·의존성 정책)와
+실제 파일럿 실행이다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
