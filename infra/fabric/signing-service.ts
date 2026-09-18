@@ -280,7 +280,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
           // completed: record whichever bytes the key produced so a leaked
           // signature can be matched, then fail rather than acknowledging a
           // partial operation through the generic catch.
-          audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signatureResult.status === "fulfilled" ? Buffer.from(signatureResult.value).toString("base64url") : null, attestation_signature: attestedResult.status === "fulfilled" && attestedResult.value !== undefined ? Buffer.from(attestedResult.value).toString("base64url") : null });
+          audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, phase: attestation?.phase ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null }, signature: signatureResult.status === "fulfilled" && signatureResult.value instanceof Uint8Array ? Buffer.from(signatureResult.value).toString("base64url") : null, attestation_signature: attestedResult.status === "fulfilled" && attestedResult.value instanceof Uint8Array ? Buffer.from(attestedResult.value).toString("base64url") : null });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         const signature = signatureResult.value;
@@ -311,7 +311,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         // A signing exception or timeout may still have invoked the key;
         // record the failure best-effort (the audit write itself may be the
         // cause, so it must not throw here).
-        try { audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, digest: typeof request.digest === "string" ? request.digest : null, certificate_sha256: request.certificate === undefined ? null : createHash("sha256").update(Buffer.from(String(request.certificate), "base64url")).digest("hex") }); } catch { /* audit may itself be the failure */ }
+        try { audit?.({ record_type: "signing_rejected", reason: "signing_failed", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, phase: request.attestation?.phase ?? null, digest: typeof request.digest === "string" ? request.digest : null, certificate_sha256: request.certificate == null ? null : createHash("sha256").update(Buffer.from(String(request.certificate), "base64url")).digest("hex") }); } catch { /* audit may itself be the failure */ }
         response(socket, { ok: false, error: "rejected" });
       } finally { release(); }
     })();
@@ -429,7 +429,14 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
       const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
       let written = 0;
       try {
-        while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
+        while (written < line.byteLength) {
+          const n = writeSync(fd, line.subarray(written));
+          // A 0-byte return would spin forever: the fd is opened O_NONBLOCK,
+          // so a full buffer reports 0 rather than blocking — treat it as a
+          // torn write and fail closed.
+          if (n === 0) throw new Error("Signing audit log write returned 0 bytes");
+          written += n;
+        }
         // Flush before the caller is acknowledged: a crash between a signed
         // response and this record landing would leave an attested signature
         // with no matching evidence. (fsync scope is the platform's; on macOS

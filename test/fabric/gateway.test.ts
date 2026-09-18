@@ -419,11 +419,12 @@ test("concurrent commands sign only their own decision attestation", async () =>
     newProposal(id: string) { return { getTransactionId: () => `tx-${id}`, async endorse() { await signer(new Uint8Array(32)); return { async submit() { await signer(new Uint8Array(32)); return { async getStatus() { return { code: 0 }; } }; }, async getResult() { return new Uint8Array(); } }; } }; },
     async evaluateTransaction() { return new Uint8Array(); },
   };
-  let nextId = 0;
   const client = await connectOfficialFabricGateway({
     client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
     credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
-    module: { connect() { return { getNetwork() { return { getContract() { return { newProposal: () => fakeContract.newProposal(`cmd-${++nextId}`), evaluateTransaction: fakeContract.evaluateTransaction }; } }; } }; } },
+    // The transaction id derives from the command itself so concurrent
+    // proposals cannot entangle a sibling's id with its attestation.
+    module: { connect() { return { getNetwork() { return { getContract() { return { newProposal: (_name: string, opts: { arguments: string[] }) => fakeContract.newProposal(JSON.parse(opts.arguments[0]).command_id), evaluateTransaction: fakeContract.evaluateTransaction }; } }; } }; } },
     attestation: {
       context,
       build: (cmd, phase, txId) => decisionAttestation(actor, cmd, phase, txId),
@@ -448,7 +449,7 @@ test("concurrent commands sign only their own decision attestation", async () =>
     assert.ok(attestation !== undefined);
     const cmd = attestation.command_id === "cmd-a" ? cmdA : cmdB;
     assert.equal(attestation.command_digest, digestFor(cmd));
-    assert.equal(attestation.tx_id, `tx-cmd-${attestation.command_id === "cmd-a" ? 1 : 2}`);
+    assert.equal(attestation.tx_id, `tx-${attestation.command_id}`);
   }
   assert.equal(context.current, undefined);
 });
