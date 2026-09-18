@@ -22,23 +22,25 @@ verified, or still planned. Items are grouped by track, not by promised date.
 
 Design contracts in `docs/` that are not yet implemented:
 
-1. **Organizational signing gateway** — move actor signing out of the service
-   into a per-organization gateway process, starting with development keys.
-   See `docs/04-SECURITY.md`.
-2. **SSO adapter interface** — OIDC abstraction so the development login
-   becomes one local implementation of a real authentication boundary.
-3. **Vector search read model** — pgvector candidate search with ledger
-   eligibility re-verification; vector results alone must never conclude
-   "no knowledge exists". See `docs/05-RAG.md`.
-4. **Model egress gate** — re-check SSO/access/model permissions immediately
-   before returning RAG responses.
+1. ~~**Organizational signing gateway**~~ — merged: per-organization remote
+   signing service with attestation, receipts and audit (PR #6).
+2. **SSO adapter interface** — implemented: shared `createOidcAdapter`
+   boundary (PR #7).
+3. **Vector search read model** — implemented: `VectorCandidateIndex` port
+   with pgvector adapter and ledger eligibility re-verification (PR #8).
+   See `docs/05-RAG.md`.
+4. **Model egress gate** — implemented: `modelEgress` server policy checked
+   at `resolve` and re-checked at `revalidate` before release (PR #9).
 
 ## Track B — Operations maturity
 
-5. **Multi-host failure drills** — extend single-host container tests to two
-   physical hosts so independent-administration claims are actually verified.
-6. **Backup/restore rehearsal automation** — promote the snapshot restore
-   procedure to a repeatable, CI-level check.
+5. **Multi-host failure drills** — a two-domain drill harness now verifies
+   process/filesystem administrative independence in CI
+   (`tools/multi-host-drill.ts`); independent physical hosts and Fabric
+   channel fault isolation remain open.
+6. ~~**Backup/restore rehearsal automation**~~ — `npm run test:backup`
+   (`tools/backup-rehearsal.ts`) rehearses the offline snapshot/restore
+   procedure, including its refusal guards, in CI.
 7. **Certificate maintenance** — next scheduled check/renewal around early
    January 2027 (`docs/27-TEST-CERTIFICATES.md`).
 8. **Known limitations** — the resident large cache entry is evicted by

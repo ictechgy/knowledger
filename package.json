@@ -41,6 +41,8 @@
     "test:performance": "node tools/performance-smoke.ts",
     "test:history-performance": "node tools/history-performance.ts",
     "test:resilience": "node tools/resilience-smoke.ts",
+    "test:backup": "node tools/backup-rehearsal.ts",
+    "test:drill:multi-host": "node tools/multi-host-drill.ts",
     "kb:sync": "node tools/kb-sync.ts",
     "demo:kb": "node tools/kb-demo.ts"
   },

@@ -90,6 +90,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `last_refreshed_manifest` field for audit while the issuance manifest stays
   the anchor, and the client requires the run id to match, so server and
   client should be deployed together.
+- CI operations drills: `npm run test:backup` rehearses the offline runtime
+  snapshot/restore procedure end to end — clean stop, snapshot, restore into
+  a new directory, checkpoint/journal/private-draft equivalence, plus the
+  WAL-sidecar, existing-destination and overlapping-path refusals.
+  `npm run test:drill:multi-host` runs a two-administrative-domain failure
+  drill: one worker process is force-killed mid-operation while the peer
+  keeps its verified state and stops cleanly, and the killed domain recovers
+  through WAL replay and a snapshot restore — the evidence marks the
+  process+filesystem boundary explicitly (not physical hosts).
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

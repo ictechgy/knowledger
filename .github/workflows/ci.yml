@@ -59,3 +59,5 @@ jobs:
       - run: npm run test:performance -- --documents 25 --samples 3
       - run: npm run test:history-performance
       - run: npm run test:resilience
+      - run: npm run test:backup
+      - run: npm run test:drill:multi-host

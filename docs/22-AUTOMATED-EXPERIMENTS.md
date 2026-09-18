@@ -45,6 +45,24 @@ The harness starts a separate Node worker against a new local runtime, commits a
 
 Both harnesses clean up their automatically-created `.data` directory. Supplying `--data` or `--root` keeps the caller-owned disposable directory for inspection; an existing nonempty directory is rejected. CLI paths can be relative to the current directory. `--out` writes a mode-0600 JSON artifact under a caller-selected path. Errors go to generic stderr and do not include bodies, cookies, credentials, or filesystem contents.
 
+## Backup/restore rehearsal
+
+```sh
+node tools/backup-rehearsal.ts \
+  --out "$PWD/.artifacts/backup-rehearsal.json"
+```
+
+The rehearsal exercises the runtime snapshot code path end to end against a fresh local runtime: it seeds and publishes a document, stops cleanly, takes an offline snapshot, restores into a brand-new directory, and requires the same checkpoint, journal event count, document, and private draft listing. It also verifies the guard rails — a stray WAL sidecar is refused (`offline_required`), restoring onto the live directory is refused (`destination_exists`), and a snapshot nested inside the data directory is refused (`overlapping_paths`). `fabric_disaster_recovery_proven: false` records that a local rehearsal does not prove whole-network disaster recovery. CI runs this as `npm run test:backup`.
+
+## Two-domain failure drill
+
+```sh
+node tools/multi-host-drill.ts \
+  --out "$PWD/.artifacts/multi-host-drill.json"
+```
+
+The drill starts two independent worker processes with separate roots and databases — two administrative domains on one machine. One domain is force-killed mid-operation; the peer must keep its verified state untouched and stop cleanly, and the killed domain must recover through SQLite WAL replay and then through an offline snapshot restored into a new directory. The evidence record marks `physical_hosts: false` and `administrative_boundary: "process+filesystem"` explicitly: this harness verifies process/filesystem administrative independence, not independent physical hosts or Fabric channel fault isolation. CI runs this as `npm run test:drill:multi-host`.
+
 ## Result interpretation
 
 `functional_assertions` and `assessment.*_pass` are pass/fail evidence for the behavior checks. `metrics` are measurements from the current machine and dataset, not fixed acceptance thresholds. The explicit `fabric_sla_proven: false` field records that local-simulation timings and the fixture peer outage do not establish Fabric production SLOs.
