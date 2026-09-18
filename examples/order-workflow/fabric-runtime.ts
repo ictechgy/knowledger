@@ -9,8 +9,9 @@ import { DEVELOPMENT_ORGANIZATIONS, getDevelopmentOrganization } from './organiz
 import type { DevelopmentOrganization } from './organizations.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
-import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions } from '../../packages/fabric/gateway.ts';
+import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
+import type { SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
 import type { FabricSigningRoute } from '../../packages/fabric/application-ledger.ts';
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
@@ -18,7 +19,7 @@ import type { Actor } from '../../packages/storage/local-ledger.ts';
 
 export interface FabricTestRuntimeOptions {
   organization?: DevelopmentOrganization;
-  signerProvider?: (actor: Actor, certificate: Uint8Array) => (digest: Uint8Array) => Promise<Uint8Array>;
+  signerProvider?: (actor: Actor, certificate: Uint8Array, attestation?: SigningAttestationContext) => (digest: Uint8Array) => Promise<Uint8Array>;
   authorizeActor?: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
 }
 
@@ -46,8 +47,9 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       const certificate = readFileSync(join(msp, 'signcerts', `User1@${domain}-cert.pem`));
       const parsed = new X509Certificate(certificate);
       if (Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now()) throw new Error('Test enrollment certificate is outside its validity period');
+      const attestationContext: SigningAttestationContext = {};
       let signer: (digest: Uint8Array) => Promise<Uint8Array>;
-      if (options.signerProvider) signer = options.signerProvider(actor, certificate);
+      if (options.signerProvider) signer = options.signerProvider(actor, certificate, attestationContext);
       else {
         const keys = readdirSync(join(msp, 'keystore')).filter(name => name.endsWith('_sk'));
         if (keys.length !== 1) throw new Error('Expected one test enrollment signing key');
@@ -65,7 +67,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       let gateway: any;
       let outbox: SqliteOutbox | undefined;
       try {
-        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined });
+        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         const opened = { client, gateway, outbox };

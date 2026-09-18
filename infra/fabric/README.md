@@ -105,6 +105,22 @@ did not return a handle, it can consult the actor-bound committed idempotency
 record. An unreachable peer keeps the attempt pending. An SDK result is decoded
 only after VALID status or a matching committed idempotency record.
 
+`infra/fabric/signing-service.ts` is the organisation signing gateway's
+development form: a Unix-socket process that holds private keys outside the
+application. Clients connect with `createRemoteSigner` from
+`packages/fabric/remote-signer.ts` and send `{ operation: "sign", key_id,
+digest, certificate }`. A request may also carry an `attestation` object binding
+`org_id`, `actor_id`, `actor_kind`, `command_id`, `command_type`, `command_digest`,
+`phase` and optional `tx_id`. When present, the service verifies the actor
+against the certificate's `kcl.actor_*` attributes and the key's configured
+`org_id` before signing; key references may set `allowed_actor_kinds` (default
+`["human"]`) so agent identities cannot obtain attested signatures. Each attested
+signature produces an `attestation_signature` receipt over the canonical
+decision payload and, with `--audit-log ABSOLUTE_PATH`, a JSONL audit record the
+organisation retains as its testimony. The gateway client refreshes the shared
+attestation context before the proposal and submit signing calls, so the
+receipt binds the exact command decision and transaction ID.
+
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.
 Chaincode validation cannot prevent rejected content from remaining in a block.

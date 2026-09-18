@@ -1,6 +1,8 @@
 import { parseStrictJson } from "./canonical.ts";
 import { idempotencyDigest } from "../domain/index.ts";
+import type { SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
 import type {
+  Actor,
   AuthoritativeCommandResult,
   DurableOutbox,
   FabricGatewayClient,
@@ -20,6 +22,27 @@ export interface OfficialGatewayCredentials {
 }
 
 export type FabricWritePhase = 'proposal' | 'endorse' | 'submit';
+export type SigningPhase = 'proposal' | 'submit';
+
+export interface GatewayAttestation {
+  /** Slot shared with the remote signer; refreshed before each signing call. */
+  context: SigningAttestationContext;
+  build(command: GatewayCommand, phase: SigningPhase, txId?: string): SigningAttestation | undefined;
+}
+
+/** Organisation attestation binding the actor to the exact command decision. */
+export function decisionAttestation(actor: Actor, command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId?: string): SigningAttestation {
+  return {
+    org_id: actor.org_id,
+    actor_id: actor.actor_id,
+    actor_kind: actor.kind,
+    command_id: command.command_id,
+    command_type: command.type,
+    command_digest: idempotencyDigest({ type: command.type, input: command.input }),
+    phase,
+    ...(txId === undefined ? {} : { tx_id: txId }),
+  };
+}
 
 /** Authorization failed before the SDK could send this write phase. */
 export class FabricAuthorizationCancelled extends Error {
@@ -85,6 +108,8 @@ export interface OfficialGatewayConnectionOptions {
   module?: OfficialGatewayModule;
   /** Recheck the active authenticated request before each write phase. */
   authorize?: (phase: FabricWritePhase) => Promise<void>;
+  /** Organisation decision attestation shared with the signing gateway. */
+  attestation?: GatewayAttestation;
 }
 
 class OfficialGatewayClient implements FabricGatewayClient {
@@ -93,27 +118,35 @@ class OfficialGatewayClient implements FabricGatewayClient {
   private readonly contract: OfficialContract;
   private readonly mspId: string;
   private readonly authorize?: (phase: FabricWritePhase) => Promise<void>;
-  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string, authorize?: (phase: FabricWritePhase) => Promise<void>) { this.contract = contract; this.gateway = gateway; this.mspId = mspId; this.authorize = authorize; }
+  private readonly attestation?: GatewayAttestation;
+  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string, authorize?: (phase: FabricWritePhase) => Promise<void>, attestation?: GatewayAttestation) { this.contract = contract; this.gateway = gateway; this.mspId = mspId; this.authorize = authorize; this.attestation = attestation; }
 
   private async assertAuthorized(phase: FabricWritePhase): Promise<void> {
     try { await this.authorize?.(phase); }
     catch (error) { throw new FabricAuthorizationCancelled(error); }
   }
 
+  private attest(command: GatewayCommand, phase: SigningPhase, txId?: string): void {
+    if (this.attestation) this.attestation.context.current = this.attestation.build(command, phase, txId);
+  }
+
   async newProposal(command: GatewayCommand): Promise<GatewayProposal> {
     if (command.actor_org_id !== this.mspId) throw new Error('Command organization does not match the signing identity');
     await this.assertAuthorized('proposal');
     const { actor_org_id: _actorOrg, ...wireCommand } = command;
+    this.attest(command, 'proposal');
     const proposal = this.contract.newProposal("Execute", { arguments: [JSON.stringify(wireCommand)] });
     return {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
         await this.assertAuthorized('endorse');
+        this.attest(command, 'proposal', proposal.getTransactionId());
         const endorsed = await proposal.endorse();
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
             await this.assertAuthorized('submit');
+            this.attest(command, 'submit', proposal.getTransactionId());
             const commit = await endorsed.submit();
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
@@ -351,5 +384,5 @@ export async function connectOfficialFabricGateway(options: OfficialGatewayConne
     ...(module.hash?.sha256 ? { hash: module.hash.sha256 } : {}),
   });
   const network = gateway.getNetwork(options.channel_id);
-  return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id, options.authorize);
+  return new OfficialGatewayClient(network.getContract(options.chaincode_name), gateway, options.credentials.msp_id, options.authorize, options.attestation);
 }

@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
 import { createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
-import { connectOfficialFabricGateway, FabricGatewayTransport, fabricPeerChannelOptions } from "../../packages/fabric/gateway.ts";
+import type { SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
 import { FabricApplicationLedger } from "../../packages/fabric/application-ledger.ts";
 import type { SqliteFabricProjection } from "../../packages/fabric/sqlite-projection.ts";
@@ -76,7 +77,8 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       const certificate = readCertificate(reference);
       assertIdentityAttributes(certificate, actor, configuration.ledger.channel_id);
       const tlsCertificate = readFileSync(reference.tls_ca_path);
-      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate });
+      const attestationContext: SigningAttestationContext = {};
+      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: () => attestationContext.current });
       const rpc = new grpc.Client(reference.peer_endpoint, grpc.credentials.createSsl(tlsCertificate), {
         "grpc.ssl_target_name_override": reference.peer_host_alias,
         "grpc.default_authority": reference.peer_host_alias,
@@ -86,7 +88,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       let gateway: ReturnType<typeof sdk.connect> | undefined;
       let outbox: SqliteOutbox | undefined;
       try {
-        client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase) });
+        client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase), attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         const opened = { client, gateway, outbox, rpc };
