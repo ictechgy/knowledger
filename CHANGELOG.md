@@ -11,14 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Organisation signing-gateway attestation: the remote sign request can carry a
   decision attestation (actor, organisation, command binding, Fabric phase and
-  transaction ID). The signing service verifies it against the certificate's
+  transaction ID) or a read-only `phase: "query"` attestation for status and
+  evaluate signing. The signing service verifies it against the certificate's
   `kcl.actor_*` attributes and the key's configured `org_id` before signing,
   restricts attested signing to human actors by default via
   `allowed_actor_kinds`, and issues an `attestation_signature` receipt plus a
   JSONL audit record (`--audit-log`) as the organisation's testimony.
-- `SigningAttestation`/`SigningAttestationContext` protocol types and
-  `decisionAttestation` helper; the gateway client refreshes the shared
-  attestation context before proposal and submit signing calls.
+- `require_attestation` key policy: protected keys reject unattested requests
+  and attested signing always requires an organisation binding, so no
+  client-claimed organisation is signed into evidence. Development signing keys
+  enable it.
+- `SigningAttestation`/`QueryAttestation`/`SigningAttestationContext` protocol
+  types, `decisionAttestation`/`queryAttestation` helpers and the consume-once
+  `attestationSlot`; the gateway client installs the attestation immediately
+  before the SDK's endorse, submit, status and evaluate signing calls, and the
+  remote signer cryptographically verifies each receipt, rejecting missing or
+  forged ones.
 
 ## [0.2.0] — 2026-09-18
 

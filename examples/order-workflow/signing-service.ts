@@ -41,6 +41,9 @@ function references(keyIds: readonly DevelopmentSigningKeyId[]) {
       certificate_path: resolve(msp, "signcerts", `${user}-cert.pem`),
       private_key_path: resolve(keyDir, keyFiles[0].name),
       org_id: approvedIdentities[keyId].org_id,
+      // Development keys exercise the enforced boundary: unattested signing is
+      // refused rather than merely unlogged.
+      require_attestation: true,
     };
   });
 }

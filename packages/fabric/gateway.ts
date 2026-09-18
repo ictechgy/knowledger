@@ -1,6 +1,6 @@
 import { parseStrictJson } from "./canonical.ts";
 import { idempotencyDigest } from "../domain/index.ts";
-import type { SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
+import type { Attestation, QueryAttestation, SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
 import type {
   Actor,
   AuthoritativeCommandResult,
@@ -28,6 +28,8 @@ export interface GatewayAttestation {
   /** Slot shared with the remote signer; refreshed before each signing call. */
   context: SigningAttestationContext;
   build(command: GatewayCommand, phase: SigningPhase, txId?: string): SigningAttestation | undefined;
+  /** Attestation for read-only signing (evaluate/status); no command binding. */
+  buildQuery(): QueryAttestation | undefined;
 }
 
 /** Organisation attestation binding the actor to the exact command decision. */
@@ -42,6 +44,11 @@ export function decisionAttestation(actor: Actor, command: Pick<GatewayCommand, 
     phase,
     ...(txId === undefined ? {} : { tx_id: txId }),
   };
+}
+
+/** Organisation attestation for a read-only signing operation (evaluate/status). */
+export function queryAttestation(actor: Actor): QueryAttestation {
+  return { org_id: actor.org_id, actor_id: actor.actor_id, actor_kind: actor.kind, phase: "query" };
 }
 
 /** Authorization failed before the SDK could send this write phase. */
@@ -130,16 +137,21 @@ class OfficialGatewayClient implements FabricGatewayClient {
     if (this.attestation) this.attestation.context.current = this.attestation.build(command, phase, txId);
   }
 
+  private attestQuery(): void {
+    if (this.attestation) this.attestation.context.current = this.attestation.buildQuery();
+  }
+
   async newProposal(command: GatewayCommand): Promise<GatewayProposal> {
     if (command.actor_org_id !== this.mspId) throw new Error('Command organization does not match the signing identity');
     await this.assertAuthorized('proposal');
     const { actor_org_id: _actorOrg, ...wireCommand } = command;
-    this.attest(command, 'proposal');
     const proposal = this.contract.newProposal("Execute", { arguments: [JSON.stringify(wireCommand)] });
     return {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
         await this.assertAuthorized('endorse');
+        // The SDK signs the proposal inside endorse(); attest immediately
+        // before so nothing else can consume or replace the decision context.
         this.attest(command, 'proposal', proposal.getTransactionId());
         const endorsed = await proposal.endorse();
         let submitted: OfficialCommit | undefined;
@@ -173,6 +185,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
       if (commit.getTransactionId() !== tx_id) throw new Error('Persisted commit does not match its transaction');
     }
     if (!commit) return { status: "UNKNOWN" };
+    this.attestQuery();
     const status = await commit.getStatus();
     const valid = status.code === 0 || status.code === "VALID";
     this.commits.delete(tx_id);
@@ -186,6 +199,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
 
   async getAuthoritativeCommandResult(command: Pick<GatewayCommand, "command_id" | "actor_org_id">): Promise<AuthoritativeCommandResult | undefined> {
     if (command.actor_org_id !== this.mspId) throw new Error('Recovery organization does not match the signing identity');
+    this.attestQuery();
     const bytes = await this.contract.evaluateTransaction("GetCommand", command.actor_org_id, command.command_id);
     if (!bytes || bytes.byteLength === 0) return undefined;
     const record = parseStrictJson(bytes) as Record<string, unknown>;
@@ -193,7 +207,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
     return { payload_digest: record.command_digest, result: record.result };
   }
 
-  close(): void { this.commits.clear(); this.gateway.close?.(); }
+  close(): void { this.commits.clear(); if (this.attestation) this.attestation.context.current = undefined; this.gateway.close?.(); }
 }
 
 function normalizeLedgerNumber(value: number | bigint | string | undefined): number | string | undefined {
