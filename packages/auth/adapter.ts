@@ -8,9 +8,10 @@ import { OidcAuthentication } from './oidc.ts';
  * subject or a mismatched issuer yields no actor and the login is refused.
  */
 export function subjectActorResolver(issuer: string, subjects: ReadonlyMap<string, Actor>): (candidateIssuer: string, subject: string) => Actor | undefined {
-  const expected = new URL(issuer).href;
-  // 후보 issuer가 URL로 파싱되지 않으면 예외가 아니라 거부(undefined)다 — 리졸버는 항상 total 이어야 한다.
-  return (candidateIssuer, subject) => URL.canParse(candidateIssuer) && new URL(candidateIssuer).href === expected ? subjects.get(subject) : undefined;
+  // OIDC `iss`는 정규화가 아니라 정확 문자열 일치다 — 설정 issuer도 있는 그대로 비교한다.
+  const expected = issuer;
+  const bound = new Map(subjects);
+  return (candidateIssuer, subject) => candidateIssuer === expected ? bound.get(subject) : undefined;
 }
 
 export interface OidcAdapterOptions {
@@ -35,7 +36,9 @@ export interface OidcAdapterOptions {
  */
 export async function createOidcAdapter(options: OidcAdapterOptions): Promise<ApplicationAuthentication> {
   // 빈 subject 맵은 모든 로그인이 조용히 거부되는 설정 오류다 — 경계 팩토리에서 fail-fast 한다.
-  if (!options?.subjects || options.subjects.size === 0) throw new Error('OIDC adapter requires at least one subject binding');
+  if (!options.subjects || options.subjects.size === 0) throw new Error('OIDC adapter requires at least one subject binding');
+  // 설정 issuer는 URL 문법이어야 한다 — 어느 설정이 잘못됐는지 메시지에 남긴다.
+  if (!URL.canParse(options.issuer)) throw new Error(`OIDC adapter issuer is not a valid URL: ${options.issuer}`);
   return OidcAuthentication.create({
     issuer: options.issuer, clientId: options.clientId, redirectUri: options.redirectUri, development: options.development,
     authorizationVersionClaim: options.authorizationVersionClaim, sessionMaxAgeMs: options.sessionMaxAgeMs, now: options.now,
