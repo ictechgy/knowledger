@@ -280,7 +280,12 @@ export function createAttestationSerializer(context: SigningAttestationContext):
       if (!isOwner()) throw new Error("Signing attestation serializer was released");
       context.current = attestation;
       try {
-        return await operation();
+        const result = await operation();
+        // A successful call whose attestation is still installed means the
+        // signer was never wired to this context: fail closed rather than
+        // returning a signed artefact that carries no evidence.
+        if (attestation !== undefined && context.current === attestation) throw new Error("Signing attestation was not consumed by the configured signer");
+        return result;
       } finally {
         // A failed operation may never reach the signing point; never leave a
         // stale attestation for the next operation to consume.

@@ -168,7 +168,10 @@ or steal an in-flight decision attestation. Builder output is checked before
 installation: a write attestation must carry the exact command identity,
 recomputed digest, phase and transaction ID of the operation being signed —
 a query-shaped or mismatched claim is refused locally before any signing
-call — and a read attestation must be query-shaped. A context may be claimed by a
+call — and a read attestation must be query-shaped. A completed call whose
+attestation was never consumed by the signer is refused too, so a miswired
+slot cannot return a signed artefact without evidence. A context may be
+claimed by a
 single serializer, which releases the claim when the connection closes. The
 qscc lookup gateway signs through a dedicated slot and signer separate from
 the write path, and the remote signer consumes its slot once per request, so

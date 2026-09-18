@@ -285,7 +285,7 @@ test("official gateway rejects attestation builder output that mismatches the si
   assert.equal(signCalls, 0);
   // A configured builder that produces no attestation is a wiring bug: the
   // write must not proceed unattested.
-  const emptyClient = await connect({ build: () => undefined, buildQuery: () => undefined });
+  const emptyClient = await connect({ build: (() => undefined) as unknown as GatewayAttestation["build"], buildQuery: (() => undefined) as unknown as GatewayAttestation["buildQuery"] });
   const emptyProposal = await emptyClient.newProposal(cmd);
   await assert.rejects(() => emptyProposal.endorse(), /produced no evidence/);
   await assert.rejects(() => emptyClient.getStatus("tx-built", new Uint8Array([1])), /produced no evidence/);
