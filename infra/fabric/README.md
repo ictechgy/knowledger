@@ -131,7 +131,12 @@ against the ledger (a write signed under a `query` claim appears on the ledger
 without a matching attested transaction). An operational gateway re-derives
 the binding from the proposal bytes before signing. Attested keys fail fast at
 load when the certificate's `actor_kind` is outside `allowed_actor_kinds` or
-the key is not EC (receipts are ECDSA evidence). The audit file must not
+the key is not EC (receipts are ECDSA evidence). Run the service with
+`--audit-log` whenever attested keys are configured: without the service-side
+record a receipt cannot be reconciled and a caller able to drive the socket
+could mint forged evidence undetected. A record that throws mid-write can
+leave a partial trailing line; consumers should discard a trailing non-JSON
+line rather than the file. The audit file must not
 collide with any configured key, certificate, socket or signing configuration
 path — including hard links — and a non-regular target is refused before
 open; it is opened once with no-follow semantics, validated by descriptor,

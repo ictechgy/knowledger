@@ -147,8 +147,9 @@ function certificateActor(certificate: Buffer): { actor_id?: string; actor_kind?
     const identity = new ClientIdentity({ getCreator: () => ({ mspid: "", idBytes: certificate }), getChannelID: () => "", getTxID: () => "signing-service-validation" });
     const actorId = identity.getAttributeValue("kcl.actor_id");
     const actorKind = identity.getAttributeValue("kcl.actor_kind");
-    if (typeof actorId !== "string" || actorId.length === 0 || actorId.length > 128) return {};
-    if (actorKind !== "human" && actorKind !== "agent") return {};
+    if (actorId === null && actorKind === null) return {};
+    if (typeof actorId !== "string" || actorId.length === 0 || actorId.length > 128) return { error: "kcl.actor_id is absent or outside the supported bounds" };
+    if (actorKind !== "human" && actorKind !== "agent") return { error: "kcl.actor_kind is absent or outside the supported bounds" };
     return { actor_id: actorId, actor_kind: actorKind };
   } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
 }
@@ -339,14 +340,18 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   }
   // A pre-existing non-regular target (FIFO, socket, device) must fail before
   // open: O_WRONLY on a FIFO would block forever waiting for a reader.
+  let preexisting = true;
   try {
     if (!lstatSync(path).isFile()) throw new Error("Signing audit log must be a regular file with mode 600");
   } catch (error) {
     if ((error as { code?: string }).code !== "ENOENT") throw error;
+    preexisting = false;
   }
   // Open once and keep the descriptor: re-opening per record would let a
   // symlink or inode replacement slip between validation and append.
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+  // O_NONBLOCK closes the lstat→open window in which a swapped FIFO would
+  // otherwise block the open; it has no effect on regular-file writes.
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
@@ -364,6 +369,8 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
     }
   } catch (error) {
     closeSync(fd);
+    // A file this call created must not linger after failed validation.
+    if (!preexisting) try { unlinkSync(path); } catch { /* best-effort cleanup */ }
     throw error;
   }
   let closed = false;

@@ -3,13 +3,13 @@ import { createPrivateKey, generateKeyPairSync, sign, verify, X509Certificate } 
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fs from 'node:fs';
 import { connect, createServer, type Server, type Socket } from "node:net";
-import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { startSigningService } from "../../infra/fabric/signing-service.ts";
-import { attestationPayload, attestationPayloadDigest, attestationSlot, createAttestationSerializer, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import { attestationPayload, attestationPayloadDigest, attestationSlot, createAttestationSerializer, createRemoteSigner, releaseAttestationSerializer, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
@@ -193,14 +193,15 @@ test("development signing service attests each approved organisation binding and
       { keyId: "person-fulfillment-owner", org: "fulfillment", msp: "FulfillmentMSP" },
       { keyId: "person-settlement-owner", org: "settlement", msp: "SettlementMSP" },
     ];
-    for (const binding of bindings) {
+    for (const [index, binding] of bindings.entries()) {
       const certificate = readFileSync(paths[binding.org as keyof typeof paths]);
       const attestation = () => ({ org_id: binding.msp, actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const });
       const signature = await createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation })(Buffer.alloc(32, 9));
       assert.ok(signature.byteLength > 0, `${binding.keyId} signs its own organisation query attestation`);
-      // A certificate claiming another organisation's binding is refused.
-      const cross = createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation: () => ({ org_id: "SalesMSP", actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const }) });
-      if (binding.msp === "SalesMSP") continue;
+      // A certificate claiming another organisation's binding is refused; each
+      // binding is tested against a genuinely different organisation claim.
+      const foreign = bindings[(index + 1) % bindings.length];
+      const cross = createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation: () => ({ org_id: foreign.msp, actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const }) });
       await assert.rejects(() => cross(Buffer.alloc(32, 9)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
     }
   } finally { await service.close(); }
@@ -543,6 +544,21 @@ test("a second serializer cannot claim an attestation context", () => {
   );
 });
 
+test("releaseAttestationSerializer lets a later serializer reclaim the context", async () => {
+  const context: SigningAttestationContext = {};
+  createAttestationSerializer(context);
+  releaseAttestationSerializer(context);
+  // Reclaiming after release mirrors a reconnect: the new serializer must
+  // install and serialise attestations normally.
+  const reclaimed = createAttestationSerializer(context);
+  const attestation = devAttestation();
+  assert.equal(await reclaimed(attestation, async () => context.current), attestation);
+  assert.equal(context.current, undefined);
+  // Releasing without an owner is a no-op so close paths stay idempotent.
+  releaseAttestationSerializer(context);
+  releaseAttestationSerializer(context);
+});
+
 /** Real paths currently held open by this process (Linux /proc or lsof). */
 function openFileTargets(): string[] | undefined {
   const realpath = (target: string): string => { try { return fs.realpathSync(target); } catch { return target; } };
@@ -599,6 +615,25 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     const fifo = join(directory, "audit.fifo");
     assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign2.sock"), keys, auditLogPath: fifo }), /regular file/);
+    // A symlink to the private key resolves onto the reserved path and is
+    // refused before open; the key must stay byte-identical.
+    const keyBefore = readFileSync(identity.private_key_path);
+    const keyLink = join(directory, "audit-key-link.jsonl");
+    symlinkSync(identity.private_key_path, keyLink);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign3.sock"), keys, auditLogPath: keyLink }), /collides|regular file/);
+    assert.deepEqual(readFileSync(identity.private_key_path), keyBefore);
+    // A symlink to an ordinary file is still refused: O_NOFOLLOW rejects the
+    // final-component link even when its target is not reserved.
+    const ordinary = join(directory, "ordinary.jsonl");
+    fs.writeFileSync(ordinary, "", { mode: 0o600 });
+    const ordinaryLink = join(directory, "audit-link.jsonl");
+    symlinkSync(ordinary, ordinaryLink);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign4.sock"), keys, auditLogPath: ordinaryLink }), /collides|regular file|ELOOP|symlink/i);
+    assert.equal(readFileSync(ordinary, "utf8"), "");
+    // A dangling symlink is not a regular file and must be refused.
+    const dangling = join(directory, "audit-dangling.jsonl");
+    symlinkSync(join(directory, "missing-target"), dangling);
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign5.sock"), keys, auditLogPath: dangling }), /collides|regular file|ELOOP|symlink/i);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -706,6 +741,10 @@ test("remote signer rejects a receipt attached to an unattested response and rep
       // reclassified as a malformed protocol response.
       const throwing = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: () => { throw new Error("caller retention failed"); } });
       await assert.rejects(() => throwing(Buffer.alloc(32, 16)), (error: unknown) => error instanceof Error && !(error instanceof RemoteSignerError) && error.message === "caller retention failed");
+      // A hook that returns a promise would reject after the request settles;
+      // the signer fails the request deterministically instead.
+      const asyncHook = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: (() => Promise.resolve()) as unknown as (receipt: Uint8Array, evidence: Uint8Array) => void });
+      await assert.rejects(() => asyncHook(Buffer.alloc(32, 17)), (error: unknown) => error instanceof RemoteSignerError && error.code === "invalid_request" && /synchronous/.test(error.message));
     } finally { await honest.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
