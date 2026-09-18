@@ -39,7 +39,7 @@ export class OidcAuthentication implements ApplicationAuthentication {
   readonly origin: string;
   private readonly options: OidcAuthenticationOptions;
   private readonly config: oidc.Configuration;
-  private readonly issuer: string;
+  readonly issuer: string;
   private readonly redirectUri: string;
   private readonly secure: boolean;
   private readonly cookieNamespace: string;

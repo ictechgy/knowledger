@@ -8,10 +8,10 @@ import { OidcAuthentication } from './oidc.ts';
  * subject or a mismatched issuer yields no actor and the login is refused.
  */
 export function subjectActorResolver(issuer: string, subjects: ReadonlyMap<string, Actor>): (candidateIssuer: string, subject: string) => Actor | undefined {
-  // OIDC `iss`는 정규화가 아니라 정확 문자열 일치다 — 설정 issuer도 있는 그대로 비교한다.
-  const expected = issuer;
+  if (subjects.size === 0) throw new Error('OIDC adapter requires at least one subject binding');
   const bound = new Map(subjects);
-  return (candidateIssuer, subject) => candidateIssuer === expected ? bound.get(subject) : undefined;
+  // OIDC `iss`는 정규화가 아니라 정확 문자열 일치다 — 설정 issuer도 있는 그대로 비교한다.
+  return (candidateIssuer, subject) => candidateIssuer === issuer ? bound.get(subject) : undefined;
 }
 
 export interface OidcAdapterOptions {
@@ -39,9 +39,16 @@ export async function createOidcAdapter(options: OidcAdapterOptions): Promise<Ap
   if (!options.subjects || options.subjects.size === 0) throw new Error('OIDC adapter requires at least one subject binding');
   // 설정 issuer는 URL 문법이어야 한다 — 어느 설정이 잘못됐는지 메시지에 남긴다.
   if (!URL.canParse(options.issuer)) throw new Error(`OIDC adapter issuer is not a valid URL: ${options.issuer}`);
-  return OidcAuthentication.create({
+  const authentication = await OidcAuthentication.create({
     issuer: options.issuer, clientId: options.clientId, redirectUri: options.redirectUri, development: options.development,
     authorizationVersionClaim: options.authorizationVersionClaim, sessionMaxAgeMs: options.sessionMaxAgeMs, now: options.now,
     resolveActor: subjectActorResolver(options.issuer, options.subjects),
   });
+  // 세션은 discovery된 issuer에 바인딩된다 — 설정값과 다르면(후행 슬래시만 달라도)
+  // 모든 로그인이 조용히 거부되므로 생성 시점에 두 값을 보여주며 실패한다.
+  if (authentication.issuer !== options.issuer) {
+    await authentication.close();
+    throw new Error(`OIDC adapter issuer does not match the provider issuer: configured ${options.issuer}, discovered ${authentication.issuer}`);
+  }
+  return authentication;
 }
