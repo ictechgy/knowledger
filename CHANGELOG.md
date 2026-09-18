@@ -104,6 +104,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the evidence marks the process+filesystem boundary explicitly (not
   physical hosts) and binds pids, signals, exit codes, and recovered
   checkpoints.
+- Git source connector: `readGitSource` produces the same manifest/snapshot
+  contract from a pinned commit of a caller-provided local Git repository —
+  revision refs resolve to a commit, only regular `100644` blobs inside the
+  manifest allowlist are read, and cloning/fetching/credentials stay with
+  the caller. `kb-sync --git-ref` selects it.
+- Adoption pilot measurement: `npm run pilot:metrics`
+  (`tools/adoption-metrics.ts`) derives time-to-agreement, review effort
+  and reuse rate from the verified journal and combines them with a
+  strictly-validated observation log (interpretation mixing, review
+  questions, disclosure burden) into a schema-versioned measurement
+  record.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

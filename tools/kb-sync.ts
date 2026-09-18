@@ -3,10 +3,12 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { createDevelopmentClient } from '../packages/connectors/development-client.ts';
 import { loadMarkdownSourceManifest, readMarkdownSource } from '../packages/connectors/filesystem-markdown.ts';
+import { readGitSource } from '../packages/connectors/git-repository.ts';
 import { syncMarkdownSource } from '../packages/connectors/sync-markdown.ts';
 
-const USAGE = 'Usage: node tools/kb-sync.ts --root PATH --manifest PATH --server URL --workspace ID --org ORG_ID --actor ACTOR_ID';
+const USAGE = 'Usage: node tools/kb-sync.ts --root PATH --manifest PATH --server URL --workspace ID --org ORG_ID --actor ACTOR_ID [--git-ref REF]';
 const REQUIRED = ['--root', '--manifest', '--server', '--workspace', '--org', '--actor'] as const;
+const OPTIONAL = ['--git-ref'] as const;
 
 function parse(args: string[]): Record<string, string> {
   const values: Record<string, string> = {};
@@ -14,7 +16,7 @@ function parse(args: string[]): Record<string, string> {
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
     const value = args[index + 1];
-    if (!REQUIRED.includes(name as typeof REQUIRED[number]) || !value || value.startsWith('--') || Object.hasOwn(values, name)) throw new Error('INVALID_ARGUMENTS');
+    if (![...REQUIRED, ...OPTIONAL].includes(name as typeof REQUIRED[number] | typeof OPTIONAL[number]) || !value || value.startsWith('--') || Object.hasOwn(values, name)) throw new Error('INVALID_ARGUMENTS');
     values[name] = value;
   }
   if (REQUIRED.some(name => !values[name])) throw new Error('INVALID_ARGUMENTS');
@@ -31,9 +33,12 @@ if (isMain()) {
       // Authentication/session handshake intentionally precedes any source file read.
       const client = await createDevelopmentClient({ baseUrl: values['--server'], workspaceId: values['--workspace'], orgId: values['--org'], actorId: values['--actor'] });
       const manifest = loadMarkdownSourceManifest(resolve(values['--manifest']));
-      const snapshot = await readMarkdownSource({ root: resolve(values['--root']), manifest });
+      const snapshot = values['--git-ref']
+        ? await readGitSource({ root: resolve(values['--root']), ref: values['--git-ref'], manifest })
+        : await readMarkdownSource({ root: resolve(values['--root']), manifest });
       const result = await syncMarkdownSource(client, snapshot);
-      process.stdout.write(`${JSON.stringify({ imported: result.counts.imported, unchanged: result.counts.unchanged, skipped: result.counts.skipped, removed: result.counts.removed, version: result.source.version })}\n`);
+      const commit = 'commit' in snapshot ? { commit: snapshot.commit } : {};
+      process.stdout.write(`${JSON.stringify({ imported: result.counts.imported, unchanged: result.counts.unchanged, skipped: result.counts.skipped, removed: result.counts.removed, version: result.source.version, ...commit })}\n`);
     }
   } catch (error: any) {
     const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/u.test(error.code) ? error.code : 'SYNC_FAILED';

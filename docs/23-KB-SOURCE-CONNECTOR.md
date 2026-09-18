@@ -51,6 +51,24 @@ manifest는 파일 경로와 승인 정책을 연결한다.
 
 filesystem connector는 manifest의 allowlist에 없는 폴더 파일을 읽지 않는다. 허용 파일은 열린 descriptor에서 읽은 뒤 파일과 root의 변경 여부를 다시 확인한다. 누락 파일은 동기화 입력에 `missing_paths`로 남는다. 이는 관측한 파일 변경 검사이며 악의적인 동일 OS 프로세스를 격리하는 filesystem sandbox는 아니다. 브라우저 업로드는 사용자가 선택한 File 객체의 allowlist·형식·크기·actor 검사를 수행한다.
 
+## Git 저장소 connector
+
+`readGitSource`는 같은 manifest·snapshot 계약을 로컬 Git 저장소의 고정 커밋에서 읽는다. clone·fetch·인증정보는 커넥터의 책임이 아니며, 호출자가 준비한 로컬 저장소만 사용한다. 작업 트리 상태와 무관하게 커밋의 오브젝트 저장소에서 읽으므로 dirty checkout이 결과를 바꾸지 않는다.
+
+```sh
+npm run kb:sync -- \
+  --server http://127.0.0.1:4317 \
+  --workspace knowledge --org OrgOneMSP --actor maintainer \
+  --root ./knowledge-repo \
+  --manifest ./examples/markdown-kb/manifest.json \
+  --git-ref release-2026-09
+```
+
+- `--git-ref`는 브랜치·태그·커밋 SHA를 받아 `rev-parse --verify`로 커밋에 고정한다. `--`, `@{`, `..` 같은 리비전 문법과 옵션 형태는 거부한다.
+- allowlist 각 경로는 `ls-tree`로 확인해 일반 blob(`100644`)만 읽는다. symlink·gitlink·디렉터리는 거부하고, 없는 경로는 `missing_paths`가 된다.
+- 파일 크기·UTF-8·제어문자·전체 크기 한도와 SHA-256 다이제스트 계약은 filesystem connector와 같다.
+- snapshot은 고정된 `commit`을 함께 반환한다. Git 이력 검증(서명 커밋·보호 브랜치)은 이 커넥터 밖의 절차다 — 커넥터는 allowlist 내용의 결정적 읽기만 보장한다.
+
 ## 동기화 순서
 
 `syncMarkdownSource`는 한 번의 동기화 입력을 먼저 검증한 뒤 source의 현재 버전을 읽는다.
