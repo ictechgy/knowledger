@@ -38,11 +38,12 @@ export interface PerformanceSmokeResult {
   dataset: { documents_requested: number; body_bytes: number; samples: number; slot_groups: number; marker: string; read_workload: 'all_pages_summary'; search_queries: readonly string[]; search_probes: 'multi_query' };
   metrics: {
     publish: LatencyMetric;
-    /** 첫 타이밍 루프 — 첫 샘플은 신규 서비스의 cache-miss 전체 스캔, 이후는 캐시 적중이다. */
+    /** 첫 타이밍 루프 — publish가 매치 캐시를 무효화했으므로 첫 샘플은 cache-miss 전체 스캔, 이후는 캐시 적중이다. */
     search: LatencyMetric;
     /** 캐시가 예열된 상태의 steady-state 적중 경로 — 모든 샘플이 cache-hit이어야 한다. */
     search_warm: LatencyMetric;
-    /** 샘플마다 새 KnowledgerService를 만들어 측정하는 cache-miss 전체 스캔 경로. */
+    /** 샘플마다 새 KnowledgerService를 만들어 측정하는 cache-miss 전체 스캔 경로.
+     * 서비스 인스턴스 매치 캐시만 cold다 — 공유 원장·볼트의 SQLite 페이지/OS 캐시는 warm이다. */
     search_cold: LatencyMetric;
     overview: LatencyMetric;
     replay_restart_ms: number;
@@ -216,7 +217,9 @@ export async function runPerformanceSmoke(input: PerformanceSmokeOptions): Promi
     // cold 측정: 검색 매치 캐시는 서비스 인스턴스별이므로 샘플마다 새 서비스를 만들어
     // 모든 샘플이 실제 cache-miss 전체 스캔을 측정한다. 캐시 내부를 건드리지 않고
     // 재생이 완료된 동일 원장 상태만 재사용한다 — initialize()는 열린 원장의 tail
-    // 확인과 구성 검사뿐이라 저널 재생 없이 가볍다.
+    // 확인과 구성 검사뿐이라 저널 재생 없이 가볍다. 서비스는 이벤트 구독이나 자체
+    // 핸들을 잡지 않으므로 버려진 coldService 인스턴스는 따로 닫을 필요가 없다 —
+    // 원장·볼트 핸들은 finally에서 닫는다.
     // 미등록 검색어 0건 가드는 타이밍 뒤에 둔다 — probe가 먼저 실행되면 첫 샘플만
     // 다른 사전 상태에서 측정돼 cold 샘플이 이질적이 된다.
     for (let sample = 0; sample < options.samples; sample += 1) {
@@ -314,7 +317,7 @@ if (isMain()) {
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges and that --data is a new empty directory)';
+    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes/--slot-groups ranges and that --data is a new empty directory)';
     process.stderr.write(`performance smoke failed: ${detail}${guidance}\n`);
     process.exitCode = 1;
   } finally {

@@ -4,12 +4,19 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { runPerformanceSmoke } from '../../tools/performance-smoke.ts';
 import { runResilienceSmoke } from '../../tools/resilience-smoke.ts';
+import { assertDistinctOutputPath, compareMetrics, ComparisonInputError, parseThresholds, reportCliResult, RESULT_SCHEMA_VERSION } from '../../tools/performance-compare.ts';
+
+/** 도구 스크립트를 root cwd에서 실행해 spawnSync 결과를 돌려준다. */
+function runToolCli(root: string, script: string, args: string[], timeout = 30_000) {
+  return spawnSync(process.execPath, [join(process.cwd(), 'tools', script), ...args], { cwd: root, encoding: 'utf8', timeout });
+}
 
 /** 성능 CLI를 root cwd에서 실행해 spawnSync 결과를 돌려준다. */
 function runSmokeCli(root: string, args: string[], timeout = 30_000) {
-  return spawnSync(process.execPath, [join(process.cwd(), 'tools', 'performance-smoke.ts'), ...args], { cwd: root, encoding: 'utf8', timeout });
+  return runToolCli(root, 'performance-smoke.ts', args, timeout);
 }
 
 /** baseline JSON의 모든 메트릭 p95를 덮어써 회귀·비회귀를 결정적으로 만든다. */
@@ -25,6 +32,7 @@ function overwriteBaselineMetrics(path: string, value: number): void {
 test('performance smoke reports measured local workload and functional assertions', async () => {
   const root = mkdtempSync(join(tmpdir(), 'knowledger-performance-test-'));
   try {
+    // documents 51은 browseAll 페이지 크기(50)를 넘겨 복수 페이지 순회 경로를 검증한다.
     const result = await runPerformanceSmoke({ dataDir: join(root, 'runtime'), documents: 51, samples: 2, bodyBytes: 128 });
     assert.equal(result.mode, 'local-simulation');
     assert.equal(result.dataset.documents_requested, 51);
@@ -89,7 +97,7 @@ test('resilience smoke verifies restart, snapshot restore, idempotency, and peer
 test('experiment CLIs start from a clean checkout and accept relative output paths', async t=>{
   const root=mkdtempSync(join(tmpdir(),'knowledger-clean-cli-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
   for(const [script,flags,out] of [['performance-smoke.ts',['--documents','2','--samples','1','--body-bytes','1'],'performance.json'],['resilience-smoke.ts',[],'resilience.json']] as const){
-    const result=spawnSync(process.execPath,[join(process.cwd(),'tools',script),...flags,'--out',out],{cwd:root,encoding:'utf8',timeout:30_000});
+    const result=runToolCli(root,script,[...flags,'--out',out]);
     assert.equal(result.status,0,result.stderr);
     const data=JSON.parse(result.stdout);assert.equal(data.mode,'local-simulation');
   }
@@ -166,7 +174,6 @@ test('performance smoke CLI rejects incomparable baselines with actionable error
 });
 
 test('compareMetrics handles boundary ratios, baseline zero, and invalid baselines deterministically', async () => {
-  const { compareMetrics, RESULT_SCHEMA_VERSION } = await import('../../tools/performance-compare.ts');
   const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8, cpu_model: 'test-cpu' };
   const dataset = { documents_requested: 2 };
   const fields = ['documents_requested'] as const;
@@ -193,7 +200,6 @@ test('compareMetrics handles boundary ratios, baseline zero, and invalid baselin
 });
 
 test('parseThresholds rejects malformed pairs without spawning the CLI', async () => {
-  const { parseThresholds, ComparisonInputError } = await import('../../tools/performance-compare.ts');
   const allowed = ['search', 'overview'] as const;
   assert.deepEqual(parseThresholds('search=0.25,overview=1', allowed), { search: 0.25, overview: 1 });
   for (const text of ['search', '=0.1', 'search=', 'search= ', 'search=-0.5', 'search=abc', 'unknown=0.1', 'search=0.1,search=0.2']) {
@@ -202,7 +208,6 @@ test('parseThresholds rejects malformed pairs without spawning the CLI', async (
 });
 
 test('assertDistinctOutputPath rejects --out aliases of the baseline file', async () => {
-  const { assertDistinctOutputPath, ComparisonInputError } = await import('../../tools/performance-compare.ts');
   const root = mkdtempSync(join(tmpdir(), 'knowledger-out-collision-'));
   try {
     const baseline = join(root, 'baseline.json');
@@ -223,25 +228,18 @@ test('assertDistinctOutputPath rejects --out aliases of the baseline file', asyn
 });
 
 test('reportCliResult preserves the measured result when comparison input fails', async () => {
-  const { reportCliResult, RESULT_SCHEMA_VERSION, ComparisonInputError } = await import('../../tools/performance-compare.ts');
   const root = mkdtempSync(join(tmpdir(), 'knowledger-report-preserve-'));
   try {
     const outPath = join(root, 'out.json');
     const environment = { node: 'v24.test', platform: 'test', arch: 'x64', cpu_count: 8, cpu_model: 'test-cpu' };
     const result = { mode: 'local-simulation', environment, dataset: { documents_requested: 2 }, metrics: { search: { p95_ms: 1 } } };
     const baseline = { schema_version: RESULT_SCHEMA_VERSION, mode: 'local-simulation', environment, dataset: { documents_requested: 3 }, metrics: { search: { p95_ms: 1 } }, functional_assertions: {} };
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    const originalExitCode = process.exitCode;
-    try {
-      process.stdout.write = (() => true) as typeof process.stdout.write;
-      assert.throws(
-        () => reportCliResult({ result, baseline: { path: 'baseline.json', data: baseline }, thresholds: {}, datasetFields: ['documents_requested'], metricNames: ['search'], outPath }),
-        ComparisonInputError,
-      );
-    } finally {
-      process.stdout.write = originalWrite;
-      process.exitCode = originalExitCode;
-    }
+    // io를 주입해 process.stdout/exitCode를 건드리지 않고 검증한다.
+    const io = { stdout: () => {}, stderr: () => {}, setExitCode: () => {} };
+    assert.throws(
+      () => reportCliResult({ result, baseline: { path: 'baseline.json', data: baseline }, thresholds: {}, datasetFields: ['documents_requested'], metricNames: ['search'], outPath, io }),
+      ComparisonInputError,
+    );
     const written = JSON.parse(readFileSync(outPath, 'utf8'));
     assert.equal(written.mode, 'local-simulation');
     // 비교 실패는 comparison 부재가 아니라 명시적 error 필드로 기록된다 — "--baseline 미지정"과 구별된다.
@@ -253,7 +251,6 @@ test('reportCliResult preserves the measured result when comparison input fails'
 });
 
 test('performance-fabric CLI compares against a baseline when optional deps are installed', async t => {
-  const { createRequire } = await import('node:module');
   const requireFabric = createRequire(new URL('../../packages/fabric/package.json', import.meta.url));
   try {
     requireFabric.resolve('@hyperledger/fabric-protos');
@@ -263,8 +260,7 @@ test('performance-fabric CLI compares against a baseline when optional deps are 
   }
   const root = mkdtempSync(join(tmpdir(), 'knowledger-fabric-compare-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const tool = join(process.cwd(), 'tools', 'performance-fabric.ts');
-  const fabricCli = (args: string[]) => spawnSync(process.execPath, [tool, ...args], { cwd: root, encoding: 'utf8', timeout: 60_000 });
+  const fabricCli = (args: string[]) => runToolCli(root, 'performance-fabric.ts', args, 60_000);
   const flags = ['--documents', '2', '--samples', '1', '--body-bytes', '1'];
   const baseline = fabricCli([...flags, '--out', 'baseline.json']);
   assert.equal(baseline.status, 0, baseline.stderr);

@@ -202,8 +202,11 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
   return value;
 }
 
+/** normalizeOptions의 반환형 — journalPath만 선택이고 나머지는 모두 기본값으로 채워진다. */
+type NormalizedFabricOptions = Omit<Required<FabricSmokeOptions>, 'journalPath'> & { journalPath?: string };
+
 /** Fabric 측정 옵션을 기본값과 함께 정규화하고 범위를 검증한다 — dataset 계획 비교에도 재사용된다. */
-function normalizeOptions(input: FabricSmokeOptions): Required<FabricSmokeOptions> {
+function normalizeOptions(input: FabricSmokeOptions): NormalizedFabricOptions {
   if (!isAbsolute(input.dataDir)) throw new Error('dataDir must be absolute');
   return {
     dataDir: resolve(input.dataDir),
@@ -212,7 +215,7 @@ function normalizeOptions(input: FabricSmokeOptions): Required<FabricSmokeOption
     bodyBytes: boundedInteger(input.bodyBytes ?? 1024, 'bodyBytes', 1, 256 * 1024),
     slotGroups: boundedInteger(input.slotGroups ?? 1, 'slotGroups', 1, 256),
     txPerBlock: boundedInteger(input.txPerBlock ?? DEFAULT_TX_PER_BLOCK, 'txPerBlock', 1, MAX_TX_PER_BLOCK),
-    journalPath: input.journalPath ? resolve(input.journalPath) : '',
+    journalPath: input.journalPath ? resolve(input.journalPath) : undefined,
   };
 }
 
@@ -411,7 +414,7 @@ if (isMain()) {
     reportCliResult({ result, baseline, thresholds, datasetFields: COMPARABLE_DATASET_FIELDS, metricNames: COMPARABLE_METRICS, outPath: parsed.out });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes ranges, that --data is a new empty directory, and that optional Fabric dependencies are installed)';
+    const guidance = error instanceof ComparisonInputError ? '' : ' (input validation or local measurement — check --documents/--samples/--body-bytes/--slot-groups/--tx-per-block ranges, that --data is a new empty directory, that --journal exists and is checkpointed, and that optional Fabric dependencies are installed)';
     process.stderr.write(`performance-fabric failed: ${detail}${guidance}\n`);
     process.exitCode = 1;
   } finally {

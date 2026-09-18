@@ -38,6 +38,9 @@ jobs:
       - run: npm ci --prefix packages/auth --ignore-scripts --no-fund
       - run: npm run check:types
       - run: node --test 'test/fabric/*.test.ts' 'test/auth/*.test.ts' 'test/api/*.test.ts'
+      # local-runtime은 선택적 fabric 의존성을 설치하지 않아 fabric 비교 테스트가 skip된다 —
+      # 이 job에서 performance-fabric CLI의 baseline 비교 경로를 실제로 검증한다.
+      - run: node --test 'test/automation/experiments.test.ts'
 
   browser-and-experiments:
     runs-on: ubuntu-latest
