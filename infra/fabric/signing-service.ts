@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson } from "../../packages/fabric/canonical.ts";
@@ -268,10 +268,17 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
         const evidenceDigest = attestation === undefined ? undefined : attestationPayloadDigest(request.key_id, attestation, digest, certificate);
         // The Fabric digest and the attestation evidence are signed
         // independently; issuing them together keeps latency at one round.
-        const [signature, attested] = await Promise.all([
+        // allSettled keeps the slot held until both operations finish — a
+        // first rejection must not release concurrency while the sibling
+        // signature is still using the key.
+        const [signatureResult, attestedResult] = await Promise.allSettled([
           signWithTimeout(key.sign, digest),
           evidenceDigest === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, evidenceDigest),
         ]);
+        if (signatureResult.status === "rejected") throw signatureResult.reason;
+        if (attestedResult.status === "rejected") throw attestedResult.reason;
+        const signature = signatureResult.value;
+        const attested = attestedResult.value;
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           // The key already produced a signature: a post-sign rejection still
           // needs a record so key use and the audit log cannot diverge.
@@ -361,7 +368,7 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
   // otherwise block the open; it has no effect on regular-file writes.
   // O_EXCL on a fresh path turns the lstat→open race into an error instead of
   // opening (and later unlinking) a file another process created meanwhile.
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK | (preexisting ? 0 : constants.O_EXCL), 0o600);
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK | (preexisting ? 0 : constants.O_EXCL), 0o600);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
@@ -381,6 +388,14 @@ function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog 
     // corrupt whatever that link points at even when it is not a configured
     // file, so only single-link targets are accepted.
     if (stat.nlink !== 1) throw new Error("Signing audit log must be a regular file with a single link");
+    // A pre-existing log whose last record lacks its terminating newline would
+    // corrupt the next appended record (two fragments merge into one
+    // unparseable line), so unterminated tails are refused rather than
+    // repaired — the operator must resolve a torn write explicitly.
+    if (preexisting && stat.size > 0) {
+      const tail = Buffer.alloc(1);
+      if (readSync(fd, tail, 0, 1, stat.size - 1) !== 1 || tail[0] !== 0x0a) throw new Error("Signing audit log must end with a complete newline-terminated record");
+    }
   } catch (error) {
     closeSync(fd);
     // A file this call created must not linger after failed validation.

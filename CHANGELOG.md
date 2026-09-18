@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwrite or steal an in-flight decision attestation, one context may be
   claimed by a single serializer, and the qscc lookup gateway signs through a
   dedicated slot and signer. Decision attestations must carry the SDK-assigned
-  `tx_id`. Verified receipts can be surfaced to callers through
+  `tx_id`, and the gateway validates builder output before installing it — a
+  write attestation must match the operation's command identity, recomputed
+  digest, phase and transaction ID, and a read attestation must be
+  query-shaped. Verified receipts can be surfaced to callers through
   `onAttestationReceipt`, whose own failures stay distinct from malformed
   protocol responses.
 - Signing audit hardening: the audit log path may not collide with configured
@@ -46,7 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private key is not EC, and any organisation-bound signing key cannot start
   without `--audit-log` so the service-side evidence chain always exists; the
   development signing service derives its audit log beside the socket when no
-  path is given.
+  path is given. A pre-existing audit file must end with a newline-terminated
+  record — an unterminated tail is refused at startup rather than repaired so
+  a torn write cannot merge records — and an attested request holds its
+  concurrency slot until both the digest and evidence signatures settle.
 
 ## [0.2.0] — 2026-09-18
 

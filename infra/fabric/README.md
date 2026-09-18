@@ -145,8 +145,10 @@ line rather than the file. The audit file must not
 collide with any configured key, certificate, socket or signing configuration
 path — including hard links — and a non-regular target is refused before
 open; a pre-existing file must be a regular file with mode 600 and a single
-link, and a fresh path is created exclusively so a raced-in file fails the
-open rather than being adopted. The file is opened once with no-follow
+link whose last record is newline-terminated (an unterminated tail is
+refused rather than repaired, so a torn write cannot merge the next record
+into an unparseable line), and a fresh path is created exclusively so a
+raced-in file fails the open rather than being adopted. The file is opened once with no-follow
 semantics, validated by descriptor,
 appended with a single write call per record, flushed before the response is
 acknowledged and closed with the service. Record timestamps are service-asserted
@@ -154,7 +156,11 @@ operational metadata, not part of the signed evidence. The gateway client
 serialises every signer-bearing SDK call on a connection — endorse, submit,
 status and evaluate — installing the attestation inside the same critical
 section the signer consumes it from, so a concurrent read can never overwrite
-or steal an in-flight decision attestation. A context may be claimed by a
+or steal an in-flight decision attestation. Builder output is checked before
+installation: a write attestation must carry the exact command identity,
+recomputed digest, phase and transaction ID of the operation being signed —
+a query-shaped or mismatched claim is refused locally before any signing
+call — and a read attestation must be query-shaped. A context may be claimed by a
 single serializer, which releases the claim when the connection closes. The
 qscc lookup gateway signs through a dedicated slot and signer separate from
 the write path, and the remote signer consumes its slot once per request, so

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { idempotencyDigest } from "../../packages/domain/index.ts";
-import { decisionAttestation, queryAttestation, FabricGatewayTransport, connectOfficialFabricGateway } from "../../packages/fabric/gateway.ts";
+import { decisionAttestation, queryAttestation, FabricGatewayTransport, connectOfficialFabricGateway, type GatewayAttestation } from "../../packages/fabric/gateway.ts";
 import { assertSigningAttestation, attestationSlot, createAttestationSerializer, releaseAttestationSerializer, type Attestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { SqliteOutbox } from "../../packages/fabric/sqlite-outbox.ts";
 import type { DurableOutbox, FabricGatewayClient, GatewayCommand, GatewayProposal } from "../../packages/fabric/types.ts";
@@ -119,6 +119,21 @@ test('an authorization-cancelled attempt is terminal and is not queried during r
   } finally { outbox.close(); }
 });
 
+test("decision and query attestation builders satisfy the wire contract and survive a JSON round-trip", () => {
+  const actor = { org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" } as const;
+  const cmd = command("cmd-shape");
+  for (const phase of ["proposal", "submit"] as const) {
+    const built = decisionAttestation(actor, cmd, phase, "tx-shape");
+    // Builder output must already satisfy the client-side contract the remote
+    // signer enforces before opening a socket.
+    assert.deepEqual(assertSigningAttestation(built), built);
+    // The digest binds the command as the outbox records it; a JSON
+    // round-trip of the input must not change it.
+    assert.equal(built.command_digest, idempotencyDigest({ type: cmd.type, input: JSON.parse(JSON.stringify(cmd.input)) }));
+  }
+  assert.deepEqual(assertSigningAttestation(queryAttestation(actor)), queryAttestation(actor));
+});
+
 test("official SDK adapter sends Execute JSON without transport-only actor metadata", async () => {
   let seen: { name: string; argument: string } | undefined;
   const fakeContract = {
@@ -231,6 +246,46 @@ test("read-only signing paths install a query attestation instead of a stale com
   // may claim the same context object instead of hitting 'already claimed'.
   const reclaimed = createAttestationSerializer(context);
   releaseAttestationSerializer(context, reclaimed);
+});
+
+test("official gateway rejects attestation builder output that mismatches the signed operation", async () => {
+  const context: SigningAttestationContext = {};
+  let signCalls = 0;
+  const signer = async (digest: Uint8Array) => { signCalls += 1; return digest; };
+  const actor = { org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" } as const;
+  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-built", async getStatus() { await signer(new Uint8Array(32)); return { code: 0 }; } };
+  const fakeContract = {
+    newProposal() { return { getTransactionId: () => "tx-built", async endorse() { await signer(new Uint8Array(32)); return { async submit() { return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
+    async evaluateTransaction() { await signer(new Uint8Array(32)); return new Uint8Array(); },
+  };
+  const connect = (attestation: Pick<GatewayAttestation, "build" | "buildQuery">) => connectOfficialFabricGateway({
+    client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
+    module: { connect() { return { newCommit: () => commit, getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
+    attestation: { context, ...attestation },
+  });
+  const cmd = command("cmd-built");
+  const mismatched = [
+    // A query-shaped attestation must never be attached to a write.
+    () => queryAttestation(actor),
+    // Claims bound to a different command or transaction are refused.
+    () => decisionAttestation(actor, { command_id: "cmd-other", type: cmd.type, input: cmd.input }, "proposal", "tx-built"),
+    () => decisionAttestation(actor, cmd, "proposal", "tx-other"),
+    () => decisionAttestation(actor, cmd, "submit", "tx-built"),
+  ];
+  for (const build of mismatched) {
+    const client = await connect({ build: build as unknown as GatewayAttestation["build"], buildQuery: () => queryAttestation(actor) });
+    const proposal = await client.newProposal(cmd);
+    await assert.rejects(() => proposal.endorse(), /do not match the signed operation/);
+    client.close();
+  }
+  assert.equal(signCalls, 0);
+  // The same contract applies to read-only builders: a decision-shaped output
+  // for a query is refused before any signing call.
+  const queryClient = await connect({ build: () => decisionAttestation(actor, cmd, "proposal", "tx-built"), buildQuery: (() => decisionAttestation(actor, cmd, "proposal", "tx-built")) as unknown as GatewayAttestation["buildQuery"] });
+  await assert.rejects(() => queryClient.getStatus("tx-built", new Uint8Array([1])), /decision attestation for a read-only operation/);
+  queryClient.close();
+  assert.equal(signCalls, 0);
 });
 
 test("a concurrent status lookup cannot steal an in-flight decision attestation", async () => {
