@@ -13,6 +13,7 @@ const actor: Actor = { org_id: 'FulfillmentMSP', actor_id: 'person-fulfillment-o
 
 class FakeAuthentication implements ApplicationAuthentication {
   readonly mode = 'oidc-development' as const;
+  readonly issuer = 'http://issuer.fake/';
   private boundOrigin = '';
   private authenticated = false;
   revoked = false;
