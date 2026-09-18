@@ -36,13 +36,13 @@ export async function guardedGeneration<T>(options:GuardedGenerationOptions<T>):
   };
   let phase='KNOWLEDGE_UNAVAILABLE';
   try {
-    const result=await run(()=>options.client.resolve(options.selection,{allowDevelopment:options.allowDevelopment,signal}));
+    const result=await run(()=>options.client.resolve(options.selection,{allowDevelopment:options.allowDevelopment,modelAdapterId:options.adapterId,signal}));
     if(result.status!=='provided'||!('revision' in result))return withheld(typeof result.reason==='string'?result.reason:'KNOWLEDGE_UNAVAILABLE');
     const resolved=result as ValidatedResolveResponse;let manifest=structuredClone(resolved.manifest);
     phase='AUTHORIZATION_UNAVAILABLE';
     if(await run(()=>options.authorize({phase:'generate',manifest:structuredClone(manifest),adapterId:options.adapterId}))!==true)return withheld('AUTHORIZATION_DENIED');
     phase='REVALIDATION_UNAVAILABLE';
-    const before=await run(()=>options.client.revalidate(manifest.run_id,{signal}));
+    const before=await run(()=>options.client.revalidate(manifest.run_id,{signal,modelAdapterId:options.adapterId}));
     if(before?.status!=='valid')return withheld(before?.reason??'KNOWLEDGE_CHANGED');
     try{manifest=structuredClone(validateRefreshedManifest(manifest,before.refreshed_manifest));}catch{return withheld('MANIFEST_CHANGED');}
     phase='GENERATION_FAILED';
@@ -50,7 +50,7 @@ export async function guardedGeneration<T>(options:GuardedGenerationOptions<T>):
     phase='AUTHORIZATION_UNAVAILABLE';
     if(await run(()=>options.authorize({phase:'release',manifest:structuredClone(manifest),adapterId:options.adapterId}))!==true)return withheld('AUTHORIZATION_DENIED');
     phase='RELEASE_UNAVAILABLE';
-    const after=await run(()=>options.client.revalidate(manifest.run_id,{signal}));
+    const after=await run(()=>options.client.revalidate(manifest.run_id,{signal,modelAdapterId:options.adapterId}));
     if(after?.status!=='valid')return withheld(after?.reason??'KNOWLEDGE_CHANGED');
     try{manifest=structuredClone(validateRefreshedManifest(manifest,after.refreshed_manifest));}catch{return withheld('MANIFEST_CHANGED');}
     if(signal.aborted)return withheld(timedOut?'TIMEOUT':'GENERATION_CANCELLED');

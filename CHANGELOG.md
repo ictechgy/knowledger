@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests are dropped. `LocalVectorIndex` provides the in-process development
   adapter; `PgVectorIndex` targets pgvector with an `index_version`-scoped
   schema and lazily loaded `pg` dependency.
+- Server-side model egress gate: `KnowledgerService`/`createApp` accept a
+  `modelEgress` policy (`policy_version` lands in the manifest's
+  `model_egress_policy_version`; `allows` is consulted whenever the caller
+  names a `model_adapter_id`). `resolve` withholds `EGRESS_POLICY_DENIED`
+  before issuing a manifest and `revalidate` re-checks the current policy
+  immediately before release, also comparing the policy, membership-epoch,
+  egress-version and retrieval-profile bindings server-side instead of
+  relying on client validation alone. `guardedGeneration` now forwards its
+  `adapterId` through `resolve` and both `revalidate` calls so the server
+  policy gate covers generate and release.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

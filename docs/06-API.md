@@ -41,8 +41,9 @@
 | `GET /agreements/{agreement_id}` | 상태·policy·결정·dependencies·effective eligibility |
 | `GET /events?cursor=...` | 허용된 channel의 변경 feed; opaque cursor |
 | `POST /search` | browse 후보 + projection checkpoint; 규범적 사용권 증명 아님 |
-| `POST /resolve` | fence에 결속된 normative 또는 historical packet |
-| `POST /runs/{run_id}/revalidate` | 현재 SSO·application entitlement·channel 정합성·private source 권한/상태·모델 egress·tool 권한 + 새 fence와 manifest 비교 |
+| `POST /vector-search` | 벡터 색인 후보 + 같은 checkpoint의 원장 eligibility 재검증; 색인은 자격 증명 아님 |
+| `POST /resolve` | fence에 결속된 normative 또는 historical packet; `model_adapter_id` 지정 시 현재 모델 egress 정책 확인 |
+| `POST /runs/{run_id}/revalidate` | 현재 SSO·application entitlement·channel 정합성·private source 권한/상태·모델 egress·tool 권한 + 새 fence와 manifest 비교; 정책·epoch·egress 결속 필드 불일치와 `EGRESS_POLICY_DENIED`는 withheld |
 
 Private vault endpoint는 조직별 origin과 권한 범위에서 제공한다. common API가 private source URI를 임의로 fetch하지 않는다. private source 연결은 allowlisted adapter만 사용하고 SSRF 방지·egress 권한을 적용한다.
 

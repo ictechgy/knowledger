@@ -82,6 +82,12 @@ function isLoopback(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
+const ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/u;
+function assertAdapterId(value: unknown): string {
+  if (typeof value !== 'string' || !ADAPTER_ID.test(value)) invalid();
+  return value;
+}
+
 function object(value: unknown): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();
   return value as Record<string, any>;
@@ -271,8 +277,10 @@ export class KnowledgerClient {
     }
   }
 
-  rawResolve(selection: ResolveSelection, options: { signal?: AbortSignal } = {}): Promise<RawResolveResponse> {
-    return this.request<RawResolveResponse>('/resolve', { method: 'POST', body: validateSelection(selection), signal: options.signal });
+  rawResolve(selection: ResolveSelection, options: { signal?: AbortSignal; modelAdapterId?: string } = {}): Promise<RawResolveResponse> {
+    const body: Record<string, unknown> = { ...validateSelection(selection) };
+    if (options.modelAdapterId !== undefined) body.model_adapter_id = assertAdapterId(options.modelAdapterId);
+    return this.request<RawResolveResponse>('/resolve', { method: 'POST', body, signal: options.signal });
   }
 
   async revision(digest: string, options: { signal?: AbortSignal } = {}): Promise<ReturnType<typeof validateRevision>> {
@@ -282,7 +290,7 @@ export class KnowledgerClient {
     try { return validateRevision(value); } catch { invalid(); }
   }
 
-  async resolve(selection: ResolveSelection, options: { allowDevelopment?: boolean; signal?: AbortSignal } = {}): Promise<RawResolveResponse | ValidatedResolveResponse> {
+  async resolve(selection: ResolveSelection, options: { allowDevelopment?: boolean; signal?: AbortSignal; modelAdapterId?: string } = {}): Promise<RawResolveResponse | ValidatedResolveResponse> {
     const started=performance.now();
     const normalized = validateSelection(selection);
     const raw = object(await this.rawResolve(normalized, options)) as RawResolveResponse;
@@ -304,9 +312,11 @@ export class KnowledgerClient {
     return { ...raw, status: 'provided', documents, manifest: manifestValue, revision: full };
   }
 
-  async revalidate(runId: string, options: { signal?: AbortSignal } = {}): Promise<any> {
+  async revalidate(runId: string, options: { signal?: AbortSignal; modelAdapterId?: string } = {}): Promise<any> {
     const started=performance.now();
-    const result = object(await this.request(`/runs/${encodeURIComponent(assertId(runId))}/revalidate`, { method: 'POST', body: { action: 'use-context' }, signal: options.signal }));
+    const body: Record<string, unknown> = { action: 'use-context' };
+    if (options.modelAdapterId !== undefined) body.model_adapter_id = assertAdapterId(options.modelAdapterId);
+    const result = object(await this.request(`/runs/${encodeURIComponent(assertId(runId))}/revalidate`, { method: 'POST', body, signal: options.signal }));
     if(result.status==='valid'){
       const manifest=object(result.refreshed_manifest);const reference=object(manifest.provided_revisions?.[0]);
       const selection=validateSelection({document_ids:['doc-manifest-validation'],context_id:manifest.context_id,scope_id:manifest.scope_id,usage_scope:manifest.usage_scope});
