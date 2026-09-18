@@ -150,7 +150,11 @@ class OfficialGatewayClient implements FabricGatewayClient {
         await this.assertAuthorized('endorse');
         // The SDK signs the proposal inside endorse(); the attestation install
         // and the signing call are serialised so nothing else on this
-        // connection can consume or replace the decision context.
+        // connection can consume or replace the decision context. Note the two
+        // vocabularies at this point: the authorisation phase is 'endorse'
+        // while the attestation records the signed artefact ('proposal'), so
+        // audit reconciliation should expect that pairing rather than equal
+        // phase names.
         const endorsed = await this.signed(this.attestation?.build(command, 'proposal', proposal.getTransactionId()), () => proposal.endorse());
         let submitted: OfficialCommit | undefined;
         return {

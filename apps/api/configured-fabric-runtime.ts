@@ -20,6 +20,15 @@ export function configuredOutboxFile(orgId: string, actorId: string): string {
   return `outbox-${digest}.sqlite`;
 }
 
+/** Runs every cleanup even when earlier ones fail; surfaces the first error. */
+function closeAll(cleanups: ReadonlyArray<() => void>): void {
+  const errors: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try { cleanup(); } catch (error) { errors.push(error); }
+  }
+  if (errors.length > 0) throw errors[0];
+}
+
 function configuredIdentity(configuration: ProjectConfiguration, reference: FabricIdentityConfiguration): Actor {
   const identity = configuration.genesis.identities.find((candidate) => candidate.org_id === reference.org_id && candidate.actor_id === reference.actor_id);
   if (!identity) throw new Error("Fabric identity is not registered in genesis");
@@ -96,9 +105,9 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         const opened = { client, gateway, outbox, rpc };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); opened.rpc.close(); releaseAttestationSerializer(qsccContext); } });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => opened.rpc.close(), () => releaseAttestationSerializer(qsccContext)]); } });
         qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
-      } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
+      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch { /* the original startup failure wins */ } throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
     // qscc reads are attested under the first configured binding's actor;
@@ -124,8 +133,10 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
     const personas = configuration.genesis.identities.filter((identity) => identity.kind === "human" && identity.org_id === options.organization).map((identity) => ({ ...identity, label: labels.get(`${identity.org_id}|${identity.actor_id}`) ?? identity.actor_id }));
     return { ledger, personas };
   } catch (error) {
-    for (const route of routes) await route.close?.();
-    projection?.close();
+    for (const route of routes) {
+      try { await route.close?.(); } catch { /* keep closing sibling routes */ }
+    }
+    try { projection?.close(); } catch { /* the original startup failure wins */ }
     throw error;
   }
 }

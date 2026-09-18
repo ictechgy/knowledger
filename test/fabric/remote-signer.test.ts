@@ -634,6 +634,12 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     const dangling = join(directory, "audit-dangling.jsonl");
     symlinkSync(join(directory, "missing-target"), dangling);
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign5.sock"), keys, auditLogPath: dangling }), /collides|regular file|ELOOP|symlink/i);
+    // A well-formed file that is hard-linked to an unrelated name still has
+    // nlink > 1: appends would corrupt whatever the other link points at.
+    const aliased = join(directory, "audit-aliased.jsonl");
+    fs.writeFileSync(aliased, "", { mode: 0o600 });
+    linkSync(aliased, join(directory, "audit-alias-other.jsonl"));
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign6.sock"), keys, auditLogPath: aliased }), /single link|collides|regular file/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -732,7 +738,7 @@ test("remote signer rejects a receipt attached to an unattested response and rep
     try {
       const attestation = devAttestation();
       const digest = Buffer.alloc(32, 15);
-      const signer = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation, onAttestationReceipt: (receipt, evidence) => receipts.push({ receipt, evidence }) });
+      const signer = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation, onAttestationReceipt: (receipt, evidence) => { receipts.push({ receipt, evidence }); } });
       await signer(digest);
       assert.equal(receipts.length, 1);
       assert.deepEqual(receipts[0]?.evidence, attestationPayload("person-sales-owner", attestation, digest, identity.certificate));

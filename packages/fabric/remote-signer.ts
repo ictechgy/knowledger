@@ -407,7 +407,7 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
             if (attestation !== undefined && response.attestationSignature !== undefined && options.onAttestationReceipt !== undefined) {
               try {
                 const returned = options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate)) as unknown;
-                if (returned !== null && typeof (returned as { then?: unknown }).then === "function") {
+                if (returned !== undefined && returned !== null && typeof (returned as { then?: unknown }).then === "function") {
                   throw new RemoteSignerError("invalid_request", "The attestation receipt hook must be synchronous");
                 }
               } catch (error) {
