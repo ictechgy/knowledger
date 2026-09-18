@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-**v0.1 development alpha · MIT · Node.js 24+**
+**v0.2 development alpha · MIT · Node.js 24+**
 
 Each organization keeps its own knowledge and secrets while agreeing on the interpretations used for shared work. Shared knowledge documents — including body, revisions, proposals, and agreement history — are stored on a permissioned distributed ledger, and the KB/LLM wiki and RAG serve views derived from that canonical record.
 
@@ -89,6 +89,9 @@ flowchart LR
 | `schemas`, `examples`, `docs` | Contracts, fictional data, design/operations guides |
 
 ## Project status
+
+Implemented scope and planned extensions are tracked in the [roadmap](ROADMAP.md);
+release changes are recorded in the [changelog](CHANGELOG.md).
 
 API and UI are a runnable early alpha. Policies and org composition are fixed in the project configuration genesis. [Fabric web test mode](docs/12-FABRIC-WEB.md) connects to a real ledger with persistent projection; [development login](docs/13-DEVELOPMENT-LOGIN.md) verifies OIDC accounts, a separate signing service, and permission revocation. [Markdown import](docs/14-MARKDOWN-IMPORT.md) lets you review local KB documents starting from private drafts. Real corporate SSO/KMS, per-organization operations, per-model-provider transports, and vector search indexes are separate deployment/extension scope. Actual run evidence is separated in the [validation record](docs/VALIDATION.md).
 

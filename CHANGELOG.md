@@ -1,0 +1,53 @@
+# Changelog
+
+All notable changes to Knowledger are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.0] — 2026-09-18
+
+### Added
+
+- Operational status dashboard for verified ledger state and outbox
+  observation (`e69a228`).
+- Performance baseline tooling: JSON baseline comparison, explicit regression
+  thresholds, multi-query and cold/warm search measurements, and a synthetic
+  Fabric-adapter workload with journal identity digests (PR #3, PR #4).
+- `tools/performance-compare.ts` shared comparison module with schema,
+  environment, dataset, and metric validation plus output-path collision
+  protection for baselines.
+- CI coverage for the Fabric comparison path in the `fabric-boundaries` job.
+
+### Changed
+
+- Large read path optimised with `readMany`, request-level caching, and
+  prefetching (PR #1).
+- Browse and search are paginated; block ingest no longer degrades
+  quadratically — validated against a 100,000-document ledger (PR #2).
+
+### Fixed
+
+- Detect and reconnect peer connections silently dropped by gRPC keepalive
+  (`26e75a8`).
+- Bound stalled ledger refreshes so readiness recovers instead of hanging
+  permanently (`f189e80`).
+
+## [0.1.0] — 2026-09-16
+
+First public development alpha.
+
+- Knowledge agreement ledger on Hyperledger Fabric foundations: immutable
+  shared revisions, slot-bound approvals tied to proposal, revision digest,
+  policy version, membership epoch, and role-binding version.
+- Deterministic local simulation adapter sharing the same domain rules as the
+  Fabric adapter.
+- Browser UI, Markdown KB source connector, development login, and private
+  drafting workflow.
+- Example order-workflow fixture (sales/fulfillment/settlement remain optional
+  example content, not product defaults).
+- Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
+  runtime snapshot restore.
+
+[0.2.0]: https://github.com/ictechgy/knowledger/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/ictechgy/knowledger/releases/tag/v0.1.0

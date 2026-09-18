@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-**v0.1 개발 알파 · MIT · Node.js 24+**
+**v0.2 개발 알파 · MIT · Node.js 24+**
 
 각 조직이 자신의 지식과 기밀을 보유하면서, 공동 업무에 사용할 해석을 합의한다. 공유된 지식 문서는 **본문·개정·제안·합의 이력까지** 허가형 분산원장에 보관하고, KB/LLM 위키와 RAG는 이 정본에서 만든 조회·검색 화면으로 제공한다.
 
@@ -89,6 +89,8 @@ flowchart LR
 | `schemas`, `examples`, `docs` | 계약, 가상 데이터, 설계·운영 가이드 |
 
 ## 프로젝트 상태
+
+구현된 범위와 확장 계획은 [로드맵](ROADMAP.md), 릴리스별 변경은 [변경 이력](CHANGELOG.md)에서 확인한다.
 
 API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로젝트 설정의 genesis에서 고정한다. [Fabric 웹 테스트 모드](docs/12-FABRIC-WEB.md)는 실제 원장과 영속 projection에 연결되며, [개발용 로그인](docs/13-DEVELOPMENT-LOGIN.md)은 OIDC 계정·별도 서명 서비스·권한 회수를 검증한다. [Markdown 가져오기](docs/14-MARKDOWN-IMPORT.md)로 로컬 KB 문서를 비공개 초안부터 검토할 수 있다. 실제 회사 SSO/KMS·조직별 운영, 모델 공급자별 transport와 벡터 검색 인덱스는 별도 배포·확장 범위다. [검증 기록](docs/VALIDATION.md)에 실제 실행 근거를 구분했다.
 
