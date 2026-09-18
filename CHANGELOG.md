@@ -54,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a torn write cannot merge records — and an attested request holds its
   concurrency slot until both the digest and evidence signatures settle.
 
+### Changed
+
+- Startup-breaking signing policy: organisation-bound keys now refuse to start
+  without `--audit-log`, non-EC private keys and certificates whose
+  `actor_kind` is outside `allowed_actor_kinds` fail at load rather than at
+  first request, and a pre-existing audit file with an unterminated tail is
+  refused at startup. An attestation builder returning `undefined` or claims
+  that mismatch the signed operation now fails the call locally instead of
+  letting the operation proceed unattested, and a partially written audit
+  record marks the log torn so later signing fails closed until the file is
+  repaired.
+
 ## [0.2.0] — 2026-09-18
 
 ### Added

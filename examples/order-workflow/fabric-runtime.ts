@@ -24,7 +24,7 @@ function closeAll(cleanups: ReadonlyArray<() => void>): void {
 
 export interface FabricTestRuntimeOptions {
   organization?: DevelopmentOrganization;
-  /** Remote signer factory; the attestation slot is required because development keys all demand attested signing. */
+  /** Remote signer factory; the attestation slot is required because development keys all demand attested signing. Omitting it falls back to raw in-process key signing for the unauthenticated fixture only — that path consumes no attestation slot and produces no service-side evidence. */
   signerProvider?: (actor: Actor, certificate: Uint8Array, attestation: SigningAttestationContext) => (digest: Uint8Array) => Promise<Uint8Array>;
   authorizeActor?: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
 }
@@ -87,8 +87,8 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
         // Claim the qscc serializer before publishing the route so a failed
         // claim cannot leave a route closed twice by nested catch handlers.
         qsccSigned = createAttestationSerializer(qsccContext);
-        const opened = { client, gateway, outbox };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext, qsccSigned)]); } });
+        const opened = { client, gateway, outbox, qsccSigned };
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext, opened.qsccSigned)]); } });
         qsccGateways.push({ actor, gateway, signed: qsccSigned });
       } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close(), () => { if (qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, qsccSigned); }]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }

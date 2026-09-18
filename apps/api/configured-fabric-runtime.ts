@@ -105,8 +105,8 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
         // Claim the qscc serializer before publishing the route so a failed
         // claim cannot leave a route closed twice by nested catch handlers.
         qsccSigned = createAttestationSerializer(qsccContext);
-        const opened = { client, gateway, outbox, rpc };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => opened.rpc.close(), () => releaseAttestationSerializer(qsccContext, qsccSigned)]); } });
+        const opened = { client, gateway, outbox, rpc, qsccSigned };
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => opened.rpc.close(), () => releaseAttestationSerializer(qsccContext, opened.qsccSigned)]); } });
         qsccGateways.push({ actor, gateway, signed: qsccSigned });
       } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close(), () => { if (qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, qsccSigned); }]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }

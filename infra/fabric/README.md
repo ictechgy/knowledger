@@ -147,8 +147,12 @@ path — including hard links — and a non-regular target is refused before
 open; a pre-existing file must be a regular file with mode 600 and a single
 link whose last record is newline-terminated (an unterminated tail is
 refused rather than repaired, so a torn write cannot merge the next record
-into an unparseable line), and a fresh path is created exclusively so a
-raced-in file fails the open rather than being adopted. The file is opened once with no-follow
+into an unparseable line — recovery is an explicit operator step: truncate
+the partial tail before restart), and a fresh path is created exclusively so a
+raced-in file fails the open rather than being adopted. A record write that
+fails partway through marks the log torn at runtime too: every later record
+then fails instead of merging, so signing fails closed until the operator
+repairs the file and restarts the service. The file is opened once with no-follow
 semantics, validated by descriptor,
 appended with a single write call per record, flushed before the response is
 acknowledged and closed with the service. Record timestamps are service-asserted
