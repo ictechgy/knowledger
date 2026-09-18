@@ -1,5 +1,5 @@
 import { OidcAuthentication } from '../../packages/auth/oidc.ts';
-import { createRemoteSigner } from '../../packages/fabric/remote-signer.ts';
+import { attestationSlot, createRemoteSigner } from '../../packages/fabric/remote-signer.ts';
 import { DEVELOPMENT_SIGNING_KEY_IDS } from './signing-service.ts';
 import { createFabricTestRuntime } from './fabric-runtime.ts';
 import { PERSONAS, actorIdentity } from './config.ts';
@@ -27,7 +27,7 @@ export async function createDevelopmentAuthRuntime(options: { dataDir: string; o
       signerProvider: (actor, certificate, attestation) => {
         const keyId = DEVELOPMENT_SIGNING_KEY_IDS.find(id => id === actor.actor_id);
         if (!keyId) throw new Error('No development signing key is bound to this actor');
-        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate, attestation: () => attestation?.current });
+        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate, attestation: attestation === undefined ? undefined : attestationSlot(attestation) });
       },
       authorizeActor: actor => authentication.assertCurrentActor(actor),
     });

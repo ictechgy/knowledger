@@ -1,11 +1,11 @@
 import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { jcsBytes, parseStrictJson } from "../../packages/fabric/canonical.ts";
-import { assertSigningAttestation, type SigningAttestation } from "../../packages/fabric/remote-signer.ts";
+import { parseStrictJson } from "../../packages/fabric/canonical.ts";
+import { assertSigningAttestation, attestationPayloadDigest, type Attestation } from "../../packages/fabric/remote-signer.ts";
 
 const MAX_FRAME_BYTES = 32 * 1024;
 const MAX_CERTIFICATE_BYTES = 16 * 1024;
@@ -35,16 +35,19 @@ interface LoadedKey {
   actor_id?: string;
   actor_kind?: "human" | "agent";
   allowed_actor_kinds: readonly ("human" | "agent")[];
+  require_attestation: boolean;
 }
 
 export interface SigningKeyReference {
   key_id: string;
   certificate_path: string;
   private_key_path: string;
-  /** When configured, attested signing must declare this organisation. */
+  /** Organisation the key attests for; required before any attested signing is accepted. */
   org_id?: string;
   /** Actor kinds permitted for attested signing; defaults to human-only. */
   allowed_actor_kinds?: readonly ("human" | "agent")[];
+  /** When true, requests without an attestation are rejected. Requires org_id. */
+  require_attestation?: boolean;
 }
 
 interface SignRequest {
@@ -52,7 +55,7 @@ interface SignRequest {
   key_id: string;
   digest: string;
   certificate: string;
-  attestation?: SigningAttestation;
+  attestation?: Attestation;
 }
 
 interface SignResponse {
@@ -128,11 +131,13 @@ function assertKeyReferences(value: readonly SigningKeyReference[]): readonly Si
     const kinds = entry.allowed_actor_kinds ?? ["human"];
     if (entry.org_id !== undefined && (typeof entry.org_id !== "string" || entry.org_id.length === 0 || entry.org_id.length > 128)
       || !Array.isArray(kinds) || kinds.length === 0 || kinds.length > 2 || new Set(kinds).size !== kinds.length
-      || kinds.some(kind => kind !== "human" && kind !== "agent")) {
-      throw new TypeError("Signing key references must contain a bounded organisation and actor-kind allowlist");
+      || kinds.some(kind => kind !== "human" && kind !== "agent")
+      || (entry.require_attestation !== undefined && typeof entry.require_attestation !== "boolean")
+      || (entry.require_attestation === true && entry.org_id === undefined)) {
+      throw new TypeError("Signing key references must contain a bounded organisation and actor-kind allowlist; required attestation needs an organisation binding");
     }
     ids.add(entry.key_id);
-    return { key_id: entry.key_id, certificate_path: entry.certificate_path, private_key_path: entry.private_key_path, ...(entry.org_id === undefined ? {} : { org_id: entry.org_id }), allowed_actor_kinds: Object.freeze([...kinds]) };
+    return { key_id: entry.key_id, certificate_path: entry.certificate_path, private_key_path: entry.private_key_path, ...(entry.org_id === undefined ? {} : { org_id: entry.org_id }), allowed_actor_kinds: Object.freeze([...kinds]), require_attestation: entry.require_attestation === true };
   }));
 }
 
@@ -162,7 +167,13 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       const privateKey = createPrivateKey(readFileSync(reference.private_key_path));
       if (!x509.checkPrivateKey(privateKey)) throw new Error("certificate and key do not match");
       const actor = certificateActor(certificate);
-      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: reference.allowed_actor_kinds ?? Object.freeze(["human"]) });
+      // A key that serves attested requests must be able to bind its actor
+      // attributes; failing here distinguishes misconfiguration from a rejected
+      // attestation at request time.
+      if ((reference.org_id !== undefined || reference.require_attestation === true) && (actor.actor_id === undefined || actor.actor_kind === undefined)) {
+        throw new Error("certificate is missing the actor attributes required for attested signing");
+      }
+      loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: reference.allowed_actor_kinds ?? Object.freeze(["human"]), require_attestation: reference.require_attestation === true });
     } catch { throw new Error("Configured signing identity is invalid"); }
   }
   return loaded;
@@ -183,17 +194,6 @@ function pathAlreadyExists(path: string): boolean {
 
 interface AttestationAudit {
   (record: Record<string, unknown>): void;
-}
-
-function attestationPayloadDigest(keyId: string, attestation: SigningAttestation, digest: Buffer, certificate: Buffer): Buffer {
-  return createHash("sha256").update(jcsBytes({
-    record_type: "signing_attestation",
-    version: 1,
-    key_id: keyId,
-    attestation,
-    digest: digest.toString("base64url"),
-    certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
-  })).digest();
 }
 
 async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire: () => boolean, release: () => void, audit?: AttestationAudit): Promise<void> {
@@ -224,31 +224,42 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) { response(socket, { ok: false, error: "rejected" }); return; }
+        const digest = base64(request.digest, 32);
         const attestation = request.attestation;
-        if (attestation !== undefined
-          && (key.actor_id !== attestation.actor_id || key.actor_kind !== attestation.actor_kind
-            || (key.org_id !== undefined && key.org_id !== attestation.org_id)
-            || !key.allowed_actor_kinds.includes(attestation.actor_kind))) {
+        // Attested signing always requires a configured organisation binding;
+        // otherwise a caller could have any claimed organisation signed into
+        // the evidence record.
+        const attestationRejected = attestation === undefined
+          ? key.require_attestation
+          : key.org_id === undefined
+            || key.actor_id !== attestation.actor_id || key.actor_kind !== attestation.actor_kind
+            || key.org_id !== attestation.org_id
+            || !key.allowed_actor_kinds.includes(attestation.actor_kind);
+        if (attestationRejected) {
+          audit?.({ record_type: "signing_rejected", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex") });
           response(socket, { ok: false, error: "rejected" }); return;
         }
-        const digest = base64(request.digest, 32);
-        const signature = await signWithTimeout(key.sign, digest);
+        // The Fabric digest and the attestation evidence are signed
+        // independently; issuing them together keeps latency at one round.
+        const [signature, attested] = await Promise.all([
+          signWithTimeout(key.sign, digest),
+          attestation === undefined ? Promise.resolve(undefined) : signWithTimeout(key.sign, attestationPayloadDigest(request.key_id, attestation, digest, certificate)),
+        ]);
         if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(signature instanceof Uint8Array) || signature.byteLength === 0 || signature.byteLength > MAX_SIGNATURE_BYTES) {
           response(socket, { ok: false, error: "rejected" }); return;
         }
         let attestationSignature: Buffer | undefined;
         if (attestation !== undefined) {
-          const attested = await signWithTimeout(key.sign, attestationPayloadDigest(request.key_id, attestation, digest, certificate));
-          if (Date.now() < key.validFrom || Date.now() >= key.validTo || !(attested instanceof Uint8Array) || attested.byteLength === 0 || attested.byteLength > MAX_SIGNATURE_BYTES) {
+          if (!(attested instanceof Uint8Array) || attested.byteLength === 0 || attested.byteLength > MAX_SIGNATURE_BYTES) {
             response(socket, { ok: false, error: "rejected" }); return;
           }
           attestationSignature = Buffer.from(attested);
-          audit?.({
-            record_type: "signing_attestation", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id,
-            attestation, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
-            signature: Buffer.from(signature).toString("base64url"), attestation_signature: attestationSignature.toString("base64url"),
-          });
         }
+        audit?.({
+          record_type: attestation === undefined ? "signing" : "signing_attestation", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id,
+          attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+          signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }),
+        });
         response(socket, { ok: true, signature: Buffer.from(signature).toString("base64url"), ...(attestationSignature === undefined ? {} : { attestation_signature: attestationSignature.toString("base64url") }) });
       } catch {
         response(socket, { ok: false, error: "rejected" });
@@ -272,19 +283,28 @@ async function signWithTimeout(sign: (digest: Uint8Array) => Promise<Uint8Array>
 
 const MAX_AUDIT_PATH_BYTES = 1024;
 
-function openAuditLog(path: string): AttestationAudit {
+interface AuditLog {
+  audit: AttestationAudit;
+  close(): void;
+}
+
+function openAuditLog(path: string): AuditLog {
   if (typeof path !== "string" || path.length === 0 || !isAbsolute(path) || path.includes("\u0000") || Buffer.byteLength(path) > MAX_AUDIT_PATH_BYTES) throw new TypeError("A valid audit log path is required");
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing audit log parent directory must be mode 700");
+  // Open once and keep the descriptor: re-opening per record would let a
+  // symlink or inode replacement slip between validation and append.
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
   try {
-    const stat = lstatSync(path);
+    const stat = fstatSync(fd);
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Signing audit log must be a regular file with mode 600");
   } catch (error) {
-    if ((error as { code?: string }).code !== "ENOENT") throw error;
+    closeSync(fd);
+    throw error;
   }
-  return record => appendFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  return { audit: record => writeSync(fd, `${JSON.stringify(record)}\n`), close: () => closeSync(fd) };
 }
 
 export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[]; auditLogPath?: string }): Promise<SigningService> {
@@ -295,7 +315,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
-  const audit = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath);
+  const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath);
   const keys = loadKeys(assertKeyReferences(options.keys));
   let active = 0;
   const connections = new Set<Socket>();
@@ -310,7 +330,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
       if (active >= MAX_CONCURRENCY) return false;
       active += 1;
       return true;
-    }, () => { active -= 1; }, audit);
+    }, () => { active -= 1; }, auditLog?.audit);
   });
   server.maxConnections = MAX_CONNECTIONS;
   let owned = false;
@@ -342,6 +362,7 @@ export async function startSigningService(options: { socketPath: string; keys: r
       closed = true;
       for (const connection of connections) connection.destroy();
       await new Promise<void>(resolveClosed => server.close(() => resolveClosed()));
+      auditLog?.close();
       if (owned) {
         try {
           const stat = lstatSync(socketPath);

@@ -4,9 +4,9 @@ import { isAbsolute, join } from "node:path";
 import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
-import { createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
+import { attestationSlot, createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
 import type { SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
-import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions } from "../../packages/fabric/gateway.ts";
+import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
 import { FabricApplicationLedger } from "../../packages/fabric/application-ledger.ts";
 import type { SqliteFabricProjection } from "../../packages/fabric/sqlite-projection.ts";
@@ -70,6 +70,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
   const { common } = require("@hyperledger/fabric-protos") as { common: { BlockchainInfo: { deserializeBinary(bytes: Uint8Array): { getHeight(): number; getCurrentblockhash_asU8(): Uint8Array } } } };
   const routes: FabricSigningRoute[] = [];
   const gateways: Array<{ close(): void; getNetwork(channelId: string): { getContract(name: string): { evaluateTransaction(name: string, ...args: string[]): Promise<Uint8Array> } } }> = [];
+  const attestationBindings: Array<{ actor: Actor; context: SigningAttestationContext }> = [];
   let projection: SqliteFabricProjection | undefined;
   try {
     for (const reference of references) {
@@ -78,7 +79,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       assertIdentityAttributes(certificate, actor, configuration.ledger.channel_id);
       const tlsCertificate = readFileSync(reference.tls_ca_path);
       const attestationContext: SigningAttestationContext = {};
-      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: () => attestationContext.current });
+      const signer = createRemoteSigner({ socketPath: reference.signer_socket_path, keyId: reference.key_id, certificate, attestation: attestationSlot(attestationContext) });
       const rpc = new grpc.Client(reference.peer_endpoint, grpc.credentials.createSsl(tlsCertificate), {
         "grpc.ssl_target_name_override": reference.peer_host_alias,
         "grpc.default_authority": reference.peer_host_alias,
@@ -88,23 +89,31 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       let gateway: ReturnType<typeof sdk.connect> | undefined;
       let outbox: SqliteOutbox | undefined;
       try {
-        client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase), attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId) } });
+        client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase), attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         const opened = { client, gateway, outbox, rpc };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); opened.rpc.close(); } });
         gateways.push(gateway);
+        attestationBindings.push({ actor, context: attestationContext });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
     const qscc = gateways[0].getNetwork(configuration.ledger.channel_id).getContract("qscc");
+    const qsccBinding = attestationBindings[0];
     const ledger = new FabricApplicationLedger({ mode: 'fabric', projection, routes, source: {
       async getTip() {
+        // The qscc gateway shares the actor's signing route, so its evaluate
+        // calls attest as read-only organisational signing.
+        if (qsccBinding) qsccBinding.context.current = queryAttestation(qsccBinding.actor);
         const bytes = await qscc.evaluateTransaction("GetChainInfo", configuration.ledger.channel_id);
         const info = common.BlockchainInfo.deserializeBinary(bytes);
         return { height: info.getHeight(), block_hash: Buffer.from(info.getCurrentblockhash_asU8()).toString("hex") };
       },
-      getBlock: number => qscc.evaluateTransaction("GetBlockByNumber", configuration.ledger.channel_id, String(number)),
+      getBlock: number => {
+        if (qsccBinding) qsccBinding.context.current = queryAttestation(qsccBinding.actor);
+        return qscc.evaluateTransaction("GetBlockByNumber", configuration.ledger.channel_id, String(number));
+      },
     } });
     await ledger.recoverPending();
     const labels = new Map(configuration.identities.map((identity) => [`${identity.org_id}|${identity.actor_id}`, identity.label]));

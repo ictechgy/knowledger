@@ -111,15 +111,23 @@ application. Clients connect with `createRemoteSigner` from
 `packages/fabric/remote-signer.ts` and send `{ operation: "sign", key_id,
 digest, certificate }`. A request may also carry an `attestation` object binding
 `org_id`, `actor_id`, `actor_kind`, `command_id`, `command_type`, `command_digest`,
-`phase` and optional `tx_id`. When present, the service verifies the actor
-against the certificate's `kcl.actor_*` attributes and the key's configured
-`org_id` before signing; key references may set `allowed_actor_kinds` (default
-`["human"]`) so agent identities cannot obtain attested signatures. Each attested
-signature produces an `attestation_signature` receipt over the canonical
-decision payload and, with `--audit-log ABSOLUTE_PATH`, a JSONL audit record the
-organisation retains as its testimony. The gateway client refreshes the shared
-attestation context before the proposal and submit signing calls, so the
-receipt binds the exact command decision and transaction ID.
+`phase` and optional `tx_id`; read-only signing carries the shorter
+`phase: "query"` form without a command binding. When present, the service
+verifies the actor against the certificate's `kcl.actor_*` attributes and the
+key's configured `org_id` before signing; key references may set
+`allowed_actor_kinds` (default `["human"]`) so agent identities cannot obtain
+attested signatures. `require_attestation: true` refuses unattested requests and
+requires an `org_id` binding, so no client-claimed organisation is ever signed
+into evidence; the development keys in `examples/order-workflow` enable it.
+Each attested signature produces an `attestation_signature` receipt over the
+canonical decision payload — the signer verifies it cryptographically and
+rejects missing or forged receipts — and, with `--audit-log ABSOLUTE_PATH`, a
+JSONL audit record the organisation retains as its testimony. The audit file is
+opened once with no-follow semantics, validated by descriptor, and closed with
+the service. The gateway client refreshes the shared attestation context
+immediately before the SDK's endorse, submit, status and evaluate signing
+calls, and the remote signer consumes the slot once per request, so the receipt
+binds the exact command decision and transaction ID without stale reuse.
 
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.

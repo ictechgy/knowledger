@@ -15,7 +15,7 @@ import { createFabricTestRuntime } from '../examples/order-workflow/fabric-runti
 import { createDevelopmentAuthRuntime } from '../examples/order-workflow/auth-runtime.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/storage/runtime-snapshot.ts';
 import { PERSONAS, actorIdentity } from '../examples/order-workflow/config.ts';
-import { createRemoteSigner } from '../packages/fabric/remote-signer.ts';
+import { attestationSlot, createRemoteSigner } from '../packages/fabric/remote-signer.ts';
 import { DEVELOPMENT_SIGNING_KEY_IDS } from '../examples/order-workflow/signing-service.ts';
 import { OidcTestBrowser } from './oidc-test-browser.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -61,7 +61,7 @@ try {
   const runtime = await createFabricTestRuntime(dataDir, {
     signerProvider: (actor, certificate, attestation) => {
       const keyId = DEVELOPMENT_SIGNING_KEY_IDS.find(id => id === actor.actor_id); assert.ok(keyId);
-      return createRemoteSigner({ socketPath, keyId, certificate, attestation: () => attestation?.current });
+      return createRemoteSigner({ socketPath, keyId, certificate, attestation: attestation === undefined ? undefined : attestationSlot(attestation) });
     },
     authorizeActor: async (actor, phase) => {
       if (phase === 'submit' && pauseNextSubmit) { pauseNextSubmit = false; submissionReached?.(); await submissionGate; }

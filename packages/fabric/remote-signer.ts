@@ -1,6 +1,14 @@
 import { connect as connectSocket } from "node:net";
 import { isAbsolute } from "node:path";
-import { parseStrictJson } from "./canonical.ts";
+import { createHash, X509Certificate } from "node:crypto";
+import { createRequire } from "node:module";
+import { jcsBytes, parseStrictJson } from "./canonical.ts";
+
+const requireFabric = createRequire(new URL("./package.json", import.meta.url));
+
+interface EcCurve {
+  verify(signature: Uint8Array, digest: Uint8Array, publicKey: Uint8Array, options: { format: "der"; prehash: false }): boolean;
+}
 
 const MAX_FRAME_BYTES = 32 * 1024;
 const MAX_CERTIFICATE_BYTES = 16 * 1024;
@@ -22,9 +30,19 @@ export interface SigningAttestation {
   tx_id?: string;
 }
 
+/** Organisational attestation for read-only signing (evaluate/status); carries no command binding. */
+export interface QueryAttestation {
+  org_id: string;
+  actor_id: string;
+  actor_kind: "human" | "agent";
+  phase: "query";
+}
+
+export type Attestation = SigningAttestation | QueryAttestation;
+
 /** Mutable per-connection slot the gateway client fills before each signing call. */
 export interface SigningAttestationContext {
-  current?: SigningAttestation;
+  current?: Attestation;
 }
 
 const MAX_ATTESTATION_FIELD_CHARS = 128;
@@ -37,10 +55,20 @@ function attestationField(value: unknown, name: string): string {
   return value;
 }
 
-export function assertSigningAttestation(value: unknown): SigningAttestation {
+export function assertSigningAttestation(value: unknown): Attestation {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Signing attestation must be an object");
   const attestation = value as Partial<SigningAttestation>;
   const keys = Object.keys(value);
+  if ((attestation as { phase?: unknown }).phase === "query") {
+    const required = ["org_id", "actor_id", "actor_kind", "phase"];
+    if (!required.every(key => keys.includes(key)) || keys.length !== required.length) {
+      throw new TypeError("Signing attestation has missing or unknown fields");
+    }
+    const orgId = attestationField(attestation.org_id, "org_id");
+    const actorId = attestationField(attestation.actor_id, "actor_id");
+    if (attestation.actor_kind !== "human" && attestation.actor_kind !== "agent") throw new TypeError("Signing attestation actor_kind is outside the supported bounds");
+    return { org_id: orgId, actor_id: actorId, actor_kind: attestation.actor_kind, phase: "query" };
+  }
   const required = ["org_id", "actor_id", "actor_kind", "command_id", "command_type", "command_digest", "phase"];
   if (!required.every(key => keys.includes(key)) || !keys.every(key => required.includes(key) || key === "tx_id")) {
     throw new TypeError("Signing attestation has missing or unknown fields");
@@ -83,7 +111,7 @@ export interface RemoteSignerOptions {
   certificate: Uint8Array;
   timeoutMs?: number;
   /** Per-request decision context; called before every signing frame is sent. */
-  attestation?: () => SigningAttestation | undefined;
+  attestation?: () => Attestation | undefined;
 }
 
 interface SignRequest {
@@ -91,13 +119,7 @@ interface SignRequest {
   key_id: SigningKeyId;
   digest: string;
   certificate: string;
-  attestation?: SigningAttestation;
-}
-
-interface SignResponse {
-  ok: true;
-  signature: string;
-  attestation_signature?: string;
+  attestation?: Attestation;
 }
 
 interface ErrorResponse {
@@ -151,7 +173,12 @@ function ownKeys(value: object): string[] {
   return Object.keys(value);
 }
 
-function decodeResponse(body: Buffer): Buffer {
+interface DecodedResponse {
+  signature: Buffer;
+  attestationSignature?: Buffer;
+}
+
+function decodeResponse(body: Buffer): DecodedResponse {
   let parsed: unknown;
   try {
     parsed = parseStrictJson(body);
@@ -161,8 +188,11 @@ function decodeResponse(body: Buffer): Buffer {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new RemoteSignerError("protocol_error");
   const response = parsed as { ok?: unknown; signature?: unknown; error?: unknown };
   if (response.ok === true && (ownKeys(parsed).length === 2 || (ownKeys(parsed).length === 3 && ownKeys(parsed).includes("attestation_signature"))) && ownKeys(parsed).includes("signature")) {
-    if ("attestation_signature" in parsed) decodeBase64Url((parsed as { attestation_signature?: unknown }).attestation_signature, undefined, 4 * 1024);
-    return decodeBase64Url(response.signature, undefined, 4 * 1024);
+    const signature = decodeBase64Url(response.signature, undefined, 4 * 1024);
+    const attestationSignature = "attestation_signature" in parsed
+      ? decodeBase64Url((parsed as { attestation_signature?: unknown }).attestation_signature, undefined, 4 * 1024)
+      : undefined;
+    return { signature, ...(attestationSignature === undefined ? {} : { attestationSignature }) };
   }
   if (response.ok === false && ownKeys(parsed).length === 2 && ownKeys(parsed).includes("error")) {
     const code = response.error;
@@ -172,6 +202,49 @@ function decodeResponse(body: Buffer): Buffer {
     throw new RemoteSignerError("protocol_error");
   }
   throw new RemoteSignerError("protocol_error");
+}
+
+/** Canonical payload the organisation key signs as evidence of an attested request. */
+export function attestationPayloadDigest(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Buffer {
+  return createHash("sha256").update(jcsBytes({
+    record_type: "signing_attestation",
+    version: 1,
+    key_id: keyId,
+    attestation,
+    digest: Buffer.from(digest).toString("base64url"),
+    certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
+  })).digest();
+}
+
+function verifyAttestationReceipt(certificate: Buffer, keyId: string, attestation: Attestation, digest: Uint8Array, receipt: Buffer): boolean {
+  try {
+    const publicKey = new X509Certificate(certificate).publicKey;
+    if (publicKey.asymmetricKeyType !== "ec") return false;
+    const jwk = publicKey.export({ format: "jwk" }) as { crv?: string; x?: string; y?: string };
+    if (typeof jwk.x !== "string" || typeof jwk.y !== "string") return false;
+    const { p256, p384 } = requireFabric("@noble/curves/nist.js") as { p256: EcCurve; p384: EcCurve };
+    const curve = jwk.crv === "P-256" ? p256 : jwk.crv === "P-384" ? p384 : undefined;
+    if (curve === undefined) return false;
+    // The organisation key signs the payload digest as a raw ECDSA digest — the
+    // same convention Fabric signing uses — so verification must not hash again.
+    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, "base64url"), Buffer.from(jwk.y, "base64url")]);
+    return curve.verify(receipt, attestationPayloadDigest(keyId, attestation, digest, certificate), point, { format: "der", prehash: false });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Signer attestation callback that consumes the shared slot: every signing
+ * request takes the freshest attestation exactly once, so a stale decision can
+ * never be attached to an unrelated signing operation.
+ */
+export function attestationSlot(context: SigningAttestationContext): () => Attestation | undefined {
+  return () => {
+    const attestation = context.current;
+    context.current = undefined;
+    return attestation;
+  };
 }
 
 /**
@@ -192,7 +265,7 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
     if (!(digest instanceof Uint8Array) || digest.byteLength !== 32) {
       return Promise.reject(new RemoteSignerError("invalid_request", "A 32-byte digest is required"));
     }
-    let attestation: SigningAttestation | undefined;
+    let attestation: Attestation | undefined;
     try {
       const supplied = options.attestation?.();
       attestation = supplied === undefined ? undefined : assertSigningAttestation(supplied);
@@ -211,7 +284,7 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
       let received = Buffer.alloc(0);
       let settled = false;
       let expectedLength: number | undefined;
-      let decodedSignature: Buffer | undefined;
+      let decoded: DecodedResponse | undefined;
       let timer: ReturnType<typeof setTimeout>;
       const fail = (error: RemoteSignerError): void => {
         if (settled) return;
@@ -227,23 +300,23 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
       socket.once("error", () => fail(new RemoteSignerError("service_unavailable", "Signing service is unavailable")));
       socket.once("close", () => {
         if (settled) return;
-        if (decodedSignature) {
+        if (decoded) {
           settled = true;
           clearTimeout(timer);
-          resolve(decodedSignature);
+          resolve(decoded.signature);
           return;
         }
         fail(new RemoteSignerError("service_unavailable", "Signing service closed the connection"));
       });
       socket.once("end", () => {
         if (settled) return;
-        if (!decodedSignature) {
+        if (!decoded) {
           fail(new RemoteSignerError("protocol_error"));
           return;
         }
         settled = true;
         clearTimeout(timer);
-        resolve(decodedSignature);
+        resolve(decoded.signature);
       });
       socket.on("data", (chunk: Buffer) => {
         if (settled) return;
@@ -263,7 +336,16 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
         }
         if (expectedLength !== undefined && received.byteLength === expectedLength + 4) {
           try {
-            decodedSignature = decodeResponse(received.subarray(4));
+            const response = decodeResponse(received.subarray(4));
+            // An attested request must come back with a receipt the organisation
+            // key actually signed over this exact request; otherwise the evidence
+            // chain is silently absent.
+            if (attestation !== undefined
+              && (response.attestationSignature === undefined
+                || !verifyAttestationReceipt(certificate, options.keyId, attestation, digest, response.attestationSignature))) {
+              throw new RemoteSignerError("protocol_error");
+            }
+            decoded = response;
             socket.end();
           } catch (error) {
             fail(error instanceof RemoteSignerError ? error : new RemoteSignerError("protocol_error"));

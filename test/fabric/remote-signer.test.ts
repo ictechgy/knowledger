@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, X509Certificate } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, X509Certificate } from "node:crypto";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fs from 'node:fs';
 import { connect, createServer, type Server, type Socket } from "node:net";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { startSigningService } from "../../infra/fabric/signing-service.ts";
-import { jcsBytes } from "../../packages/fabric/canonical.ts";
-import { createRemoteSigner, RemoteSignerError, type SigningAttestation } from "../../packages/fabric/remote-signer.ts";
+import { attestationPayloadDigest, attestationSlot, createRemoteSigner, RemoteSignerError, type Attestation, type QueryAttestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { startDevelopmentSigningService, type DevelopmentSigningKeyId } from "../../examples/order-workflow/signing-service.ts";
 
 const requireFabric = createRequire(new URL("../../packages/fabric/package.json", import.meta.url));
@@ -162,6 +161,10 @@ test("remote signer rejects duplicate fields, invalid UTF-8, and trailing respon
   } finally { await mock.close(); }
 });
 
+function devQueryAttestation(overrides: Partial<QueryAttestation> = {}): QueryAttestation {
+  return { org_id: "SalesMSP", actor_id: "person-sales-owner", actor_kind: "human", phase: "query", ...overrides };
+}
+
 test("development signing service signs with only the approved test identities", async t => {
   const certificatePath = join(process.cwd(), ".data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp/signcerts/User1@sales.kcl.test-cert.pem");
   if (!sdkAvailable || !existsSync(certificatePath)) { t.skip("Fabric SDK and disposable identities are required"); return; }
@@ -169,7 +172,10 @@ test("development signing service signs with only the approved test identities",
   const service = await startDevelopmentSigningService({ socketPath: join(directory, "sign.sock") });
   try {
     const certificate = readFileSync(certificatePath);
-    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate });
+    // Development keys require attestation; an unattested request is refused.
+    const raw = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate });
+    await assert.rejects(() => raw(Buffer.alloc(32, 7)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devQueryAttestation() });
     const signature = await signer(Buffer.alloc(32, 7));
     assert.ok(signature.byteLength > 0);
   } finally { await service.close(); }
@@ -218,7 +224,7 @@ test('scoped signer reads only the selected organization identity and refuses ev
     keyIds.push('person-settlement-owner');
     const certificate = originalRead(certificatePath);
     const digest = Buffer.alloc(32, 11);
-    const signature = await createRemoteSigner({ socketPath: service.socketPath, keyId: 'person-sales-owner', certificate })(digest);
+    const signature = await createRemoteSigner({ socketPath: service.socketPath, keyId: 'person-sales-owner', certificate, attestation: () => devQueryAttestation() })(digest);
     const publicJwk = new X509Certificate(certificate).publicKey.export({ format: 'jwk' });
     const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, 'base64url'), Buffer.from(publicJwk.y!, 'base64url')]);
     const { p256 } = requireFabric('@noble/curves/nist.js');
@@ -241,6 +247,13 @@ test('signer rejects empty, duplicate and unknown key allowlists before opening 
   }
 });
 
+/** Signs a digest the way the organisation key does: ECDSA over the raw digest. */
+function fabricSign(digest: Uint8Array, privateKey: ReturnType<typeof createPrivateKey>): Buffer {
+  const { p256 } = requireFabric('@noble/curves/nist.js');
+  const d = Buffer.from((privateKey.export({ format: 'jwk' }) as { d: string }).d, 'base64url');
+  return Buffer.from(p256.sign(digest, d, { format: 'der', lowS: true, prehash: false }));
+}
+
 function devAttestation(overrides: Partial<SigningAttestation> = {}): SigningAttestation {
   return {
     org_id: "SalesMSP",
@@ -255,19 +268,47 @@ function devAttestation(overrides: Partial<SigningAttestation> = {}): SigningAtt
   };
 }
 
-test("remote signer sends the decision attestation and accepts its receipt", async () => {
-  const certificate = Buffer.from("public certificate");
-  const attestation = devAttestation();
-  let received: Record<string, unknown> | undefined;
-  const mock = await mockSigningSocket(async request => {
-    received = request;
-    return { ok: true, signature: Buffer.from("sig").toString("base64url"), attestation_signature: Buffer.from("att").toString("base64url") };
-  });
+const opensslAvailable = (): boolean => spawnSync('openssl', ['version']).status === 0;
+
+/** Self-signed certificate carrying the same kcl.actor_* attribute encoding the development fixture uses. */
+function generateAttestedIdentity(directory: string, attrs: Record<string, string>): { certificate_path: string; private_key_path: string; certificate: Buffer } {
+  const privateKeyPath = join(directory, "key.pem");
+  const certificatePath = join(directory, "cert.pem");
+  const configPath = join(directory, "openssl.cnf");
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  fs.writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  const attrsHex = Buffer.from(JSON.stringify({ attrs }), 'utf8').toString('hex');
+  fs.writeFileSync(configPath, `oid_section = oids\n[ req ]\ndistinguished_name = dn\n[ dn ]\n[ oids ]\nkclAttrs = 1.2.3.4.5.6.7.8.1\n[ v3 ]\nkclAttrs = DER:${attrsHex}\n`, { mode: 0o600 });
+  const issued = spawnSync('openssl', ['req', '-new', '-x509', '-key', privateKeyPath, '-subj', '/CN=kcl-attested-test', '-days', '1', '-config', configPath, '-extensions', 'v3', '-out', certificatePath], { stdio: 'ignore' });
+  assert.equal(issued.status, 0, 'attested test certificate issuance succeeds');
+  return { certificate_path: certificatePath, private_key_path: privateKeyPath, certificate: readFileSync(certificatePath) };
+}
+
+test("remote signer sends the decision attestation and verifies its receipt", async t => {
+  if (!opensslAvailable()) { t.skip("OpenSSL is required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-attested-signer-"));
   try {
-    const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate, attestation: () => attestation });
-    assert.deepEqual(await signer(Buffer.alloc(32)), Buffer.from("sig"));
-    assert.deepEqual(received?.attestation, attestation);
-  } finally { await mock.close(); }
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const privateKey = createPrivateKey(readFileSync(identity.private_key_path));
+    const attestation = devAttestation();
+    const digest = Buffer.alloc(32, 5);
+    let received: Record<string, unknown> | undefined;
+    const mock = await mockSigningSocket(async request => {
+      received = request;
+      const requestDigest = Buffer.from(String(request.digest), "base64url");
+      const receipt = fabricSign(attestationPayloadDigest(String(request.key_id), request.attestation as Attestation, requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
+      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
+    });
+    try {
+      const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation });
+      const signature = await signer(digest);
+      assert.deepEqual(received?.attestation, attestation);
+      const publicJwk = new X509Certificate(identity.certificate).publicKey.export({ format: 'jwk' });
+      const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, 'base64url'), Buffer.from(publicJwk.y!, 'base64url')]);
+      const { p256 } = requireFabric('@noble/curves/nist.js');
+      assert.equal(p256.verify(signature, digest, rawPublicKey, { format: 'der', prehash: false }), true);
+    } finally { await mock.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("remote signer rejects an out-of-bounds attestation before connecting", async () => {
@@ -285,37 +326,70 @@ test("remote signer rejects an out-of-bounds attestation before connecting", asy
   }
 });
 
-test("remote signer rejects malformed attestation receipts", async () => {
-  const certificate = Buffer.from("public certificate");
-  for (const payload of [
-    { ok: true, signature: Buffer.from("sig").toString("base64url"), attestation_signature: "!!!" },
-    { ok: true, signature: Buffer.from("sig").toString("base64url"), extra_receipt: "AA" },
-  ]) {
-    const mock = await mockSigningSocket(async () => payload);
-    try {
-      const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
-      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
-    } finally { await mock.close(); }
-  }
+test("remote signer rejects malformed attestation receipts", async t => {
+  if (!opensslAvailable()) { t.skip("OpenSSL is required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-attested-receipts-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    for (const payload of [
+      { ok: true, signature: Buffer.from("sig").toString("base64url"), attestation_signature: "!!!" },
+      { ok: true, signature: Buffer.from("sig").toString("base64url"), extra_receipt: "AA" },
+    ]) {
+      const mock = await mockSigningSocket(async () => payload);
+      try {
+        const signer = createRemoteSigner({ socketPath: mock.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
+        await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
+      } finally { await mock.close(); }
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-function developmentSigningKey(): { certificate_path: string; private_key_path: string } | undefined {
-  const msp = join(process.cwd(), ".data/fabric-smoke/crypto/peerOrganizations/sales.kcl.test/users/User1@sales.kcl.test/msp");
-  const certificate_path = join(msp, "signcerts", "User1@sales.kcl.test-cert.pem");
-  if (!existsSync(certificate_path)) return undefined;
-  const keys = readdirSync(join(msp, "keystore")).filter(name => name.endsWith("_sk"));
-  if (keys.length !== 1) return undefined;
-  return { certificate_path, private_key_path: join(msp, "keystore", keys[0]) };
-}
+test("remote signer requires a verified attestation receipt", async t => {
+  if (!opensslAvailable()) { t.skip("OpenSSL is required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-receipt-required-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const privateKey = createPrivateKey(readFileSync(identity.private_key_path));
+    // Missing receipt: an attested request answered without attestation_signature.
+    const silent = await mockSigningSocket(async request => {
+      const requestDigest = Buffer.from(String(request.digest), "base64url");
+      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url") };
+    });
+    try {
+      const signer = createRemoteSigner({ socketPath: silent.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
+      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
+    } finally { await silent.close(); }
+    // Forged receipt: a receipt over different evidence is not accepted.
+    const forged = await mockSigningSocket(async request => {
+      const requestDigest = Buffer.from(String(request.digest), "base64url");
+      const receipt = fabricSign(attestationPayloadDigest(String(request.key_id), devAttestation({ command_id: "cmd-other" }), requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
+      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url"), attestation_signature: receipt.toString("base64url") };
+    });
+    try {
+      const signer = createRemoteSigner({ socketPath: forged.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), timeoutMs: 1000 });
+      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
+    } finally { await forged.close(); }
+    // Unattested requests still accept a plain signature response.
+    const plain = await mockSigningSocket(async request => {
+      const requestDigest = Buffer.from(String(request.digest), "base64url");
+      return { ok: true, signature: fabricSign(requestDigest, privateKey).toString("base64url") };
+    });
+    try {
+      const signer = createRemoteSigner({ socketPath: plain.path, keyId: "person-sales-owner", certificate: identity.certificate });
+      assert.ok((await signer(Buffer.alloc(32))).byteLength > 0);
+    } finally { await plain.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("signing service attests a bound human decision and records an audit receipt", async t => {
-  const key = developmentSigningKey();
-  if (!sdkAvailable || !key) { t.skip("Fabric SDK and disposable identities are required"); return; }
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-attestation-"));
-  const auditLogPath = join(directory, "audit.jsonl");
-  const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", ...key, org_id: "SalesMSP" }], auditLogPath });
   try {
-    const certificate = readFileSync(key.certificate_path);
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const auditLogPath = join(directory, "audit.jsonl");
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
+    try {
+    const certificate = identity.certificate;
     const attestation = devAttestation();
     const digest = Buffer.alloc(32, 21);
     const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => attestation });
@@ -331,32 +405,100 @@ test("signing service attests a bound human decision and records an audit receip
     assert.equal(record.key_id, "person-sales-owner");
     assert.deepEqual(record.attestation, attestation);
     assert.equal(record.digest, digest.toString("base64url"));
-    const payloadDigest = createHash("sha256").update(jcsBytes({
-      record_type: "signing_attestation", version: 1, key_id: "person-sales-owner", attestation,
-      digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"),
-    })).digest();
-    assert.equal(p256.verify(Buffer.from(record.attestation_signature, "base64url"), payloadDigest, rawPublicKey, { format: "der", prehash: false }), true);
-  } finally { await service.close(); }
+    assert.equal(p256.verify(Buffer.from(record.attestation_signature, "base64url"), attestationPayloadDigest("person-sales-owner", attestation, digest, certificate), rawPublicKey, { format: "der", prehash: false }), true);
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("signing service rejects attestations that do not match the bound identity", async t => {
-  const key = developmentSigningKey();
-  if (!sdkAvailable || !key) { t.skip("Fabric SDK and disposable identities are required"); return; }
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-attestation-reject-"));
-  const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", ...key, org_id: "SalesMSP" }] });
   try {
-    const certificate = readFileSync(key.certificate_path);
-    for (const broken of [
-      devAttestation({ actor_id: "person-other-owner" }),
-      devAttestation({ org_id: "OtherMSP" }),
-      devAttestation({ actor_kind: "agent" }),
-    ]) {
-      const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => broken });
-      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
-    }
-    const withoutOrg = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devAttestation() });
-    assert.ok((await withoutOrg(Buffer.alloc(32, 22))).byteLength > 0);
-  } finally { await service.close(); }
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    try {
+      const certificate = identity.certificate;
+      for (const broken of [
+        devAttestation({ actor_id: "person-other-owner" }),
+        devAttestation({ org_id: "OtherMSP" }),
+        devAttestation({ actor_kind: "agent" }),
+      ]) {
+        const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => broken });
+        await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+      }
+      const matchingIdentity = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devAttestation() });
+      assert.ok((await matchingIdentity(Buffer.alloc(32, 22))).byteLength > 0);
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service enforces required attestation and organisation binding", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-required-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [
+      { key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true },
+      { key_id: "person-orgless-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path },
+    ] });
+    try {
+      // A required key refuses an unattested request.
+      const raw = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate });
+      await assert.rejects(() => raw(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+      // Attested signing on a key without an organisation binding is refused.
+      const orgless = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-orgless-owner", certificate: identity.certificate, attestation: () => devAttestation() });
+      await assert.rejects(() => orgless(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+      // The same key still serves legacy unattested signing.
+      assert.ok((await createRemoteSigner({ socketPath: service.socketPath, keyId: "person-orgless-owner", certificate: identity.certificate })(Buffer.alloc(32, 9))).byteLength > 0);
+      // A read-only query attestation is accepted on the required key.
+      const query = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devQueryAttestation() });
+      assert.ok((await query(Buffer.alloc(32, 10))).byteLength > 0);
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service audits a rejected attestation attempt", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-reject-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const auditLogPath = join(directory, "audit.jsonl");
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
+    try {
+      const raw = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate });
+      await assert.rejects(() => raw(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+      const records = readFileSync(auditLogPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(records.length, 1);
+      assert.equal(records[0].record_type, "signing_rejected");
+      assert.equal(records[0].attestation, null);
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service closes the audit descriptor on shutdown", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-close-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const auditLogPath = join(directory, "audit.jsonl");
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
+    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devQueryAttestation() });
+    assert.ok((await signer(Buffer.alloc(32, 12))).byteLength > 0);
+    await service.close();
+    assert.ok(readFileSync(auditLogPath, "utf8").includes("signing_attestation"));
+    await service.close();
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("attestationSlot consumes the context once", () => {
+  const context: SigningAttestationContext = {};
+  const attestation = devAttestation();
+  const slot = attestationSlot(context);
+  assert.equal(slot(), undefined);
+  context.current = attestation;
+  assert.deepEqual(slot(), attestation);
+  assert.equal(slot(), undefined);
+  assert.equal(context.current, undefined);
 });
 
 async function rawSignRequest(path: string, request: unknown): Promise<Record<string, unknown>> {
@@ -368,6 +510,7 @@ async function rawSignRequest(path: string, request: unknown): Promise<Record<st
       input = Buffer.concat([input, chunk]);
       if (length === undefined && input.byteLength >= 4) length = input.readUInt32BE(0);
       if (length === undefined || input.byteLength < length + 4) return;
+      socket.destroy();
       resolve(JSON.parse(input.subarray(4, length + 4).toString("utf8")) as Record<string, unknown>);
     });
     socket.on("error", reject);
@@ -376,22 +519,23 @@ async function rawSignRequest(path: string, request: unknown): Promise<Record<st
 }
 
 test("signing service rejects malformed attestations as invalid requests", async t => {
-  const key = developmentSigningKey();
-  if (!sdkAvailable || !key) { t.skip("Fabric SDK and disposable identities are required"); return; }
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
   const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-attestation-invalid-"));
-  const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", ...key }] });
   try {
-    const certificate = readFileSync(key.certificate_path);
-    const request = (attestation: unknown) => ({ operation: "sign", key_id: "person-sales-owner", digest: Buffer.alloc(32).toString("base64url"), certificate: certificate.toString("base64url"), attestation });
-    const { tx_id: _txId, ...withoutTx } = devAttestation();
-    const { phase: _phase, ...withoutPhase } = withoutTx;
-    for (const attestation of [
-      { ...devAttestation(), command_digest: "bad" },
-      { ...devAttestation(), extra: "field" },
-      withoutPhase,
-      "not-an-object",
-    ]) {
-      assert.deepEqual(await rawSignRequest(service.socketPath, request(attestation)), { ok: false, error: "invalid_request" });
-    }
-  } finally { await service.close(); }
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }] });
+    try {
+      const request = (attestation: unknown) => ({ operation: "sign", key_id: "person-sales-owner", digest: Buffer.alloc(32).toString("base64url"), certificate: identity.certificate.toString("base64url"), attestation });
+      const { tx_id: _txId, ...withoutTx } = devAttestation();
+      const { phase: _phase, ...withoutPhase } = withoutTx;
+      for (const attestation of [
+        { ...devAttestation(), command_digest: "bad" },
+        { ...devAttestation(), extra: "field" },
+        withoutPhase,
+        "not-an-object",
+      ]) {
+        assert.deepEqual(await rawSignRequest(service.socketPath, request(attestation)), { ok: false, error: "invalid_request" });
+      }
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
