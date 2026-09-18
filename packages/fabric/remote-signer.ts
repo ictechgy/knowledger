@@ -198,7 +198,7 @@ function decodeResponse(body: Buffer): DecodedResponse {
 }
 
 /** Canonical evidence bytes the organisation key attests; external auditors use the same form. */
-export function attestationPayload(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Buffer {
+export function attestationPayload(keyId: string, attestation: Attestation, digest: Uint8Array, certificate: Uint8Array): Uint8Array {
   return jcsBytes({
     record_type: "signing_attestation",
     version: 1,
