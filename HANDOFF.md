@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-18 KST (v0.2.0 릴리스 게시 완료)_
+_Last updated: 2026-09-18 KST (PR #6 조직 signing gateway 머지 완료)_
 
 ## Goal
 
@@ -20,9 +20,13 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- main HEAD `16c06f6` — v0.2.0 릴리스 정리 커밋(CHANGELOG.md·ROADMAP.md 신규,
-  루트·워크스페이스 버전 0.2.0, README 배지). 태그 `v0.2.0`·GitHub 릴리스 게시 완료.
-  성능 도구 개선 PR #3(`b073c81`)·정리 PR #4(`e636166`)도 포함됐다.
+- main HEAD `f3fd4a2` — **PR #6 조직 signing gateway 머지 완료(rebase, 27커밋)**.
+  원격 서명 서비스(Unix 소켓·조직 바인딩 키·attestation 영수증·JSONL 감사 로그)와
+  게이트웨이 측 소비형 attestation 슬롯·직렬화·builder 출력 검증을 도입했다.
+  20라운드 독립 리뷰(claude·codex·grok·agy)의 유효 findings를 모두 해소했고,
+  잔여 반복 지적은 문서화된 설계 경계다(caller-asserted 증거·동일 UID 신뢰 경계·
+  close drain 계약 — `infra/fabric/README.md` 참조).
+  성능 도구 개선 PR #3(`b073c81`)·정리 PR #4(`e636166`)·v0.2.0 릴리스 PR #5(`16c06f6`)도 포함됐다.
   `infra/fabric`의 `knowledger-chaincode` 0.1.0은 배포된 `kcl_0.1.0` 계약이라 범프하지 않았다.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
@@ -277,13 +281,18 @@ python3 -B tools/check_docs.py
 5. **v0.2.0 릴리스 게시 완료(2026-09-18)** — CHANGELOG.md·ROADMAP.md 신규(PR #5 `16c06f6`),
    태그+GitHub 릴리스 발행. 다음 방향은 오픈소스 성장으로 합의; 로드맵 4개 트랙은
    프로토콜 완성도(A)·운영 성숙(B)·채택/확장(C)·프로젝트 운영(D)이다.
-6. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+6. **PR #6 조직 signing gateway 머지 완료(2026-09-18, rebase `f3fd4a2`)** — ROADMAP
+   트랙A 첫 항목. 조직 바인딩 서명 키·일회성 attestation·암호 검증 영수증·
+   필수 감사 로그·qscc 전용 슬롯을 갖춘 원격 서명 경계를 도입했다.
+   `feature/org-signing-gateway` 브랜치는 머지 완료.
+7. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
 공개 저장소는 https://github.com/ictechgy/knowledger, 릴리스 `v0.1.0`·`v0.2.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`)로 main에 머지됐다.
+10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
+조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 다음 방향은 오픈소스 성장 — ROADMAP.md의 4개 트랙(A 프로토콜 완성도·B 운영 성숙·C 채택·D 프로젝트 운영)에서 다음 항목을 고른다.
 대기 중인 브랜치는 없다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
