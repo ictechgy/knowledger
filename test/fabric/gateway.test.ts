@@ -367,6 +367,10 @@ test("concurrent commands sign only their own decision attestation", async () =>
     (await client.newProposal(cmdB)).endorse().then(e => e.submit()),
   ]);
   assert.equal(signed.length, 4);
+  // Count attestations per command first: a clobbered slot would replay one
+  // command's evidence twice and starve the sibling, which a per-entry shape
+  // check alone cannot detect.
+  assert.deepEqual(signed.map(attestation => attestation?.command_id).sort(), ["cmd-a", "cmd-a", "cmd-b", "cmd-b"]);
   const digestFor = (cmd: GatewayCommand) => idempotencyDigest(cmd);
   for (const attestation of signed) {
     assert.ok(attestation !== undefined);

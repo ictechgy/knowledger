@@ -107,7 +107,7 @@ export interface RemoteSignerOptions {
   timeoutMs?: number;
   /** Per-request decision context; called before every signing frame is sent. */
   attestation?: () => Attestation | undefined;
-  /** Called with each verified attestation receipt and its canonical evidence so callers can keep the proof. */
+  /** Called with each verified attestation receipt and its canonical evidence so callers can keep the proof. Must be synchronous — a promise return fails the request. */
   onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array) => void;
 }
 
@@ -184,14 +184,15 @@ function decodeResponse(body: Buffer): DecodedResponse {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new RemoteSignerError("protocol_error");
   const response = parsed as { ok?: unknown; signature?: unknown; error?: unknown };
-  if (response.ok === true && (ownKeys(parsed).length === 2 || (ownKeys(parsed).length === 3 && ownKeys(parsed).includes("attestation_signature"))) && ownKeys(parsed).includes("signature")) {
+  const responseKeys = ownKeys(parsed);
+  if (response.ok === true && (responseKeys.length === 2 || (responseKeys.length === 3 && responseKeys.includes("attestation_signature"))) && responseKeys.includes("signature")) {
     const signature = decodeBase64Url(response.signature, undefined, 4 * 1024);
-    const attestationSignature = "attestation_signature" in parsed
+    const attestationSignature = responseKeys.includes("attestation_signature")
       ? decodeBase64Url((parsed as { attestation_signature?: unknown }).attestation_signature, undefined, 4 * 1024)
       : undefined;
     return { signature, ...(attestationSignature === undefined ? {} : { attestationSignature }) };
   }
-  if (response.ok === false && ownKeys(parsed).length === 2 && ownKeys(parsed).includes("error")) {
+  if (response.ok === false && responseKeys.length === 2 && responseKeys.includes("error")) {
     const code = response.error;
     if (code === "unknown_key" || code === "rejected" || code === "invalid_request") {
       throw new RemoteSignerError(code);
@@ -218,6 +219,13 @@ export function attestationPayloadDigest(keyId: string, attestation: Attestation
   return createHash("sha256").update(attestationPayload(keyId, attestation, digest, certificate)).digest();
 }
 
+// A receipt proves the organisation key signed this evidence — not that the
+// service ran its attestation checks. The key signs both the Fabric digest
+// and the evidence digest, so a caller able to drive the socket could mint an
+// equivalent receipt for a forged attestation. Receipts are therefore an
+// operational record for honest clients; assurance comes from reconciling the
+// service's audit log against the ledger, which is why attested deployments
+// should always run with --audit-log.
 function verifyAttestationReceipt(certificate: Buffer, keyId: string, attestation: Attestation, digest: Uint8Array, receipt: Buffer): boolean {
   try {
     // The organisation key signs sha256(canonical evidence) as a raw ECDSA
@@ -281,10 +289,12 @@ export function createAttestationSerializer(context: SigningAttestationContext):
 /**
  * Releases a context's serializer claim at shutdown so a reconnection may
  * rebuild a serializer over the same context object. The caller must not hold
- * in-flight signer-bearing operations when releasing.
+ * in-flight signer-bearing operations when releasing; any unconsumed
+ * attestation is cleared so the next owner starts from an empty slot.
  */
 export function releaseAttestationSerializer(context: SigningAttestationContext): void {
   delete (context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object })[SERIALIZER_OWNER];
+  context.current = undefined;
 }
 
 /**
@@ -309,8 +319,9 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
     try {
       const supplied = options.attestation?.();
       attestation = supplied === undefined ? undefined : assertSigningAttestation(supplied);
-    } catch {
-      return Promise.reject(new RemoteSignerError("invalid_request", "Signing attestation is outside the supported bounds"));
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : "";
+      return Promise.reject(new RemoteSignerError("invalid_request", `Signing attestation is outside the supported bounds${detail}`));
     }
     const request: SignRequest = {
       operation: "sign",
@@ -389,10 +400,16 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
             decoded = response;
             // The caller's receipt hook is not part of the signing protocol:
             // its own failure surfaces as-is rather than as a malformed
-            // response, and it still fails the signing request.
+            // response, and it still fails the signing request. The hook must
+            // be synchronous — a promise return would reject after the request
+            // settles, escaping as an unhandled rejection instead of failing
+            // this signature deterministically.
             if (attestation !== undefined && response.attestationSignature !== undefined && options.onAttestationReceipt !== undefined) {
               try {
-                options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate));
+                const returned = options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate)) as unknown;
+                if (returned !== null && typeof (returned as { then?: unknown }).then === "function") {
+                  throw new RemoteSignerError("invalid_request", "The attestation receipt hook must be synchronous");
+                }
               } catch (error) {
                 fail(error instanceof Error ? error : new RemoteSignerError("protocol_error"));
                 socket.destroy();
