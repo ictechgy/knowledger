@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
 import { attestationSlot, createAttestationSerializer, createRemoteSigner } from "../../packages/fabric/remote-signer.ts";
-import type { Attestation, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import type { AttestationSerializer, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
 import { FabricApplicationLedger } from "../../packages/fabric/application-ledger.ts";
@@ -69,8 +69,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
   const sdk = require("@hyperledger/fabric-gateway") as { connect(options: Record<string, unknown>): { close(): void; getNetwork(channelId: string): { getContract(name: string): { evaluateTransaction(name: string, ...args: string[]): Promise<Uint8Array> } } } };
   const { common } = require("@hyperledger/fabric-protos") as { common: { BlockchainInfo: { deserializeBinary(bytes: Uint8Array): { getHeight(): number; getCurrentblockhash_asU8(): Uint8Array } } } };
   const routes: FabricSigningRoute[] = [];
-  const gateways: Array<{ close(): void; getNetwork(channelId: string): { getContract(name: string): { evaluateTransaction(name: string, ...args: string[]): Promise<Uint8Array> } } }> = [];
-  const qsccBindings: Array<{ actor: Actor; signed: <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T> }> = [];
+  const qsccGateways: Array<{ actor: Actor; gateway: { getNetwork(channelId: string): { getContract(name: string): { evaluateTransaction(name: string, ...args: string[]): Promise<Uint8Array> } } }; signed: AttestationSerializer }> = [];
   let projection: SqliteFabricProjection | undefined;
   try {
     for (const reference of references) {
@@ -98,16 +97,15 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         const opened = { client, gateway, outbox, rpc };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); opened.rpc.close(); } });
-        gateways.push(gateway);
-        qsccBindings.push({ actor, signed: createAttestationSerializer(qsccContext) });
+        qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
-    const qscc = gateways[0].getNetwork(configuration.ledger.channel_id).getContract("qscc");
-    const qsccBinding = qsccBindings[0];
+    const qsccBinding = qsccGateways[0];
     // Read-only signing must never fail open: an unattested qscc call would
     // violate protected keys' require_attestation policy and skip evidence.
     if (qsccBinding === undefined) throw new Error("qscc signing binding is unavailable");
+    const qscc = qsccBinding.gateway.getNetwork(configuration.ledger.channel_id).getContract("qscc");
     const ledger = new FabricApplicationLedger({ mode: 'fabric', projection, routes, source: {
       async getTip() {
         // qscc signs through the actor's own slot; the serializer keeps the

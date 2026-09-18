@@ -111,7 +111,7 @@ application. Clients connect with `createRemoteSigner` from
 `packages/fabric/remote-signer.ts` and send `{ operation: "sign", key_id,
 digest, certificate }`. A request may also carry an `attestation` object binding
 `org_id`, `actor_id`, `actor_kind`, `command_id`, `command_type`, `command_digest`,
-`phase` and optional `tx_id`; read-only signing carries the shorter
+`phase` and a required `tx_id`; read-only signing carries the shorter
 `phase: "query"` form without a command binding. When present, the service
 verifies the actor against the certificate's `kcl.actor_*` attributes and the
 key's configured `org_id` before signing; key references may set

@@ -20,7 +20,8 @@ export interface SigningAttestation {
   command_type: string;
   command_digest: string;
   phase: "proposal" | "submit";
-  tx_id?: string;
+  /** Fabric transaction ID the SDK already assigned at proposal time; auditors reconcile it against the ledger. */
+  tx_id: string;
 }
 
 /** Organisational attestation for read-only signing (evaluate/status); carries no command binding. */
@@ -62,21 +63,22 @@ export function assertSigningAttestation(value: unknown): Attestation {
     if (attestation.actor_kind !== "human" && attestation.actor_kind !== "agent") throw new TypeError("Signing attestation actor_kind is outside the supported bounds");
     return { org_id: orgId, actor_id: actorId, actor_kind: attestation.actor_kind, phase: "query" };
   }
-  const required = ["org_id", "actor_id", "actor_kind", "command_id", "command_type", "command_digest", "phase"];
-  if (!required.every(key => keys.includes(key)) || !keys.every(key => required.includes(key) || key === "tx_id")) {
+  const required = ["org_id", "actor_id", "actor_kind", "command_id", "command_type", "command_digest", "phase", "tx_id"];
+  if (!required.every(key => keys.includes(key)) || !keys.every(key => required.includes(key))) {
     throw new TypeError("Signing attestation has missing or unknown fields");
   }
   const orgId = attestationField(attestation.org_id, "org_id");
   const actorId = attestationField(attestation.actor_id, "actor_id");
   const commandId = attestationField(attestation.command_id, "command_id");
   const commandType = attestationField(attestation.command_type, "command_type");
+  const txId = attestationField(attestation.tx_id, "tx_id");
   if (attestation.actor_kind !== "human" && attestation.actor_kind !== "agent") throw new TypeError("Signing attestation actor_kind is outside the supported bounds");
   if (typeof attestation.command_digest !== "string" || !COMMAND_DIGEST_PATTERN.test(attestation.command_digest)) throw new TypeError("Signing attestation command_digest is outside the supported bounds");
   if (attestation.phase !== "proposal" && attestation.phase !== "submit") throw new TypeError("Signing attestation phase is outside the supported bounds");
   return {
     org_id: orgId, actor_id: actorId, actor_kind: attestation.actor_kind,
     command_id: commandId, command_type: commandType, command_digest: attestation.command_digest, phase: attestation.phase,
-    ...(attestation.tx_id === undefined ? {} : { tx_id: attestationField(attestation.tx_id, "tx_id") }),
+    tx_id: txId,
   };
 }
 
@@ -239,13 +241,26 @@ export function attestationSlot(context: SigningAttestationContext): () => Attes
   };
 }
 
+/** Serialises one signer-bearing call's install→consume→clear on a shared slot. */
+export type AttestationSerializer = <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T>;
+
+const SERIALIZER_OWNER = Symbol("attestationSerializerOwner");
+
 /**
  * Serialises [install attestation → SDK signing call → clear] on one shared
  * slot. A mutable context is only safe while every signer-bearing operation on
  * the connection holds this queue, so concurrent evaluate/status calls can
- * never overwrite or steal an in-flight decision attestation.
+ * never overwrite or steal an in-flight decision attestation. The queue is
+ * held for the whole SDK call — signer-bearing calls on a connection wait
+ * behind an in-flight operation (bounded by the SDK's RPC deadlines) — and a
+ * context may be claimed by exactly one serializer: two clients sharing one
+ * context would interleave installs and attach the wrong decision.
  */
-export function createAttestationSerializer(context: SigningAttestationContext): <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T> {
+export function createAttestationSerializer(context: SigningAttestationContext): AttestationSerializer {
+  const owned = context as SigningAttestationContext & { [SERIALIZER_OWNER]?: object };
+  if (owned[SERIALIZER_OWNER] !== undefined) throw new Error("Signing attestation context is already claimed by another serializer");
+  const owner = {};
+  owned[SERIALIZER_OWNER] = owner;
   let queue: Promise<void> = Promise.resolve();
   return <T>(attestation: Attestation | undefined, operation: () => Promise<T>): Promise<T> => {
     const run = queue.then(async () => {
@@ -302,7 +317,7 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
       let expectedLength: number | undefined;
       let decoded: DecodedResponse | undefined;
       let timer: ReturnType<typeof setTimeout>;
-      const fail = (error: RemoteSignerError): void => {
+      const fail = (error: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -362,10 +377,19 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
                 || !verifyAttestationReceipt(certificate, options.keyId, attestation, digest, response.attestationSignature)) {
               throw new RemoteSignerError("protocol_error");
             }
-            if (attestation !== undefined && response.attestationSignature !== undefined) {
-              options.onAttestationReceipt?.(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate));
-            }
             decoded = response;
+            // The caller's receipt hook is not part of the signing protocol:
+            // its own failure surfaces as-is rather than as a malformed
+            // response, and it still fails the signing request.
+            if (attestation !== undefined && response.attestationSignature !== undefined && options.onAttestationReceipt !== undefined) {
+              try {
+                options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate));
+              } catch (error) {
+                fail(error instanceof Error ? error : new RemoteSignerError("protocol_error"));
+                socket.destroy();
+                return;
+              }
+            }
             socket.end();
           } catch (error) {
             fail(error instanceof RemoteSignerError ? error : new RemoteSignerError("protocol_error"));

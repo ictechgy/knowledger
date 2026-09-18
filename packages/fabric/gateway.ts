@@ -28,13 +28,13 @@ export type SigningPhase = 'proposal' | 'submit';
 export interface GatewayAttestation {
   /** Slot shared with the remote signer; refreshed before each signing call. */
   context: SigningAttestationContext;
-  build(command: GatewayCommand, phase: SigningPhase, txId?: string): SigningAttestation | undefined;
+  build(command: GatewayCommand, phase: SigningPhase, txId: string): SigningAttestation | undefined;
   /** Attestation for read-only signing (evaluate/status); no command binding. */
   buildQuery(): QueryAttestation | undefined;
 }
 
-/** Organisation attestation binding the actor to the exact command decision. */
-export function decisionAttestation(actor: Actor, command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId?: string): SigningAttestation {
+/** Organisation attestation binding the actor to the exact command decision and transaction. */
+export function decisionAttestation(actor: Actor, command: Pick<GatewayCommand, "command_id" | "type" | "input">, phase: SigningPhase, txId: string): SigningAttestation {
   return {
     org_id: actor.org_id,
     actor_id: actor.actor_id,
@@ -43,7 +43,7 @@ export function decisionAttestation(actor: Actor, command: Pick<GatewayCommand, 
     command_type: command.type,
     command_digest: idempotencyDigest({ type: command.type, input: command.input }),
     phase,
-    ...(txId === undefined ? {} : { tx_id: txId }),
+    tx_id: txId,
   };
 }
 

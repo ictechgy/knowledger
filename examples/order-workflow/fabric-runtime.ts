@@ -11,7 +11,7 @@ import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
-import type { Attestation, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
+import type { AttestationSerializer, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
 import { createAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
 import type { FabricSigningRoute } from '../../packages/fabric/application-ledger.ts';
@@ -35,8 +35,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
   const { ClientIdentity } = require('fabric-shim');
   const cryptoRoot = fileURLToPath(new URL('../../.data/fabric-smoke/crypto/peerOrganizations/', import.meta.url));
   const routes: FabricSigningRoute[] = [];
-  const gateways: any[] = [];
-  const qsccBindings: Array<{ actor: Actor; signed: <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T> }> = [];
+  const qsccGateways: Array<{ actor: Actor; gateway: any; signed: AttestationSerializer }> = [];
   let projection: SqliteFabricProjection | undefined;
   try {
     const selectedOrganizations = organization ? [organization] : DEVELOPMENT_ORGANIZATIONS;
@@ -82,14 +81,13 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         const opened = { client, gateway, outbox };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); rpc.close(); } });
-        gateways.push(gateway);
-        qsccBindings.push({ actor, signed: createAttestationSerializer(qsccContext) });
+        qsccGateways.push({ actor, gateway, signed: createAttestationSerializer(qsccContext) });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
-    const qscc = (gateways[1] ?? gateways[0]).getNetwork('kcl-demo').getContract('qscc');
-    const qsccBinding = qsccBindings[1] ?? qsccBindings[0];
+    const qsccBinding = qsccGateways[1] ?? qsccGateways[0];
     if (qsccBinding === undefined) throw new Error('qscc signing binding is unavailable');
+    const qscc = qsccBinding.gateway.getNetwork('kcl-demo').getContract('qscc');
     const ledger = new FabricApplicationLedger({ projection, routes, source: {
       async getTip() {
         // qscc signs through the actor's own slot; the serializer keeps the
