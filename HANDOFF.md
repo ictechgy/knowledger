@@ -1,29 +1,29 @@
 # Handoff
 
-_Last updated: 2026-09-18 KST (성능 도구 개선 — PR #3 머지 완료 `b073c81`)_
+_Last updated: 2026-09-18 KST (v0.2.0 릴리스 게시 완료)_
 
 ## Goal
 
 MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Knowledger로 확정**했다(기존 `knowledge-consensus-ledger`/`kcl`에서 리네임).
 조직·업무는 설정으로 정하며 영업·이행·정산은 선택형 예제다.
 합의한 코드 작업·Claude 리뷰 수정·조회 최적화·테스트 인증서 갱신·제품 리네임·공개 게시·
-대규모 확장성 수정은 완료했다. **성능 도구 개선 3개**(baseline JSON 비교·검색 시나리오 확대·CLI 오류 진단)는
-독립 리뷰·6라운드 멀티모델 리뷰 루프·로컬 검증·원격 CI를 거쳐 **PR #3으로 main에
-머지됐다(squash `b073c81`)**.
+대규모 확장성 수정·성능 도구 개선은 완료했다. 다음 방향은 **오픈소스 성장**으로 합의했고
+첫 작업으로 **v0.2.0 릴리스를 게시했다**(CHANGELOG.md·ROADMAP.md 신규, PR #5 `16c06f6`).
+확장 계획은 [로드맵](ROADMAP.md)의 4개 트랙에 기록했다.
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
 
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`.
-  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`.**
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`·`v0.2.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- main HEAD `b073c81` — 성능 도구 개선이 PR #3 squash로 머지됐다:
-  `tools/performance-compare.ts` 신규 + `tools/performance-smoke.ts`·`tools/performance-fabric.ts`·
-  `test/automation/experiments.test.ts`·`HANDOFF.md` 수정. 원격 브랜치
-  `feature/perf-baseline-compare`는 머지 후 정리 대상이다.
+- main HEAD `16c06f6` — v0.2.0 릴리스 정리 커밋(CHANGELOG.md·ROADMAP.md 신규,
+  루트·워크스페이스 버전 0.2.0, README 배지). 태그 `v0.2.0`·GitHub 릴리스 게시 완료.
+  성능 도구 개선 PR #3(`b073c81`)·정리 PR #4(`e636166`)도 포함됐다.
+  `infra/fabric`의 `knowledger-chaincode` 0.1.0은 배포된 `kcl_0.1.0` 계약이라 범프하지 않았다.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
   앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
@@ -274,14 +274,18 @@ python3 -B tools/check_docs.py
 4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): **PR #3 머지 완료(squash `b073c81`)**.
    6라운드 리뷰 루프에서 유효 블로커를 모두 해소했고, 남은 LOW 항목은
    **PR #4(`e636166`)로 정리 완료** — 성능 도구 잔여 과제는 없다.
-5. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+5. **v0.2.0 릴리스 게시 완료(2026-09-18)** — CHANGELOG.md·ROADMAP.md 신규(PR #5 `16c06f6`),
+   태그+GitHub 릴리스 발행. 다음 방향은 오픈소스 성장으로 합의; 로드맵 4개 트랙은
+   프로토콜 완성도(A)·운영 성숙(B)·채택/확장(C)·프로젝트 운영(D)이다.
+6. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 첫 릴리스 `v0.1.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)로 main에 머지됐다.
-대기 중인 브랜치는 없다 — 성능 도구의 LOW 정리 항목(HANDOFF Verification 참조)은 후속 정리 대상이다.
+공개 저장소는 https://github.com/ictechgy/knowledger, 릴리스 `v0.1.0`·`v0.2.0` 게시·원격 CI 통과 완료.
+10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`)로 main에 머지됐다.
+다음 방향은 오픈소스 성장 — ROADMAP.md의 4개 트랙(A 프로토콜 완성도·B 운영 성숙·C 채택·D 프로젝트 운영)에서 다음 항목을 고른다.
+대기 중인 브랜치는 없다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
