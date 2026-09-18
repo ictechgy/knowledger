@@ -686,9 +686,11 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     linkSync(identity.private_key_path, hardLink);
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign.sock"), keys, auditLogPath: hardLink }), /collides/);
     // A FIFO would block O_WRONLY forever; the pre-open check must refuse it.
-    const fifo = join(directory, "audit.fifo");
-    assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
-    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign2.sock"), keys, auditLogPath: fifo }), /regular file/);
+    if (spawnSync("mkfifo", ["--version"]).status === 0 || spawnSync("which", ["mkfifo"]).status === 0) {
+      const fifo = join(directory, "audit.fifo");
+      assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+      await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign2.sock"), keys, auditLogPath: fifo }), /regular file/);
+    } else { t.diagnostic("mkfifo unavailable; FIFO refusal not exercised"); }
     // A symlink to the private key resolves onto the reserved path and is
     // refused before open; the key must stay byte-identical.
     const keyBefore = readFileSync(identity.private_key_path);
@@ -845,7 +847,7 @@ test("remote signer rejects a receipt attached to an unattested response and rep
       await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "protocol_error");
     } finally { await stray.close(); }
     // A verified receipt is surfaced to the caller with its canonical evidence.
-    const receipts: Array<{ receipt: Uint8Array; evidence: Uint8Array }> = [];
+    const receipts: Array<{ receipt: Uint8Array; evidence: Uint8Array; attestation: Attestation }> = [];
     const honest = await mockSigningSocket(async request => {
       const requestDigest = Buffer.from(String(request.digest), "base64url");
       const receipt = evidenceSign(attestationPayload(String(request.key_id), request.attestation as Attestation, requestDigest, Buffer.from(String(request.certificate), "base64url")), privateKey);
@@ -854,11 +856,14 @@ test("remote signer rejects a receipt attached to an unattested response and rep
     try {
       const attestation = devAttestation();
       const digest = Buffer.alloc(32, 15);
-      const signer = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation, onAttestationReceipt: (receipt, evidence) => { receipts.push({ receipt, evidence }); } });
+      const signer = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => attestation, onAttestationReceipt: (receipt, evidence, signed_attestation) => { receipts.push({ receipt, evidence, attestation: signed_attestation }); } });
       await signer(digest);
       assert.equal(receipts.length, 1);
       assert.deepEqual(receipts[0]?.evidence, attestationPayload("person-sales-owner", attestation, digest, identity.certificate));
       assert.equal(verify("sha256", receipts[0]!.evidence, new X509Certificate(identity.certificate).publicKey, receipts[0]!.receipt), true);
+      // The third hook argument carries the attestation itself so callers can
+      // distinguish decision from query receipts by its phase.
+      assert.deepEqual(receipts[0]?.attestation, attestation);
       // A failing receipt callback surfaces through the RemoteSignerError
       // contract — distinguishable from a malformed protocol response, with
       // the caller's error preserved as the cause.

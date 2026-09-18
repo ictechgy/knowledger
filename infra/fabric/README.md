@@ -179,7 +179,11 @@ the receipt binds the exact command decision and transaction ID without stale
 reuse. qscc reads are attested under one configured binding's identity (the
 API runtime uses the first; the example fixture prefers the second when
 present), so audit consumers should read them as service reads by that
-signing identity rather than user actions.
+signing identity rather than user actions. When the example fixture is run
+without a `signerProvider` — the unauthenticated raw in-process key path —
+no attestation wiring is installed at all: the gateway signs operations
+directly and produces no service-side evidence or receipts, so that mode
+carries none of the attestation guarantees above.
 
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.

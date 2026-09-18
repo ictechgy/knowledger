@@ -42,8 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,
   flushed before the response is acknowledged and the descriptor is released
-  on shutdown; a record that throws mid-write may leave a partial trailing
-  line for consumers to discard. Rejection records carry a `reason` and the
+  on shutdown; a record that throws mid-write marks the log torn so later
+  signing fails closed until the file is repaired. Rejection records carry a `reason` and the
   configured certificate's actor claims. Attested keys fail fast at load when
   the certificate's `actor_kind` is outside `allowed_actor_kinds` or the
   private key is not EC, and any organisation-bound signing key cannot start
