@@ -142,15 +142,19 @@ test("official SDK adapter sends Execute JSON without transport-only actor metad
 test("official gateway refreshes the signing attestation at each signing phase", async () => {
   const context: SigningAttestationContext = {};
   const built: Array<{ phase: string; txId: string | undefined }> = [];
+  const signed: Array<SigningAttestation | undefined> = [];
+  // The fake SDK invokes the signer inside each signing call, exactly where the
+  // real SDK produces signatures.
+  const signer = async (digest: Uint8Array) => { signed.push(context.current as SigningAttestation | undefined); return digest; };
   const fakeContract = {
     newProposal() {
-      return { getTransactionId: () => "tx-attested", async endorse() { return { async submit() { return { async getStatus() { return { code: 0 }; } }; }, async getResult() { return new Uint8Array(); } }; } };
+      return { getTransactionId: () => "tx-attested", async endorse() { await signer(new Uint8Array(32)); return { async submit() { await signer(new Uint8Array(32)); return { async getStatus() { return { code: 0 }; } }; }, async getResult() { return new Uint8Array(); } }; } };
     },
     async evaluateTransaction() { return new Uint8Array(); },
   };
   const client = await connectOfficialFabricGateway({
     client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
-    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer: async digest => digest },
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
     module: { connect() { return { getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
     attestation: {
       context,
@@ -164,24 +168,30 @@ test("official gateway refreshes the signing attestation at each signing phase",
   // Attestation is installed only where the SDK actually signs: proposal
   // binding inside endorse(), submit binding inside submit().
   assert.deepEqual(built, [{ phase: "proposal", txId: "tx-attested" }, { phase: "submit", txId: "tx-attested" }]);
-  const current = assertSigningAttestation(context.current);
-  assert.equal(current.phase, "submit");
-  assert.equal(current.tx_id, "tx-attested");
-  assert.equal(current.actor_id, "person-sales-owner");
-  assert.equal(current.command_digest, idempotencyDigest(cmd));
+  // The signer's view at digest time proves each phase signed its own
+  // attestation; the slot is empty again once both operations completed.
+  assert.equal(signed.length, 2);
+  assert.equal(signed[0]?.phase, "proposal");
+  assert.equal(signed[0]?.tx_id, "tx-attested");
+  assert.equal(signed[1]?.phase, "submit");
+  assert.equal(signed[1]?.tx_id, "tx-attested");
+  assert.equal(signed[1]?.actor_id, "person-sales-owner");
+  assert.equal(signed[1]?.command_digest, idempotencyDigest(cmd));
+  assert.equal(context.current, undefined);
 });
 
 test("read-only signing paths install a query attestation instead of a stale command context", async () => {
   const context: SigningAttestationContext = {};
-  let queries = 0;
-  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-query", async getStatus() { queries += 1; return { code: 0, blockNumber: 7n }; } };
+  const signed: Array<SigningAttestation | { phase: string } | undefined> = [];
+  const signer = async (digest: Uint8Array) => { signed.push(context.current as SigningAttestation | undefined); return digest; };
+  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-query", async getStatus() { await signer(new Uint8Array(32)); return { code: 0, blockNumber: 7n }; } };
   const fakeContract = {
-    newProposal() { return { getTransactionId: () => "tx-query", async endorse() { return { async submit() { return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
-    async evaluateTransaction(name: string) { queries += 1; return name === "GetCommand" ? new TextEncoder().encode(JSON.stringify({ record_type: "IdempotencyRecord", command_id: "cmd-query", command_digest: "sha256:x", result: {} })) : new Uint8Array(); },
+    newProposal() { return { getTransactionId: () => "tx-query", async endorse() { await signer(new Uint8Array(32)); return { async submit() { await signer(new Uint8Array(32)); return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
+    async evaluateTransaction(name: string) { await signer(new Uint8Array(32)); return name === "GetCommand" ? new TextEncoder().encode(JSON.stringify({ record_type: "IdempotencyRecord", command_id: "cmd-query", command_digest: "sha256:x", result: {} })) : new Uint8Array(); },
   };
   const client = await connectOfficialFabricGateway({
     client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
-    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer: async digest => digest },
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
     module: { connect() { return { newCommit: () => commit, getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
     attestation: {
       context,
@@ -189,19 +199,60 @@ test("read-only signing paths install a query attestation instead of a stale com
       buildQuery: () => ({ org_id: "SalesMSP", actor_id: "person-sales-owner", actor_kind: "human", phase: "query" }),
     },
   });
-  // Seed a submit-phase attestation as it would exist right after submit().
   const endorsement = await (await client.newProposal(command("cmd-query"))).endorse();
   await endorsement.submit();
-  assert.equal((context.current as { phase?: string } | undefined)?.phase, "submit");
   // Commit status and authoritative lookups must not reuse the write context.
   const status = await client.getStatus("tx-query");
   assert.equal(status.status, "VALID");
-  assert.equal((context.current as { phase?: string } | undefined)?.phase, "query");
   const result = await client.getAuthoritativeCommandResult({ command_id: "cmd-query", actor_org_id: "SalesMSP" });
   assert.equal(result?.payload_digest, "sha256:x");
-  assert.equal((context.current as { phase?: string } | undefined)?.phase, "query");
-  assert.equal(queries, 2);
+  assert.deepEqual(signed.map(entry => entry?.phase), ["proposal", "submit", "query", "query"]);
+  assert.equal(context.current, undefined);
   client.close();
+  assert.equal(context.current, undefined);
+});
+
+test("a concurrent status lookup cannot steal an in-flight decision attestation", async () => {
+  const context: SigningAttestationContext = {};
+  const signedPhases: Array<string | undefined> = [];
+  let releaseEndorseSign: (() => void) | undefined;
+  let endorseSignStarted: (() => void) | undefined;
+  const endorseGate = new Promise<void>(resolve => { releaseEndorseSign = resolve; });
+  const endorseSignSeen = new Promise<void>(resolve => { endorseSignStarted = resolve; });
+  const signer = async (digest: Uint8Array) => {
+    const attestation = context.current as { phase?: string } | undefined;
+    signedPhases.push(attestation?.phase);
+    if (attestation?.phase === "proposal") { endorseSignStarted?.(); await endorseGate; }
+    return digest;
+  };
+  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-race", async getStatus() { await signer(new Uint8Array(32)); return { code: 0 }; } };
+  const fakeContract = {
+    newProposal() { return { getTransactionId: () => "tx-race", async endorse() { await signer(new Uint8Array(32)); return { async submit() { return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
+    async evaluateTransaction() { return new Uint8Array(); },
+  };
+  const client = await connectOfficialFabricGateway({
+    client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
+    module: { connect() { return { newCommit: () => commit, getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
+    attestation: {
+      context,
+      build: (cmd, phase, txId) => decisionAttestation({ org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" }, cmd, phase, txId),
+      buildQuery: () => ({ org_id: "SalesMSP", actor_id: "person-sales-owner", actor_kind: "human", phase: "query" }),
+    },
+  });
+  const proposal = await client.newProposal(command("cmd-race"));
+  const endorsePromise = proposal.endorse();
+  await endorseSignSeen;
+  // The proposal signature is in-flight with its attestation installed; the
+  // status lookup must queue behind it rather than overwrite the slot.
+  const statusPromise = client.getStatus("tx-race", new Uint8Array([1]));
+  await Promise.resolve();
+  assert.deepEqual(signedPhases, ["proposal"]);
+  releaseEndorseSign?.();
+  await endorsePromise;
+  const status = await statusPromise;
+  assert.equal(status.status, "VALID");
+  assert.deepEqual(signedPhases, ["proposal", "query"]);
   assert.equal(context.current, undefined);
 });
 

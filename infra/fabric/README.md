@@ -121,13 +121,20 @@ requires an `org_id` binding, so no client-claimed organisation is ever signed
 into evidence; the development keys in `examples/order-workflow` enable it.
 Each attested signature produces an `attestation_signature` receipt over the
 canonical decision payload — the signer verifies it cryptographically and
-rejects missing or forged receipts — and, with `--audit-log ABSOLUTE_PATH`, a
-JSONL audit record the organisation retains as its testimony. The audit file is
-opened once with no-follow semantics, validated by descriptor, and closed with
-the service. The gateway client refreshes the shared attestation context
-immediately before the SDK's endorse, submit, status and evaluate signing
-calls, and the remote signer consumes the slot once per request, so the receipt
-binds the exact command decision and transaction ID without stale reuse.
+rejects missing or forged receipts, and may hand the verified receipt and its
+canonical evidence to an `onAttestationReceipt` callback so the application can
+retain the proof. With `--audit-log ABSOLUTE_PATH` the service also appends a
+JSONL audit record the organisation retains as its testimony. The audit file
+must not collide with any configured key, certificate or socket path; it is
+opened once with no-follow semantics, validated by descriptor, appended with
+complete writes, and closed with the service. The gateway client serialises
+every signer-bearing SDK call on a connection — endorse, submit, status and
+evaluate — installing the attestation inside the same critical section the
+signer consumes it from, so a concurrent read can never overwrite or steal an
+in-flight decision attestation. The qscc lookup gateway signs through a
+dedicated slot and signer separate from the write path, and the remote signer
+consumes its slot once per request, so the receipt binds the exact command
+decision and transaction ID without stale reuse.
 
 Before submitting document content, the organization gateway must perform the
 explicit publication preview and recipient/configuration checks in the design.
