@@ -27,6 +27,10 @@ test('subjectActorResolver binds only the configured issuer and subject', { skip
   assert.equal(resolve('https://evil.example/', 'dev-sales-owner'), undefined);
   // Trailing-slash and origin differences are canonicalised by URL parsing.
   assert.deepEqual(resolve('http://127.0.0.1:4320', 'dev-sales-owner'), sales);
+  // malformed 후보 issuer는 예외가 아니라 거부다 — 리졸버는 항상 total 이어야 한다.
+  assert.equal(resolve('not-a-url', 'dev-sales-owner'), undefined);
+  assert.equal(resolve('', 'dev-sales-owner'), undefined);
+  assert.equal(resolve('http://[::1', 'dev-sales-owner'), undefined);
 });
 
 test('createOidcAdapter wires the subject map into the authentication boundary', { skip: !available }, async t => {
@@ -47,4 +51,11 @@ test('createOidcAdapter refuses a non-loopback HTTP issuer without development m
   assert.ok(adapter);
   const subjects = new Map([['dev-sales-owner', sales]] as const);
   await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'http://idp.example.com/', clientId: 'knowledger-development-client', redirectUri: 'https://app.example.com/auth/callback', subjects }), /HTTPS/);
+});
+
+test('createOidcAdapter fails fast on an empty subject map and rejects configuration errors', { skip: !available }, async () => {
+  assert.ok(adapter);
+  await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'https://idp.example.com/', clientId: 'c', redirectUri: 'https://app.example.com/cb', subjects: new Map() }), /subject binding/);
+  const subjects = new Map([['dev-sales-owner', sales]] as const);
+  await assert.rejects(() => adapter.createOidcAdapter({ issuer: 'not-a-url', clientId: 'c', redirectUri: 'https://app.example.com/cb', subjects }));
 });
