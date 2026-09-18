@@ -193,9 +193,10 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   대조해 오탐으로 판정했다(파일명·schema 버전·smoke 저널 필드는 stale diff 조각 기반).
   codex quota 소진·grok 타임아웃은 3라운드 연속이라 무효 처리했다. 유효 블로커가 없어
   PR #3을 squash `b073c81`로 머지했다(MERGEABLE/CLEAN, 전 job 통과 확인 후).
-  남은 LOW는 후속 정리 대상: 미사용 export 표면 정리, `reportCliResult`의 process I/O 결합,
-  테스트 import·spawn 스타일 통일, fabric CLI 안내 문구 보강, fabric 비교 테스트의
-  CI 실행 근거 확인.
+  남은 LOW는 **PR #4(`e636166`)로 정리 완료** — 미사용 export 제거, `CliResultIo` io 주입,
+  `ComparisonReport` 타입, 테스트 import·spawn 통일, CLI 안내 문구 보강, `journalPath`
+  센티널 제거. fabric-boundaries 잡이 `experiments.test.ts`를 실행해 fabric 비교 테스트의
+  CI 공백도 메웠다(로그에서 skip 없이 실행 확인).
 - 이번 변경으로 `npm run demo`, 브라우저 검사, 대규모 벤치마크, 운영 네트워크 시험은 실행하지 않았다.
 - PR #3 원격 CI 통과: local-runtime Node24·26, fabric-boundaries, browser-and-experiments
   (커밋별 push+pull_request run 전부 success — 브라우저 job 안의 `test:performance`가
@@ -271,9 +272,8 @@ python3 -B tools/check_docs.py
    O(상태) Map 복사가 남는다(포인터 복사라 측정상 39배 개선).
    이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
 4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): **PR #3 머지 완료(squash `b073c81`)**.
-   6라운드 리뷰 루프에서 유효 블로커를 모두 해소했다. 남은 LOW 유지보수성 항목
-   (미사용 export 정리·`reportCliResult` I/O 분리·테스트 스타일 통일·fabric 안내 문구)은
-   후속 정리로 처리할 수 있다.
+   6라운드 리뷰 루프에서 유효 블로커를 모두 해소했고, 남은 LOW 항목은
+   **PR #4(`e636166`)로 정리 완료** — 성능 도구 잔여 과제는 없다.
 5. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
