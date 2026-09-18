@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { idempotencyDigest } from "../../packages/domain/index.ts";
 import { decisionAttestation, queryAttestation, FabricGatewayTransport, connectOfficialFabricGateway } from "../../packages/fabric/gateway.ts";
-import { assertSigningAttestation, attestationSlot, type Attestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import { assertSigningAttestation, attestationSlot, createAttestationSerializer, releaseAttestationSerializer, type Attestation, type SigningAttestation, type SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { SqliteOutbox } from "../../packages/fabric/sqlite-outbox.ts";
 import type { DurableOutbox, FabricGatewayClient, GatewayCommand, GatewayProposal } from "../../packages/fabric/types.ts";
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -227,6 +227,10 @@ test("read-only signing paths install a query attestation instead of a stale com
   assert.equal(context.current, undefined);
   client.close();
   assert.equal(context.current, undefined);
+  // Closing the connection also releases the serializer claim: a reconnect
+  // may claim the same context object instead of hitting 'already claimed'.
+  const reclaimed = createAttestationSerializer(context);
+  releaseAttestationSerializer(context, reclaimed);
 });
 
 test("a concurrent status lookup cannot steal an in-flight decision attestation", async () => {

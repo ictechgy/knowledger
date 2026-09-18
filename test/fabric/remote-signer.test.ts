@@ -178,7 +178,7 @@ test("development signing service signs with only the approved test identities",
     const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => devQueryAttestation() });
     const signature = await signer(Buffer.alloc(32, 7));
     assert.ok(signature.byteLength > 0);
-  } finally { await service.close(); }
+  } finally { await service.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("development signing service derives its audit log beside the socket when none is given", async t => {
@@ -229,7 +229,7 @@ test("development signing service attests each approved organisation binding and
       const cross = createRemoteSigner({ socketPath: service.socketPath, keyId: binding.keyId, certificate, attestation: () => ({ org_id: foreign.msp, actor_id: binding.keyId, actor_kind: "human" as const, phase: "query" as const }) });
       await assert.rejects(() => cross(Buffer.alloc(32, 9)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
     }
-  } finally { await service.close(); }
+  } finally { await service.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('signing service bounds idle connections and closes partial frames', async t => {
@@ -968,6 +968,11 @@ test("signing service rejects malformed attestations as invalid requests", async
       ]) {
         assert.deepEqual(await rawSignRequest(service.socketPath, request(attestation)), { ok: false, error: "invalid_request" });
       }
+      // The client applies the same shape check before any socket round-trip:
+      // a decision attestation without tx_id fails locally as invalid_request.
+      const { tx_id: _droppedTx, ...clientWithoutTx } = devAttestation();
+      const signer = createRemoteSigner({ socketPath: join(tmpdir(), "kcl-never.sock"), keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => clientWithoutTx as Attestation });
+      await assert.rejects(() => signer(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "invalid_request" && /missing or unknown fields/.test(error.message));
     } finally { await service.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

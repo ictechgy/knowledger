@@ -97,17 +97,18 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
       let client: Awaited<ReturnType<typeof connectOfficialFabricGateway>> | undefined;
       let gateway: ReturnType<typeof sdk.connect> | undefined;
       let outbox: SqliteOutbox | undefined;
+      let qsccSigned: AttestationSerializer | undefined;
       try {
         client = await connectOfficialFabricGateway({ client: rpc, channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, credentials: { msp_id: actor.org_id, certificate, signer }, authorize: phase => options.authorizeActor(actor, phase), attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }), endorseOptions: () => ({ deadline: Date.now() + 5000 }), submitOptions: () => ({ deadline: Date.now() + 5000 }), commitStatusOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(options.dataDir, configuredOutboxFile(actor.org_id, actor.actor_id)));
         // Claim the qscc serializer before publishing the route so a failed
         // claim cannot leave a route closed twice by nested catch handlers.
-        const qsccSigned = createAttestationSerializer(qsccContext);
+        qsccSigned = createAttestationSerializer(qsccContext);
         const opened = { client, gateway, outbox, rpc };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => opened.rpc.close(), () => releaseAttestationSerializer(qsccContext, qsccSigned)]); } });
         qsccGateways.push({ actor, gateway, signed: qsccSigned });
-      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close()]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
+      } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close(), () => { if (qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, qsccSigned); }]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
     // qscc reads are attested under the first configured binding's actor;
