@@ -467,9 +467,54 @@ test("signing service audits a rejected attestation attempt", async t => {
       const records = readFileSync(auditLogPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
       assert.equal(records.length, 1);
       assert.equal(records[0].record_type, "signing_rejected");
+      assert.equal(records[0].reason, "attestation_rejected");
       assert.equal(records[0].attestation, null);
     } finally { await service.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service audits a certificate mismatch with certificate evidence", async t => {
+  if (!sdkAvailable || !opensslAvailable()) { t.skip("Fabric SDK and OpenSSL are required"); return; }
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-audit-mismatch-"));
+  try {
+    const identity = generateAttestedIdentity(directory, { "kcl.actor_id": "person-sales-owner", "kcl.actor_kind": "human" });
+    const other = generateAttestedIdentity(directory, { "kcl.actor_id": "person-other", "kcl.actor_kind": "human" }, "ec", "person-other");
+    const auditLogPath = join(directory, "audit.jsonl");
+    const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
+    try {
+      // The caller presents a different certificate than the configured one:
+      // the audit must record what the configured certificate claims.
+      const raw = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate: other.certificate, attestation: () => devQueryAttestation({ actor_id: "person-other" }) });
+      await assert.rejects(() => raw(Buffer.alloc(32)), (error: unknown) => error instanceof RemoteSignerError && error.code === "rejected");
+      const records = readFileSync(auditLogPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(records.length, 1);
+      assert.equal(records[0].record_type, "signing_rejected");
+      assert.equal(records[0].reason, "certificate_mismatch");
+      assert.equal(records[0].certificate_actor.actor_id, "person-sales-owner");
+      assert.equal(records[0].attestation.actor_id, "person-other");
+    } finally { await service.close(); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("signing service refuses require_attestation without an organisation binding", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "knowledger-signing-norg-"));
+  try {
+    // Configuration validation precedes key loading, so the unusable
+    // combination is rejected before certificate files are even read.
+    await assert.rejects(
+      () => startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: join(directory, "cert.pem"), private_key_path: join(directory, "key.pem"), require_attestation: true }] }),
+      (error: unknown) => error instanceof Error && error.message.includes("organisation binding"),
+    );
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a second serializer cannot claim an attestation context", () => {
+  const context: SigningAttestationContext = {};
+  createAttestationSerializer(context);
+  assert.throws(
+    () => createAttestationSerializer(context),
+    (error: unknown) => error instanceof Error && error.message.includes("claimed by another serializer"),
+  );
 });
 
 /** Real paths currently held open by this process (Linux /proc or lsof). */
@@ -503,7 +548,8 @@ test("signing service closes the audit descriptor on shutdown", async t => {
     assert.ok((await signer(Buffer.alloc(32, 12))).byteLength > 0);
     const auditRealPath = fs.realpathSync(auditLogPath);
     const targetsWhileOpen = openFileTargets();
-    if (targetsWhileOpen !== undefined) assert.ok(targetsWhileOpen.includes(auditRealPath), "audit file is held open while the service runs");
+    if (targetsWhileOpen === undefined) t.diagnostic("open-descriptor listing unsupported; fd assertions skipped");
+    else assert.ok(targetsWhileOpen.includes(auditRealPath), "audit file is held open while the service runs");
     await service.close();
     assert.ok(readFileSync(auditLogPath, "utf8").includes("signing_attestation"));
     const targetsAfterClose = openFileTargets();

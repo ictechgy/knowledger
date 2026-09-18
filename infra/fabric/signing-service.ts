@@ -128,7 +128,7 @@ function assertKeyReferences(value: readonly SigningKeyReference[]): readonly Si
       || typeof entry.private_key_path !== "string" || !isAbsolute(entry.private_key_path)) {
       throw new TypeError("Signing key references must contain unique absolute paths and safe IDs");
     }
-    const kinds = entry.allowed_actor_kinds ?? ["human"];
+    const kinds: readonly ("human" | "agent")[] = entry.allowed_actor_kinds ?? ["human"];
     if (entry.org_id !== undefined && (typeof entry.org_id !== "string" || entry.org_id.length === 0 || entry.org_id.length > 128)
       || !Array.isArray(kinds) || kinds.length === 0 || kinds.length > 2 || new Set(kinds).size !== kinds.length
       || kinds.some(kind => kind !== "human" && kind !== "agent")
@@ -233,17 +233,23 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
     void (async () => {
       try {
         const certificate = base64(request.certificate, undefined, MAX_CERTIFICATE_BYTES);
-        if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) { response(socket, { ok: false, error: "rejected" }); return; }
+        if (Date.now() < key.validFrom || Date.now() >= key.validTo || !compareCertificate(certificate, key.certificate)) {
+          audit?.({ record_type: "signing_rejected", reason: "certificate_mismatch", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: request.attestation ?? null, certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
+          response(socket, { ok: false, error: "rejected" }); return;
+        }
         const digest = base64(request.digest, 32);
         const attestation = request.attestation;
         // Attested signing always requires a configured organisation binding;
         // otherwise a caller could have any claimed organisation signed into
         // the evidence record. The service sees an opaque digest, so the
-        // attested phase and command binding are caller-asserted evidence:
-        // auditors reconcile tx_id/digest in this record against the ledger
-        // (a write signed under a "query" claim appears on the ledger without
-        // a matching attested tx_id). An operational gateway re-derives the
-        // binding from the proposal bytes before signing.
+        // attested phase and command binding are caller-asserted claims
+        // countersigned into evidence — it cannot prove which Fabric operation
+        // the digest belongs to, and a caller able to drive this endpoint can
+        // mint equivalent bytes, so a receipt is an operational record for
+        // honest clients rather than independent verification. Auditors
+        // reconcile each record's tx_id/digest against the ledger (a write
+        // signed under a "query" claim leaves no attested tx_id), and an
+        // operational gateway re-derives the binding from proposal bytes.
         const attestationRejected = attestation === undefined
           ? key.require_attestation
           : key.org_id === undefined
@@ -251,7 +257,7 @@ async function serveSocket(socket: Socket, keys: Map<string, LoadedKey>, acquire
             || key.org_id !== attestation.org_id
             || !key.allowed_actor_kinds.includes(attestation.actor_kind);
         if (attestationRejected) {
-          audit?.({ record_type: "signing_rejected", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex") });
+          audit?.({ record_type: "signing_rejected", reason: "attestation_rejected", version: 1, timestamp: new Date().toISOString(), key_id: request.key_id, attestation: attestation ?? null, digest: digest.toString("base64url"), certificate_sha256: createHash("sha256").update(certificate).digest("hex"), certificate_actor: { actor_id: key.actor_id ?? null, actor_kind: key.actor_kind ?? null } });
           response(socket, { ok: false, error: "rejected" }); return;
         }
         // The Fabric digest and the attestation evidence are signed

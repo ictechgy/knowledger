@@ -235,10 +235,14 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
     return digest;
   };
   const actor = { org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" } as const;
-  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-race", async getStatus() { await signer(new Uint8Array(32)); return { code: 0 }; } };
+  // Deterministic entry signals prove neither read entered its SDK call while
+  // the decision signature was in-flight — a single microtask yield alone
+  // could pass under a non-serialising implementation.
+  const entered: string[] = [];
+  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-race", async getStatus() { entered.push("status"); await signer(new Uint8Array(32)); return { code: 0 }; } };
   const fakeContract = {
     newProposal() { return { getTransactionId: () => "tx-race", async endorse() { await signer(new Uint8Array(32)); return { async submit() { return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
-    async evaluateTransaction(name: string) { await signer(new Uint8Array(32)); return name === "GetCommand" ? new TextEncoder().encode(JSON.stringify({ record_type: "IdempotencyRecord", command_id: "cmd-race", command_digest: "sha256:x", result: {} })) : new Uint8Array(); },
+    async evaluateTransaction(name: string) { entered.push("evaluate"); await signer(new Uint8Array(32)); return name === "GetCommand" ? new TextEncoder().encode(JSON.stringify({ record_type: "IdempotencyRecord", command_id: "cmd-race", command_digest: "sha256:x", result: {} })) : new Uint8Array(); },
   };
   const client = await connectOfficialFabricGateway({
     client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
@@ -260,6 +264,7 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
   const resultPromise = client.getAuthoritativeCommandResult({ command_id: "cmd-race", actor_org_id: "SalesMSP" });
   await Promise.resolve();
   assert.deepEqual(signedPhases, ["proposal"]);
+  assert.deepEqual(entered, []);
   assert.equal(context.current, undefined);
   releaseEndorseSign?.();
   await endorsePromise;
@@ -267,6 +272,93 @@ test("a concurrent status lookup cannot steal an in-flight decision attestation"
   assert.equal(status.status, "VALID");
   assert.equal((await resultPromise)?.payload_digest, "sha256:x");
   assert.deepEqual(signedPhases, ["proposal", "query", "query"]);
+  assert.equal(context.current, undefined);
+});
+
+test("a concurrent status lookup cannot steal an in-flight submit attestation", async () => {
+  const context: SigningAttestationContext = {};
+  const signedPhases: Array<string | undefined> = [];
+  let releaseSubmitSign: (() => void) | undefined;
+  let submitSignStarted: (() => void) | undefined;
+  const submitGate = new Promise<void>(resolve => { releaseSubmitSign = resolve; });
+  const submitSignSeen = new Promise<void>(resolve => { submitSignStarted = resolve; });
+  const take = attestationSlot(context);
+  const signer = async (digest: Uint8Array) => {
+    const attestation = take() as { phase?: string } | undefined;
+    signedPhases.push(attestation?.phase);
+    if (attestation?.phase === "submit") { submitSignStarted?.(); await submitGate; }
+    return digest;
+  };
+  const actor = { org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" } as const;
+  const entered: string[] = [];
+  const commit = { getBytes: () => new Uint8Array([1]), getTransactionId: () => "tx-submit-race", async getStatus() { entered.push("status"); await signer(new Uint8Array(32)); return { code: 0 }; } };
+  const fakeContract = {
+    newProposal() { return { getTransactionId: () => "tx-submit-race", async endorse() { await signer(new Uint8Array(32)); return { async submit() { await signer(new Uint8Array(32)); return commit; }, async getResult() { return new Uint8Array(); } }; } }; },
+    async evaluateTransaction() { entered.push("evaluate"); await signer(new Uint8Array(32)); return new Uint8Array(); },
+  };
+  const client = await connectOfficialFabricGateway({
+    client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
+    module: { connect() { return { newCommit: () => commit, getNetwork() { return { getContract() { return fakeContract; } }; } }; } },
+    attestation: {
+      context,
+      build: (cmd, phase, txId) => decisionAttestation(actor, cmd, phase, txId),
+      buildQuery: () => queryAttestation(actor),
+    },
+  });
+  const endorsement = await (await client.newProposal(command("cmd-submit-race"))).endorse();
+  const submitPromise = endorsement.submit();
+  await submitSignSeen;
+  // The submit signature is in-flight; the read must queue behind it.
+  const statusPromise = client.getStatus("tx-submit-race", new Uint8Array([1]));
+  await Promise.resolve();
+  assert.deepEqual(signedPhases, ["proposal", "submit"]);
+  assert.deepEqual(entered, []);
+  releaseSubmitSign?.();
+  await submitPromise;
+  const status = await statusPromise;
+  assert.equal(status.status, "VALID");
+  assert.deepEqual(signedPhases, ["proposal", "submit", "query"]);
+  assert.equal(context.current, undefined);
+});
+
+test("concurrent commands sign only their own decision attestation", async () => {
+  const context: SigningAttestationContext = {};
+  const signed: Array<SigningAttestation | undefined> = [];
+  const take = attestationSlot(context);
+  const signer = async (digest: Uint8Array) => { signed.push(take() as SigningAttestation | undefined); return digest; };
+  const actor = { org_id: "SalesMSP", actor_id: "person-sales-owner", kind: "human" } as const;
+  const fakeContract = {
+    newProposal(id: string) { return { getTransactionId: () => `tx-${id}`, async endorse() { await signer(new Uint8Array(32)); return { async submit() { await signer(new Uint8Array(32)); return { async getStatus() { return { code: 0 }; } }; }, async getResult() { return new Uint8Array(); } }; } }; },
+    async evaluateTransaction() { return new Uint8Array(); },
+  };
+  let nextId = 0;
+  const client = await connectOfficialFabricGateway({
+    client: {}, channel_id: "kcl-demo", chaincode_name: "kcl",
+    credentials: { msp_id: "SalesMSP", certificate: new Uint8Array([1]), signer },
+    module: { connect() { return { getNetwork() { return { getContract() { return { newProposal: () => fakeContract.newProposal(`cmd-${++nextId}`), evaluateTransaction: fakeContract.evaluateTransaction }; } }; } }; } },
+    attestation: {
+      context,
+      build: (cmd, phase, txId) => decisionAttestation(actor, cmd, phase, txId),
+      buildQuery: () => queryAttestation(actor),
+    },
+  });
+  // Two commands endorsed concurrently on one connection: each signature must
+  // carry the attestation of its own command and transaction, never the
+  // sibling's.
+  const [cmdA, cmdB] = [command("cmd-a"), command("cmd-b")];
+  await Promise.all([
+    (await client.newProposal(cmdA)).endorse().then(e => e.submit()),
+    (await client.newProposal(cmdB)).endorse().then(e => e.submit()),
+  ]);
+  assert.equal(signed.length, 4);
+  const digestFor = (cmd: GatewayCommand) => idempotencyDigest(cmd);
+  for (const attestation of signed) {
+    assert.ok(attestation !== undefined);
+    const cmd = attestation.command_id === "cmd-a" ? cmdA : cmdB;
+    assert.equal(attestation.command_digest, digestFor(cmd));
+    assert.equal(attestation.tx_id, `tx-cmd-${attestation.command_id === "cmd-a" ? 1 : 2}`);
+  }
   assert.equal(context.current, undefined);
 });
 
