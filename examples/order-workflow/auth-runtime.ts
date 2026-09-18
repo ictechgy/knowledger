@@ -27,7 +27,7 @@ export async function createDevelopmentAuthRuntime(options: { dataDir: string; o
       signerProvider: (actor, certificate, attestation) => {
         const keyId = DEVELOPMENT_SIGNING_KEY_IDS.find(id => id === actor.actor_id);
         if (!keyId) throw new Error('No development signing key is bound to this actor');
-        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate, attestation: attestation === undefined ? undefined : attestationSlot(attestation) });
+        return createRemoteSigner({ socketPath: options.socketPath, keyId, certificate, attestation: attestationSlot(attestation) });
       },
       authorizeActor: actor => authentication.assertCurrentActor(actor),
     });

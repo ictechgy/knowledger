@@ -11,7 +11,8 @@ import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from '../../packages/fabric/gateway.ts';
 import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
-import type { SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
+import type { Attestation, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
+import { createAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
 import type { FabricSigningRoute } from '../../packages/fabric/application-ledger.ts';
 import { SqliteOutbox } from '../../packages/fabric/sqlite-outbox.ts';
@@ -19,7 +20,8 @@ import type { Actor } from '../../packages/storage/local-ledger.ts';
 
 export interface FabricTestRuntimeOptions {
   organization?: DevelopmentOrganization;
-  signerProvider?: (actor: Actor, certificate: Uint8Array, attestation?: SigningAttestationContext) => (digest: Uint8Array) => Promise<Uint8Array>;
+  /** Remote signer factory; the attestation slot is required because development keys all demand attested signing. */
+  signerProvider?: (actor: Actor, certificate: Uint8Array, attestation: SigningAttestationContext) => (digest: Uint8Array) => Promise<Uint8Array>;
   authorizeActor?: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
 }
 
@@ -34,7 +36,7 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
   const cryptoRoot = fileURLToPath(new URL('../../.data/fabric-smoke/crypto/peerOrganizations/', import.meta.url));
   const routes: FabricSigningRoute[] = [];
   const gateways: any[] = [];
-  const attestationBindings: Array<{ actor: Actor; context: SigningAttestationContext }> = [];
+  const qsccBindings: Array<{ actor: Actor; signed: <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T> }> = [];
   let projection: SqliteFabricProjection | undefined;
   try {
     const selectedOrganizations = organization ? [organization] : DEVELOPMENT_ORGANIZATIONS;
@@ -50,13 +52,20 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       if (Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now()) throw new Error('Test enrollment certificate is outside its validity period');
       const attestationContext: SigningAttestationContext = {};
       let signer: (digest: Uint8Array) => Promise<Uint8Array>;
-      if (options.signerProvider) signer = options.signerProvider(actor, certificate, attestationContext);
-      else {
+      // qscc signing gets its own slot and signer so read-only evaluations can
+      // never overwrite or steal an in-flight decision attestation.
+      const qsccContext: SigningAttestationContext = {};
+      let qsccSigner: (digest: Uint8Array) => Promise<Uint8Array>;
+      if (options.signerProvider) {
+        signer = options.signerProvider(actor, certificate, attestationContext);
+        qsccSigner = options.signerProvider(actor, certificate, qsccContext);
+      } else {
         const keys = readdirSync(join(msp, 'keystore')).filter(name => name.endsWith('_sk'));
         if (keys.length !== 1) throw new Error('Expected one test enrollment signing key');
         const privateKey = createPrivateKey(readFileSync(join(msp, 'keystore', keys[0])));
         if (!parsed.checkPrivateKey(privateKey)) throw new Error('Test enrollment key does not match its certificate');
         signer = sdk.signers.newPrivateKeySigner(privateKey);
+        qsccSigner = signer;
       }
       const identity = new ClientIdentity({ getCreator: () => ({ mspid: actor.org_id, idBytes: certificate }), getChannelID: () => 'kcl-demo', getTxID: () => 'identity-validation' });
       if (identity.getAttributeValue('kcl.actor_id') !== actor.actor_id || identity.getAttributeValue('kcl.actor_kind') !== actor.kind) throw new Error('Test certificate attributes do not match the signing route');
@@ -69,30 +78,26 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       let outbox: SqliteOutbox | undefined;
       try {
         client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
-        gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
+        gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         const opened = { client, gateway, outbox };
         routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { opened.outbox.close(); opened.client.close?.(); opened.gateway.close(); rpc.close(); } });
         gateways.push(gateway);
-        attestationBindings.push({ actor, context: attestationContext });
+        qsccBindings.push({ actor, signed: createAttestationSerializer(qsccContext) });
       } catch (error) { outbox?.close(); client?.close?.(); gateway?.close(); rpc.close(); throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
     const qscc = (gateways[1] ?? gateways[0]).getNetwork('kcl-demo').getContract('qscc');
-    const qsccBinding = attestationBindings[1] ?? attestationBindings[0];
+    const qsccBinding = qsccBindings[1] ?? qsccBindings[0];
     const ledger = new FabricApplicationLedger({ projection, routes, source: {
       async getTip() {
-        // The qscc gateway shares its actor's signing route; evaluate calls
-        // attest as read-only organisational signing.
-        if (qsccBinding) qsccBinding.context.current = queryAttestation(qsccBinding.actor);
-        const bytes = await qscc.evaluateTransaction('GetChainInfo', 'kcl-demo');
+        // qscc signs through the actor's own slot; the serializer keeps the
+        // read-only attestation bound to this evaluation alone.
+        const bytes = await qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction('GetChainInfo', 'kcl-demo'));
         const info = common.BlockchainInfo.deserializeBinary(bytes);
         return { height: info.getHeight(), block_hash: Buffer.from(info.getCurrentblockhash_asU8()).toString('hex') };
       },
-      getBlock: number => {
-        if (qsccBinding) qsccBinding.context.current = queryAttestation(qsccBinding.actor);
-        return qscc.evaluateTransaction('GetBlockByNumber', 'kcl-demo', String(number));
-      },
+      getBlock: number => qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction('GetBlockByNumber', 'kcl-demo', String(number))),
     } });
     await ledger.recoverPending();
     return { ledger, personas: PERSONAS.filter(persona => persona.kind === 'human' && (!organization || persona.org_id === organization.org_id)), ...(organization ? { organization } : {}) };

@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the SDK's endorse, submit, status and evaluate signing calls, and the
   remote signer cryptographically verifies each receipt, rejecting missing or
   forged ones.
+- `createAttestationSerializer`: every signer-bearing SDK call on a gateway
+  connection is serialised so a concurrent status/evaluate lookup can never
+  overwrite or steal an in-flight decision attestation, and the qscc lookup
+  gateway signs through a dedicated slot and signer. Verified receipts can be
+  surfaced to callers through `onAttestationReceipt`.
+- Signing audit hardening: the audit log path may not collide with configured
+  key, certificate or socket paths; records are written completely and the
+  descriptor is released on shutdown.
 
 ## [0.2.0] — 2026-09-18
 

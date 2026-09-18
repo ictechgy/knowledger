@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, timingSafeEqual, X509Certificate, type KeyObject } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { createRequire } from "node:module";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson } from "../../packages/fabric/canonical.ts";
@@ -141,7 +141,7 @@ function assertKeyReferences(value: readonly SigningKeyReference[]): readonly Si
   }));
 }
 
-function certificateActor(certificate: Buffer): { actor_id?: string; actor_kind?: "human" | "agent" } {
+function certificateActor(certificate: Buffer): { actor_id?: string; actor_kind?: "human" | "agent"; error?: string } {
   try {
     const { ClientIdentity } = requireFabric("fabric-shim") as { ClientIdentity: new (stub: unknown) => { getAttributeValue(name: string): string | null } };
     const identity = new ClientIdentity({ getCreator: () => ({ mspid: "", idBytes: certificate }), getChannelID: () => "", getTxID: () => "signing-service-validation" });
@@ -150,7 +150,7 @@ function certificateActor(certificate: Buffer): { actor_id?: string; actor_kind?
     if (typeof actorId !== "string" || actorId.length === 0 || actorId.length > 128) return {};
     if (actorKind !== "human" && actorKind !== "agent") return {};
     return { actor_id: actorId, actor_kind: actorKind };
-  } catch { return {}; }
+  } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
 }
 
 function loadKeys(references: readonly SigningKeyReference[]): Map<string, LoadedKey> {
@@ -166,15 +166,15 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || Date.now() < validFrom || Date.now() >= validTo) throw new Error("expired certificate");
       const privateKey = createPrivateKey(readFileSync(reference.private_key_path));
       if (!x509.checkPrivateKey(privateKey)) throw new Error("certificate and key do not match");
-      const actor = certificateActor(certificate);
+      const { error: actorError, ...actor } = certificateActor(certificate);
       // A key that serves attested requests must be able to bind its actor
       // attributes; failing here distinguishes misconfiguration from a rejected
       // attestation at request time.
       if ((reference.org_id !== undefined || reference.require_attestation === true) && (actor.actor_id === undefined || actor.actor_kind === undefined)) {
-        throw new Error("certificate is missing the actor attributes required for attested signing");
+        throw new Error(`certificate is missing the actor attributes required for attested signing${actorError === undefined ? "" : `: ${actorError}`}`);
       }
       loaded.set(reference.key_id, { certificate, validFrom, validTo, sign: sdk.signers.newPrivateKeySigner(privateKey), ...(reference.org_id === undefined ? {} : { org_id: reference.org_id }), ...actor, allowed_actor_kinds: reference.allowed_actor_kinds ?? Object.freeze(["human"]), require_attestation: reference.require_attestation === true });
-    } catch { throw new Error("Configured signing identity is invalid"); }
+    } catch (error) { throw new Error("Configured signing identity is invalid", { cause: error }); }
   }
   return loaded;
 }
@@ -288,12 +288,25 @@ interface AuditLog {
   close(): void;
 }
 
-function openAuditLog(path: string): AuditLog {
+function openAuditLog(path: string, reservedPaths: readonly string[]): AuditLog {
   if (typeof path !== "string" || path.length === 0 || !isAbsolute(path) || path.includes("\u0000") || Buffer.byteLength(path) > MAX_AUDIT_PATH_BYTES) throw new TypeError("A valid audit log path is required");
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing audit log parent directory must be mode 700");
+  // Audit appends must never land on key material, certificates or the service
+  // socket: check resolved paths (and inodes for existing files) against every
+  // configured filesystem object.
+  const resolvedAudit = resolve(path);
+  for (const reserved of reservedPaths) {
+    if (resolve(reserved) === resolvedAudit) throw new Error("Signing audit log path collides with a configured file");
+    try {
+      if (realpathSync(reserved) === realpathSync(path)) throw new Error("Signing audit log path collides with a configured file");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("collides")) throw error;
+      if ((error as { code?: string }).code !== "ENOENT") throw error;
+    }
+  }
   // Open once and keep the descriptor: re-opening per record would let a
   // symlink or inode replacement slip between validation and append.
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
@@ -304,7 +317,18 @@ function openAuditLog(path: string): AuditLog {
     closeSync(fd);
     throw error;
   }
-  return { audit: record => writeSync(fd, `${JSON.stringify(record)}\n`), close: () => closeSync(fd) };
+  let closed = false;
+  return {
+    audit: record => {
+      // In-flight handlers may finish after close(); writing then could hit a
+      // reused descriptor, so late records are dropped instead.
+      if (closed) return;
+      const line = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+      let written = 0;
+      while (written < line.byteLength) written += writeSync(fd, line.subarray(written));
+    },
+    close: () => { if (!closed) { closed = true; closeSync(fd); } },
+  };
 }
 
 export async function startSigningService(options: { socketPath: string; keys: readonly SigningKeyReference[]; auditLogPath?: string }): Promise<SigningService> {
@@ -315,8 +339,9 @@ export async function startSigningService(options: { socketPath: string; keys: r
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentMode = lstatSync(parent).mode & 0o777;
   if (parentMode !== 0o700) throw new Error("Signing socket parent directory must be mode 700");
-  const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath);
-  const keys = loadKeys(assertKeyReferences(options.keys));
+  const references = assertKeyReferences(options.keys);
+  const keys = loadKeys(references);
+  const auditLog = options.auditLogPath === undefined ? undefined : openAuditLog(options.auditLogPath, [socketPath, ...references.flatMap(reference => [reference.certificate_path, reference.private_key_path])]);
   let active = 0;
   const connections = new Set<Socket>();
   const server: Server = createServer(socket => {
@@ -335,7 +360,8 @@ export async function startSigningService(options: { socketPath: string; keys: r
   server.maxConnections = MAX_CONNECTIONS;
   let owned = false;
   let ownedSocket: { dev: number; ino: number } | undefined;
-  await new Promise<void>((resolveReady, rejectReady) => {
+  try {
+    await new Promise<void>((resolveReady, rejectReady) => {
     let onListening: () => void;
     const onError = (error: Error & { code?: string }): void => { server.off("listening", onListening); rejectReady(new Error(error.code === "EADDRINUSE" ? "Signing socket is already in use" : "Signing service failed to listen")); };
     onListening = (): void => {
@@ -353,7 +379,11 @@ export async function startSigningService(options: { socketPath: string; keys: r
     server.once("error", onError);
     server.once("listening", onListening);
     server.listen(socketPath);
-  });
+    });
+  } catch (error) {
+    auditLog?.close();
+    throw error;
+  }
   let closed = false;
   return {
     socketPath,

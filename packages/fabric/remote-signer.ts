@@ -105,6 +105,8 @@ export interface RemoteSignerOptions {
   timeoutMs?: number;
   /** Per-request decision context; called before every signing frame is sent. */
   attestation?: () => Attestation | undefined;
+  /** Called with each verified attestation receipt and its canonical evidence so callers can keep the proof. */
+  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array) => void;
 }
 
 interface SignRequest {
@@ -238,6 +240,30 @@ export function attestationSlot(context: SigningAttestationContext): () => Attes
 }
 
 /**
+ * Serialises [install attestation → SDK signing call → clear] on one shared
+ * slot. A mutable context is only safe while every signer-bearing operation on
+ * the connection holds this queue, so concurrent evaluate/status calls can
+ * never overwrite or steal an in-flight decision attestation.
+ */
+export function createAttestationSerializer(context: SigningAttestationContext): <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T> {
+  let queue: Promise<void> = Promise.resolve();
+  return <T>(attestation: Attestation | undefined, operation: () => Promise<T>): Promise<T> => {
+    const run = queue.then(async () => {
+      context.current = attestation;
+      try {
+        return await operation();
+      } finally {
+        // A failed operation may never reach the signing point; never leave a
+        // stale attestation for the next operation to consume.
+        if (context.current === attestation) context.current = undefined;
+      }
+    });
+    queue = run.then(() => undefined, () => undefined);
+    return run;
+  };
+}
+
+/**
  * Create a Fabric Gateway-compatible signer callback. The supplied digest is
  * sent as-is; it is already SHA-256 hashed by the official Gateway SDK.
  */
@@ -329,11 +355,15 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
             const response = decodeResponse(received.subarray(4));
             // An attested request must come back with a receipt the organisation
             // key actually signed over this exact request; otherwise the evidence
-            // chain is silently absent.
-            if (attestation !== undefined
-              && (response.attestationSignature === undefined
-                || !verifyAttestationReceipt(certificate, options.keyId, attestation, digest, response.attestationSignature))) {
+            // chain is silently absent. A receipt on an unattested request is
+            // equally malformed.
+            if (attestation === undefined ? response.attestationSignature !== undefined
+              : response.attestationSignature === undefined
+                || !verifyAttestationReceipt(certificate, options.keyId, attestation, digest, response.attestationSignature)) {
               throw new RemoteSignerError("protocol_error");
+            }
+            if (attestation !== undefined && response.attestationSignature !== undefined) {
+              options.onAttestationReceipt?.(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate));
             }
             decoded = response;
             socket.end();

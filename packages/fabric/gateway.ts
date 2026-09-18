@@ -1,5 +1,6 @@
 import { parseStrictJson } from "./canonical.ts";
 import { idempotencyDigest } from "../domain/index.ts";
+import { createAttestationSerializer } from "./remote-signer.ts";
 import type { Attestation, QueryAttestation, SigningAttestation, SigningAttestationContext } from "./remote-signer.ts";
 import type {
   Actor,
@@ -126,19 +127,16 @@ class OfficialGatewayClient implements FabricGatewayClient {
   private readonly mspId: string;
   private readonly authorize?: (phase: FabricWritePhase) => Promise<void>;
   private readonly attestation?: GatewayAttestation;
-  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string, authorize?: (phase: FabricWritePhase) => Promise<void>, attestation?: GatewayAttestation) { this.contract = contract; this.gateway = gateway; this.mspId = mspId; this.authorize = authorize; this.attestation = attestation; }
+  /** Serialises every signer-bearing SDK call so attestations cannot interleave. */
+  private readonly signed: <T>(attestation: Attestation | undefined, operation: () => Promise<T>) => Promise<T>;
+  constructor(contract: OfficialContract, gateway: OfficialGateway, mspId: string, authorize?: (phase: FabricWritePhase) => Promise<void>, attestation?: GatewayAttestation) {
+    this.contract = contract; this.gateway = gateway; this.mspId = mspId; this.authorize = authorize; this.attestation = attestation;
+    this.signed = attestation === undefined ? (_attestation, operation) => operation() : createAttestationSerializer(attestation.context);
+  }
 
   private async assertAuthorized(phase: FabricWritePhase): Promise<void> {
     try { await this.authorize?.(phase); }
     catch (error) { throw new FabricAuthorizationCancelled(error); }
-  }
-
-  private attest(command: GatewayCommand, phase: SigningPhase, txId?: string): void {
-    if (this.attestation) this.attestation.context.current = this.attestation.build(command, phase, txId);
-  }
-
-  private attestQuery(): void {
-    if (this.attestation) this.attestation.context.current = this.attestation.buildQuery();
   }
 
   async newProposal(command: GatewayCommand): Promise<GatewayProposal> {
@@ -150,16 +148,15 @@ class OfficialGatewayClient implements FabricGatewayClient {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
         await this.assertAuthorized('endorse');
-        // The SDK signs the proposal inside endorse(); attest immediately
-        // before so nothing else can consume or replace the decision context.
-        this.attest(command, 'proposal', proposal.getTransactionId());
-        const endorsed = await proposal.endorse();
+        // The SDK signs the proposal inside endorse(); the attestation install
+        // and the signing call are serialised so nothing else on this
+        // connection can consume or replace the decision context.
+        const endorsed = await this.signed(this.attestation?.build(command, 'proposal', proposal.getTransactionId()), () => proposal.endorse());
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
             await this.assertAuthorized('submit');
-            this.attest(command, 'submit', proposal.getTransactionId());
-            const commit = await endorsed.submit();
+            const commit = await this.signed(this.attestation?.build(command, 'submit', proposal.getTransactionId()), () => endorsed.submit());
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
             return commit;
@@ -185,8 +182,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
       if (commit.getTransactionId() !== tx_id) throw new Error('Persisted commit does not match its transaction');
     }
     if (!commit) return { status: "UNKNOWN" };
-    this.attestQuery();
-    const status = await commit.getStatus();
+    const status = await this.signed(this.attestation?.buildQuery(), () => commit.getStatus());
     const valid = status.code === 0 || status.code === "VALID";
     this.commits.delete(tx_id);
     return {
@@ -199,8 +195,7 @@ class OfficialGatewayClient implements FabricGatewayClient {
 
   async getAuthoritativeCommandResult(command: Pick<GatewayCommand, "command_id" | "actor_org_id">): Promise<AuthoritativeCommandResult | undefined> {
     if (command.actor_org_id !== this.mspId) throw new Error('Recovery organization does not match the signing identity');
-    this.attestQuery();
-    const bytes = await this.contract.evaluateTransaction("GetCommand", command.actor_org_id, command.command_id);
+    const bytes = await this.signed(this.attestation?.buildQuery(), () => this.contract.evaluateTransaction("GetCommand", command.actor_org_id, command.command_id));
     if (!bytes || bytes.byteLength === 0) return undefined;
     const record = parseStrictJson(bytes) as Record<string, unknown>;
     if (!record || record.record_type !== 'IdempotencyRecord' || record.command_id !== command.command_id || typeof record.command_digest !== "string" || !("result" in record)) return undefined;
