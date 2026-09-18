@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   query-shaped. Verified receipts can be surfaced to callers through
   `onAttestationReceipt`, whose own failures stay distinct from malformed
   protocol responses.
+- `createOidcAdapter` SSO boundary in `packages/auth/adapter.ts`: a shared
+  `(issuer, subject) → Actor` resolver normalizes the configured issuer,
+  rejects issuer mismatches, and maps only configured subjects — actor
+  selection never comes from browser input or token claims. The API runtime,
+  the order-workflow auth runtime, and the auth smoke tool all build the
+  `ApplicationAuthentication` boundary through the adapter.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,
