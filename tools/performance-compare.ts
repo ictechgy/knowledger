@@ -26,21 +26,48 @@ export class ComparisonInputError extends Error {
 /**
  * Baseline 대비 현재 값의 증가율. baseline이 0이면 현재 값이 0일 때만 통과한다.
  */
-export function increaseRatio(current: number, baseline: number): number {
+function increaseRatio(current: number, baseline: number): number {
   if (baseline === 0) return current === 0 ? 0 : Number.POSITIVE_INFINITY;
   return current / baseline - 1;
 }
 
 /** 비교 대상이 되는 실행 컨텍스트 — mode·environment·dataset이 같아야 수치 비교가 의미가 있다. */
-export interface ComparableContext {
+interface ComparableContext {
   mode: string;
   environment: Record<string, any>;
   dataset: Record<string, any>;
 }
 
+/** 메트릭 하나의 비교 결과 — baseline·현재 p95/ms 값, 증가율, 적용된 임계값.
+ * baseline이 0이고 현재 값이 양수면 증가율은 무한대이므로 JSON에는 null로 기록한다. */
+export interface MetricComparison {
+  metric: string;
+  baseline_ms: number;
+  current_ms: number;
+  ratio: number | null;
+  threshold: number | null;
+}
+
+/** 결과 JSON에 기록되는 비교 섹션 — --baseline이 있으면 성공(regressions·metrics)과
+ * 실패(error) 어느 쪽이든 흔적이 남고, 부재는 "--baseline 미지정" 정상 경로다. */
+export interface ComparisonReport {
+  baseline: string;
+  regressions?: string[];
+  metrics?: MetricComparison[];
+  error?: string;
+}
+
 /** reportCliResult가 요구하는 결과 형태 — 두 성능 도구의 결과 타입이 구조적으로 만족한다. */
 interface ComparableResult extends ComparableContext {
   metrics: Record<string, unknown>;
+  comparison?: ComparisonReport;
+}
+
+/** reportCliResult의 출력 경로 — 테스트가 process를 몽키패치하지 않고 검증할 수 있게 한다. */
+export interface CliResultIo {
+  stdout(text: string): void;
+  stderr(text: string): void;
+  setExitCode(code: number): void;
 }
 
 /** Baseline의 mode가 이번 실행과 같은지 확인한다 — shape 검증과 단독 호환성 검사가 공유한다. */
@@ -50,11 +77,16 @@ function assertModeMatches(baselineMode: unknown, expectedMode: string): void {
   }
 }
 
+/** baseline 필수 섹션 누락 오류 문구 — requireSection과 dataset 가드가 같은 문구를 쓴다. */
+function missingBaselineSection(section: string): ComparisonInputError {
+  return new ComparisonInputError(`baseline is missing the "${section}" section; regenerate the baseline with the same tool`);
+}
+
 /** baseline 레코드의 필수 객체 섹션을 확인한다 — shape 검증과 단독 호환성 검사가 공유한다. */
 function requireSection(record: Record<string, unknown>, section: string): Record<string, unknown> {
   const value = record[section];
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ComparisonInputError(`baseline is missing the "${section}" section; regenerate the baseline with the same tool`);
+    throw missingBaselineSection(section);
   }
   return value as Record<string, unknown>;
 }
@@ -63,7 +95,7 @@ function requireSection(record: Record<string, unknown>, section: string): Recor
  * Baseline JSON이 이 도구의 결과 스키마인지 확인한다. schema_version, mode,
  * environment, dataset, metrics, functional_assertions가 없으면 비교가 불가능하다.
  */
-export function validateBaselineShape(baseline: unknown, expectedMode: string): void {
+function validateBaselineShape(baseline: unknown, expectedMode: string): void {
   if (!baseline || typeof baseline !== 'object' || Array.isArray(baseline)) {
     throw new ComparisonInputError('baseline must be a JSON object produced by the same performance tool');
   }
@@ -90,7 +122,7 @@ export function validateBaselineShape(baseline: unknown, expectedMode: string): 
  * 특정 메트릭 값의 유효성을 검증한다. 비교와 판정은 유한한 음수가 아닌 수에서만 의미가 있다.
  * label은 "baseline.metrics.search"처럼 어느 쪽 값인지를 포함해 오류 원인을 오도하지 않는다.
  */
-export function validateMetricValue(value: unknown, label: string): number {
+function validateMetricValue(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     throw new ComparisonInputError(`metric value for ${label} must be a finite nonnegative number, got ${JSON.stringify(value)}; for baseline values regenerate the baseline with the same tool`);
   }
@@ -110,7 +142,7 @@ export function currentEnvironment(): { node: string; platform: string; arch: st
  * Baseline과 현재 실행의 environment가 같은지 확인한다. 다른 머신·Node 버전에서
  * 측정한 수치 비교는 무의미하므로 측정 전에도 호출할 수 있다.
  */
-export function assertEnvironmentComparable(baseline: Record<string, any>, current: Record<string, any>): void {
+function assertEnvironmentComparable(baseline: Record<string, any>, current: Record<string, any>): void {
   const mismatches: string[] = [];
   for (const field of ['node', 'platform', 'arch', 'cpu_count', 'cpu_model'] as const) {
     if (baseline[field] !== current[field]) {
@@ -126,7 +158,7 @@ export function assertEnvironmentComparable(baseline: Record<string, any>, curre
  * 같은 조건에서 측정한 결과인지 확인한다. mode·environment·dataset이 다르면
  * 수치 비교 자체가 무의미하므로 명확한 오류로 거절한다.
  */
-export function assertComparable(
+function assertComparable(
   baseline: Record<string, any>,
   current: ComparableContext,
   datasetFields: readonly string[],
@@ -141,7 +173,7 @@ export function assertComparable(
  * Baseline 파일을 읽어 JSON으로 파싱한다. 파일이 없거나 JSON이 아니면
  * 해결 방법을 안내하는 ComparisonInputError로 변환한다.
  */
-export function loadBaselineJson(baselinePath: string): Record<string, any> {
+function loadBaselineJson(baselinePath: string): Record<string, any> {
   let raw: string;
   try {
     raw = readFileSync(baselinePath, 'utf8');
@@ -190,16 +222,6 @@ export function parseThresholds(text: string, allowedMetrics: readonly string[])
   return thresholds;
 }
 
-/** 메트릭 하나의 비교 결과 — baseline·현재 p95/ms 값, 증가율, 적용된 임계값.
- * baseline이 0이고 현재 값이 양수면 증가율은 무한대이므로 JSON에는 null로 기록한다. */
-export interface MetricComparison {
-  metric: string;
-  baseline_ms: number;
-  current_ms: number;
-  ratio: number | null;
-  threshold: number | null;
-}
-
 /** 메트릭 값은 단순 ms 숫자이거나 p95_ms를 담은 LatencyMetric이다. 키 자체가 없으면 "missing"으로 보고한다. */
 function metricMs(value: unknown, label: string): number {
   if (value === undefined) {
@@ -207,9 +229,11 @@ function metricMs(value: unknown, label: string): number {
     const hint = label.startsWith('baseline.') ? '; regenerate the baseline with the same tool version' : '; this tool version does not measure it';
     throw new ComparisonInputError(`metric ${label} is missing${hint}`);
   }
-  return typeof value === 'number'
-    ? validateMetricValue(value, label)
-    : validateMetricValue((value as { p95_ms?: unknown } | undefined)?.p95_ms, `${label}.p95_ms`);
+  if (typeof value === 'number') return validateMetricValue(value, label);
+  if (!value || typeof value !== 'object') {
+    throw new ComparisonInputError(`metric ${label} must be a number or a { p95_ms } object, got ${JSON.stringify(value)}`);
+  }
+  return validateMetricValue((value as { p95_ms?: unknown }).p95_ms, `${label}.p95_ms`);
 }
 
 /** 증가율을 사람이 읽을 수 있는 형태로 만든다 — baseline 0의 무한대는 명시 문구로 둔다. */
@@ -253,7 +277,7 @@ export function compareMetrics(
  * dataset 필드는 측정 결과가 있어야 비교할 수 있지만, 파일 부재·스키마 오류·
  * 다른 머신의 baseline·빠진 메트릭은 측정 전에 잡아 긴 벤치마크 실행을 낭비하지 않는다.
  */
-export function loadValidatedBaseline(
+function loadValidatedBaseline(
   baselinePath: string,
   expectedMode: string,
   metricNames: readonly string[],
@@ -274,14 +298,14 @@ export function loadValidatedBaseline(
  * planned에 없는 필드(측정 후에만 알 수 있는 값)는 건너뛰고 assertComparable이
  * 측정 후에 다시 확인한다 — 잘못된 데이터셋 플래그는 측정 전에 거절한다.
  */
-export function assertDatasetComparable(
+function assertDatasetComparable(
   baselineDataset: unknown,
   planned: Record<string, any>,
   datasetFields: readonly string[],
   options: { requireAllFields?: boolean } = {},
 ): void {
   if (!baselineDataset || typeof baselineDataset !== 'object' || Array.isArray(baselineDataset)) {
-    throw new ComparisonInputError('baseline is missing the "dataset" section; regenerate the baseline with the same tool');
+    throw missingBaselineSection('dataset');
   }
   if (!planned || typeof planned !== 'object' || Array.isArray(planned)) {
     throw new ComparisonInputError('current result is missing the "dataset" section; this tool version is incompatible with the baseline');
@@ -312,8 +336,17 @@ export function assertDatasetComparable(
 export function assertDistinctOutputPath(outPath: string, baselinePath: string): void {
   const resolvedOut = resolve(outPath);
   const resolvedBaseline = resolve(baselinePath);
-  const real = (path: string) => { try { return realpathSync(path); } catch { return path; } };
-  const samePath = real(resolvedOut) === real(resolvedBaseline);
+  // 파일이 아직 없으면 resolve 경로를 그대로 쓰고, 존재를 못 읽는 다른 오류(권한 등)는
+  // 조용히 삼키지 않고 거절한다 — 하드링크 별칭을 놓치면 baseline이 파괴된다.
+  const realPathOrSelf = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path;
+      throw new ComparisonInputError(`cannot inspect output path "${path}": ${(error as Error).message}`);
+    }
+  };
+  const samePath = realPathOrSelf(resolvedOut) === realPathOrSelf(resolvedBaseline);
   let sameInode = false;
   try {
     const outStat = statSync(resolvedOut);
@@ -369,9 +402,15 @@ export function reportCliResult<T extends ComparableResult>(spec: {
   datasetFields: readonly string[];
   metricNames: readonly string[];
   outPath?: string;
+  io?: CliResultIo;
 }): void {
   const { result, baseline, thresholds, datasetFields, metricNames, outPath } = spec;
-  let comparison: Record<string, unknown> | undefined;
+  const io = spec.io ?? {
+    stdout: (text: string) => process.stdout.write(text),
+    stderr: (text: string) => process.stderr.write(text),
+    setExitCode: (code: number) => { process.exitCode = code; },
+  };
+  let comparison: ComparisonReport | undefined;
   let comparisonError: unknown;
   let regressions: string[] = [];
   if (baseline) {
@@ -387,7 +426,7 @@ export function reportCliResult<T extends ComparableResult>(spec: {
   }
   const output = JSON.stringify(comparison ? { ...result, comparison } : result, null, 2);
   // stdout에 먼저 출력한다 — 이후 파일 쓰기나 경로 검사가 실패해도 측정 결과가 어디에도 남지 않는 일이 없다.
-  process.stdout.write(`${output}\n`);
+  io.stdout(`${output}\n`);
   if (outPath) {
     try {
       // CLI 경로는 prepareCliComparison이 측정 전에 거절하지만, 직접 호출에도 baseline 파괴를 막는다.
@@ -402,7 +441,7 @@ export function reportCliResult<T extends ComparableResult>(spec: {
   }
   if (comparisonError) throw comparisonError;
   if (regressions.length) {
-    process.stderr.write(`performance regression detected (${regressions.length} metric(s) exceeded thresholds):\n  ${regressions.join('\n  ')}\n`);
-    process.exitCode = 1;
+    io.stderr(`performance regression detected (${regressions.length} metric(s) exceeded thresholds):\n  ${regressions.join('\n  ')}\n`);
+    io.setExitCode(1);
   }
 }
