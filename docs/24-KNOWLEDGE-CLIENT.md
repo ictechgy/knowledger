@@ -49,6 +49,8 @@ ACK, chaincode event, HTTP 200만으로 제공 상태를 만들지 않는다. �
 
 `revalidate(runId)`는 서버에 현재 상태를 요청하고 반환된 strict manifest 구조를 확인한다. `guardedGeneration`은 `validateRefreshedManifest`로 이전 manifest와 비교한다. 새 run ID와 checkpoint는 허용되지만 policy, revision digest, agreement, approval decisions, membership·egress binding은 바뀌면 실패한다. 결과가 `withheld`이면 caller는 기존 output을 계속 사용해서는 안 된다.
 
+`resolve`와 `revalidate`는 `modelAdapterId` 옵션으로 모델 어댑터 식별자를 서버에 전달할 수 있다. 서버는 `createApp`/`KnowledgerService`의 `modelEgress` 옵션에 설정된 정책으로 현재 전송 권한을 확인한다 — `policy_version`은 manifest의 `model_egress_policy_version`에 실리고, `allows` 콜백이 `false`나 예외를 반환하면 `EGRESS_POLICY_DENIED`로 withheld한다. `guardedGeneration`은 `adapterId`를 두 호출에 자동으로 실어 generation·release 직전에 서버 측 egress 정책도 재확인한다. 검색 권한이 외부 모델 전송 권한을 함축하지 않는다.
+
 ## Guarded generation
 
 `packages/client/guarded-generation.ts`는 승인된 지식을 외부 또는 로컬 생성 callback에 전달하는 경계다.

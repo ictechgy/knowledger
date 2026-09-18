@@ -57,6 +57,7 @@ export interface AppOptions {
   embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
   /** embedQuery와 같은 임베딩 공간의 개정본 임베더 — 색인에 기록된 행의 임베더와 차원이 같아야 한다. */
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
+  modelEgress?: { policy_version?: number; allows?: (input: { adapter_id: string; manifest: any; actor: Actor }) => boolean | Promise<boolean> };
 }
 
 export async function createApp(options: AppOptions) {
@@ -87,7 +88,7 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision });
+    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress });
     await service.initialize();
   } catch (error) {
     // 색인 정리 실패가 원래 초기화 오류를 가리지 않게 원인에 부착한다.

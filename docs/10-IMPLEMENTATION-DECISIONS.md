@@ -186,3 +186,13 @@ HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은
 `PgVectorIndex`는 `index_version`으로 스키마를 구분하는 pgvector 어댑터로, `pg`를 지연 로드해
 최소 로컬 런타임이 선택 의존성을 요구하지 않는다. 배포는 `createApp`의 `vectorIndex`·
 `embedQuery`·`embedRevision` 옵션으로 실제 임베딩 프로파일을 주입한다.
+
+### 모델 egress 서버 게이트 — 2026-09-19
+
+검색 권한이 외부 모델 전송 권한을 함축하지 않으므로 `modelEgress` 정책을 서비스 옵션으로 둔다.
+`policy_version`은 manifest의 `model_egress_policy_version`에 실리고, 호출자가 `model_adapter_id`를
+지정하면 `resolve`는 manifest 발급 전에, `revalidate`는 release 직전에 `allows` 콜백으로 현재
+전송 권한을 확인한다 — 거부·예외는 `EGRESS_POLICY_DENIED`로 withheld한다.
+`revalidate`는 policy·membership epoch·egress version·retrieval profile 결속 필드를 서버에서도
+대조해 클라이언트 검증만에 의존하지 않는다. `guardedGeneration`은 `adapterId`를 resolve와 두
+revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정책 게이트가 같은 어댑터를 가리킨다.
