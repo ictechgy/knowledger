@@ -138,8 +138,8 @@ without the service-side record a receipt cannot be reconciled and a caller
 able to drive the socket could mint forged evidence undetected, so the
 service refuses to start such a key without it — a bare key with no
 `org_id`/`require_attestation` serves only unattested requests and may start
-without one. The development wrapper derives a log
-beside the socket when no path is given. A record that throws mid-write can
+without one. The development wrapper derives its log at
+`signing-audit/audit.jsonl` beside the socket when no path is given. A record that throws mid-write can
 leave a partial trailing line; consumers should discard a trailing non-JSON
 line rather than the file. The audit file must not
 collide with any configured key, certificate, socket or signing configuration

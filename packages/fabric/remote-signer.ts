@@ -93,8 +93,8 @@ export type RemoteSignerErrorCode =
 export class RemoteSignerError extends Error {
   readonly code: RemoteSignerErrorCode;
 
-  constructor(code: RemoteSignerErrorCode, message = "Remote signing request failed") {
-    super(message);
+  constructor(code: RemoteSignerErrorCode, message = "Remote signing request failed", options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "RemoteSignerError";
     this.code = code;
   }
@@ -107,8 +107,8 @@ export interface RemoteSignerOptions {
   timeoutMs?: number;
   /** Per-request decision context; called before every signing frame is sent. */
   attestation?: () => Attestation | undefined;
-  /** Called with each verified attestation receipt and its canonical evidence so callers can keep the proof. Must be synchronous — a promise return fails the request. */
-  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array) => void;
+  /** Called with each verified attestation receipt, its canonical evidence and the attestation it binds (whose `phase` discriminates decision and query receipts). Must be synchronous — a promise return fails the request. */
+  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array, attestation: Attestation) => void;
 }
 
 interface SignRequest {
@@ -435,14 +435,15 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
             }
             decoded = response;
             // The caller's receipt hook is not part of the signing protocol:
-            // its own failure surfaces as-is rather than as a malformed
-            // response, and it still fails the signing request. The hook must
-            // be synchronous — a promise return would reject after the request
+            // its own failure still fails the signing request but stays
+            // distinguishable from a malformed response. The hook must be
+            // synchronous — a promise return would reject after the request
             // settles, escaping as an unhandled rejection instead of failing
-            // this signature deterministically.
+            // this signature deterministically. Hook failures are wrapped in
+            // RemoteSignerError so callers can rely on the code contract.
             if (attestation !== undefined && response.attestationSignature !== undefined && options.onAttestationReceipt !== undefined) {
               try {
-                const returned = options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate)) as unknown;
+                const returned = options.onAttestationReceipt(response.attestationSignature, attestationPayload(options.keyId, attestation, digest, certificate), attestation) as unknown;
                 if (returned !== undefined && returned !== null && typeof (returned as { then?: unknown }).then === "function") {
                   // Observe the offending promise so a later rejection cannot
                   // escape as an unhandled rejection after this request fails.
@@ -450,7 +451,7 @@ export function createRemoteSigner(options: RemoteSignerOptions): (digest: Uint8
                   throw new RemoteSignerError("invalid_request", "The attestation receipt hook must be synchronous");
                 }
               } catch (error) {
-                fail(error instanceof Error ? error : new RemoteSignerError("protocol_error"));
+                fail(error instanceof RemoteSignerError ? error : new RemoteSignerError("invalid_request", "The attestation receipt hook failed", { cause: error }));
                 socket.destroy();
                 return;
               }

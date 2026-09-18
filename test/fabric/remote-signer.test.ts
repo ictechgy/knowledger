@@ -739,7 +739,7 @@ test("signing service rejects an audit path that collides with configured files"
     // The socket path itself is reserved too: pointing the audit log at the
     // very socket the service would bind is rejected before listening.
     const socketPath = join(directory, "s3.sock");
-    await assert.rejects(() => startSigningService({ socketPath, keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: socketPath }), /collides|already exists/);
+    await assert.rejects(() => startSigningService({ socketPath, keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP" }], auditLogPath: socketPath }), /collides/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -837,10 +837,12 @@ test("remote signer rejects a receipt attached to an unattested response and rep
       assert.equal(receipts.length, 1);
       assert.deepEqual(receipts[0]?.evidence, attestationPayload("person-sales-owner", attestation, digest, identity.certificate));
       assert.equal(verify("sha256", receipts[0]!.evidence, new X509Certificate(identity.certificate).publicKey, receipts[0]!.receipt), true);
-      // A failing receipt callback surfaces its own error — it must not be
-      // reclassified as a malformed protocol response.
-      const throwing = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: () => { throw new Error("caller retention failed"); } });
-      await assert.rejects(() => throwing(Buffer.alloc(32, 16)), (error: unknown) => error instanceof Error && !(error instanceof RemoteSignerError) && error.message === "caller retention failed");
+      // A failing receipt callback surfaces through the RemoteSignerError
+      // contract — distinguishable from a malformed protocol response, with
+      // the caller's error preserved as the cause.
+      const hookError = new Error("caller retention failed");
+      const throwing = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: () => { throw hookError; } });
+      await assert.rejects(() => throwing(Buffer.alloc(32, 16)), (error: unknown) => error instanceof RemoteSignerError && error.code === "invalid_request" && error.cause === hookError);
       // A hook that returns a promise would reject after the request settles;
       // the signer fails the request deterministically instead.
       const asyncHook = createRemoteSigner({ socketPath: honest.path, keyId: "person-sales-owner", certificate: identity.certificate, attestation: () => devAttestation(), onAttestationReceipt: (() => Promise.resolve()) as unknown as (receipt: Uint8Array, evidence: Uint8Array) => void });
