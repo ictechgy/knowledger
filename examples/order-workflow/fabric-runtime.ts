@@ -10,7 +10,7 @@ import type { DevelopmentOrganization } from './organizations.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import { SqliteFabricProjection } from '../../packages/fabric/sqlite-projection.ts';
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from '../../packages/fabric/gateway.ts';
-import type { FabricWritePhase } from '../../packages/fabric/gateway.ts';
+import type { FabricWritePhase, GatewayAttestation } from '../../packages/fabric/gateway.ts';
 import type { AttestationSerializer, SigningAttestationContext } from '../../packages/fabric/remote-signer.ts';
 import { closeAllResources, createAttestationSerializer, releaseAttestationSerializer } from '../../packages/fabric/remote-signer.ts';
 import { FabricApplicationLedger } from '../../packages/fabric/application-ledger.ts';
@@ -20,6 +20,16 @@ import type { Actor } from '../../packages/storage/local-ledger.ts';
 
 function closeAll(cleanups: ReadonlyArray<() => void>): void {
   closeAllResources(cleanups, "fabric runtime cleanup failed");
+}
+
+/**
+ * Attestation wiring exists only when a signerProvider consumes the slot:
+ * the raw in-process fallback signs nothing into evidence, so installing
+ * attestations would fail closed on every signed call.
+ */
+export function signingAttestationConfig(actor: Actor, context: SigningAttestationContext, signerProvider: FabricTestRuntimeOptions['signerProvider']): GatewayAttestation | undefined {
+  if (signerProvider === undefined) return undefined;
+  return { context, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) };
 }
 
 export interface FabricTestRuntimeOptions {
@@ -81,15 +91,16 @@ export async function createFabricTestRuntime(dataDir: string, options: FabricTe
       let outbox: SqliteOutbox | undefined;
       let qsccSigned: AttestationSerializer | undefined;
       try {
-        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: { context: attestationContext, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) } });
+        client = await connectOfficialFabricGateway({ client: rpc, channel_id: 'kcl-demo', chaincode_name: 'kcl', credentials: { msp_id: actor.org_id, certificate, signer }, authorize: options.authorizeActor ? phase => options.authorizeActor!(actor, phase) : undefined, attestation: signingAttestationConfig(actor, attestationContext, options.signerProvider) });
         gateway = sdk.connect({ client: rpc, identity: { mspId: actor.org_id, credentials: certificate }, signer: qsccSigner, evaluateOptions: () => ({ deadline: Date.now() + 5000 }) });
         outbox = new SqliteOutbox(join(dataDir, `${actor.org_id}-${actor.actor_id}-outbox.sqlite`));
         // Claim the qscc serializer before publishing the route so a failed
         // claim cannot leave a route closed twice by nested catch handlers.
-        qsccSigned = createAttestationSerializer(qsccContext);
+        if (options.signerProvider) qsccSigned = createAttestationSerializer(qsccContext);
         const opened = { client, gateway, outbox, qsccSigned };
-        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => releaseAttestationSerializer(qsccContext, opened.qsccSigned)]); } });
-        qsccGateways.push({ actor, gateway, signed: qsccSigned });
+        routes.push({ actor, transport: new FabricGatewayTransport({ client, outbox }), close() { closeAll([() => opened.outbox.close(), () => opened.client.close?.(), () => opened.gateway.close(), () => rpc.close(), () => { if (opened.qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, opened.qsccSigned); }]); } });
+        // Without a provider the qscc path runs unsigned like the write path.
+        qsccGateways.push({ actor, gateway, signed: qsccSigned ?? ((_attestation, operation) => operation()) });
       } catch (error) { try { closeAll([() => outbox?.close(), () => client?.close?.(), () => gateway?.close(), () => rpc.close(), () => { if (qsccSigned !== undefined) releaseAttestationSerializer(qsccContext, qsccSigned); }]); } catch (cleanupError) { if (error instanceof Error && error.cause === undefined) error.cause = cleanupError; } throw error; }
     }
     projection = new SqliteFabricProjection(join(dataDir, 'fabric-projection.sqlite'), { channel_id: 'kcl-demo', chaincode_name: 'kcl', chaincode_version: '0.1.0', public_genesis: demoFixtures().config });
