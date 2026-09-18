@@ -53,6 +53,17 @@ export function queryAttestation(actor: Actor): QueryAttestation {
   return { org_id: actor.org_id, actor_id: actor.actor_id, actor_kind: actor.kind, phase: "query" };
 }
 
+/**
+ * Attestation wiring for a signing route. Returns undefined when no
+ * attestation-consuming signer is configured — the raw in-process fallback
+ * signs nothing into evidence, so installing attestations would fail closed
+ * on every signed call.
+ */
+export function signingAttestationConfig(actor: Actor, context: SigningAttestationContext, attested: boolean): GatewayAttestation | undefined {
+  if (!attested) return undefined;
+  return { context, build: (command, phase, txId) => decisionAttestation(actor, command, phase, txId), buildQuery: () => queryAttestation(actor) };
+}
+
 /** Authorization failed before the SDK could send this write phase. */
 export class FabricAuthorizationCancelled extends Error {
   constructor(cause: unknown) { super('Authorization cancelled before Fabric submission', { cause }); this.name = 'FabricAuthorizationCancelled'; }

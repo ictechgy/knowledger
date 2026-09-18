@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { configuredOutboxFile, createConfiguredFabricRuntime } from "../../apps/api/configured-fabric-runtime.ts";
-import { signingAttestationConfig } from "../../examples/order-workflow/fabric-runtime.ts";
+import { signingAttestationConfig } from "../../packages/fabric/gateway.ts";
 
 test("configured outbox filenames use a full hash of the actor binding", () => {
   const expected = createHash("sha256").update(JSON.stringify(["OrgA", "actor-1"]), "utf8").digest("hex");
@@ -27,9 +27,9 @@ test("example runtime installs attestation wiring only when a signerProvider con
   // The raw in-process fallback signs nothing into evidence: installing an
   // attestation would fail closed on every signed call, so the gateway must
   // run unattested when no provider is configured.
-  assert.equal(signingAttestationConfig(actor, {}, undefined), undefined);
+  assert.equal(signingAttestationConfig(actor, {}, false), undefined);
   const context = {};
-  const config = signingAttestationConfig(actor, context, () => async digest => digest);
+  const config = signingAttestationConfig(actor, context, true);
   assert.equal(config?.context, context);
   assert.equal(config?.buildQuery().phase, "query");
 });
