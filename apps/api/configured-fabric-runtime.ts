@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import type { Actor } from "../../packages/storage/local-ledger.ts";
 import type { FabricWritePhase } from "../../packages/fabric/gateway.ts";
 import { attestationSlot, closeAllResources, createAttestationSerializer, createRemoteSigner, releaseAttestationSerializer } from "../../packages/fabric/remote-signer.ts";
-import type { AttestationSerializer, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
+import type { Attestation, AttestationSerializer, SigningAttestationContext } from "../../packages/fabric/remote-signer.ts";
 import { connectOfficialFabricGateway, decisionAttestation, FabricGatewayTransport, fabricPeerChannelOptions, queryAttestation } from "../../packages/fabric/gateway.ts";
 import type { FabricSigningRoute } from "../../packages/fabric/application-ledger.ts";
 import { FabricApplicationLedger } from "../../packages/fabric/application-ledger.ts";
@@ -64,7 +64,7 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
   organization: string;
   authorizeActor: (actor: Actor, phase: FabricWritePhase) => Promise<void>;
   /** Retains each verified attestation receipt; must be synchronous. */
-  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array) => void;
+  onAttestationReceipt?: (receipt: Uint8Array, evidence: Uint8Array, attestation: Attestation) => void;
 }): Promise<{ ledger: FabricApplicationLedger; personas: Persona[] }> {
   if (configuration.ledger.mode !== "fabric" || !configuration.fabric) throw new Error("Fabric ledger configuration is required");
   if (configuration.ledger.channel_id !== configuration.genesis.channel_id) throw new Error("Fabric channel differs from genesis");
