@@ -105,19 +105,18 @@ export async function createConfiguredFabricRuntime(configuration: ProjectConfig
     projection = new SqliteFabricProjection(join(options.dataDir, "fabric-projection.sqlite"), { channel_id: configuration.ledger.channel_id, chaincode_name: configuration.fabric.chaincode_name, chaincode_version: configuration.fabric.chaincode_version, public_genesis: configuration.genesis });
     const qscc = gateways[0].getNetwork(configuration.ledger.channel_id).getContract("qscc");
     const qsccBinding = qsccBindings[0];
+    // Read-only signing must never fail open: an unattested qscc call would
+    // violate protected keys' require_attestation policy and skip evidence.
+    if (qsccBinding === undefined) throw new Error("qscc signing binding is unavailable");
     const ledger = new FabricApplicationLedger({ mode: 'fabric', projection, routes, source: {
       async getTip() {
         // qscc signs through the actor's own slot; the serializer keeps the
         // read-only attestation bound to this evaluation alone.
-        const bytes = await (qsccBinding === undefined
-          ? qscc.evaluateTransaction("GetChainInfo", configuration.ledger.channel_id)
-          : qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction("GetChainInfo", configuration.ledger.channel_id)));
+        const bytes = await qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction("GetChainInfo", configuration.ledger.channel_id));
         const info = common.BlockchainInfo.deserializeBinary(bytes);
         return { height: info.getHeight(), block_hash: Buffer.from(info.getCurrentblockhash_asU8()).toString("hex") };
       },
-      getBlock: number => qsccBinding === undefined
-        ? qscc.evaluateTransaction("GetBlockByNumber", configuration.ledger.channel_id, String(number))
-        : qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction("GetBlockByNumber", configuration.ledger.channel_id, String(number))),
+      getBlock: number => qsccBinding.signed(queryAttestation(qsccBinding.actor), () => qscc.evaluateTransaction("GetBlockByNumber", configuration.ledger.channel_id, String(number))),
     } });
     await ledger.recoverPending();
     const labels = new Map(configuration.identities.map((identity) => [`${identity.org_id}|${identity.actor_id}`, identity.label]));

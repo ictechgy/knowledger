@@ -33,8 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gateway signs through a dedicated slot and signer. Verified receipts can be
   surfaced to callers through `onAttestationReceipt`.
 - Signing audit hardening: the audit log path may not collide with configured
-  key, certificate or socket paths; records are written completely and the
-  descriptor is released on shutdown.
+  key, certificate or socket paths — hard links and non-regular targets are
+  refused — records are written completely and the descriptor is released on
+  shutdown. Attested keys fail fast at load when the certificate's
+  `actor_kind` is outside `allowed_actor_kinds` or the private key is not EC.
 
 ## [0.2.0] — 2026-09-18
 
