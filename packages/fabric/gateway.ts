@@ -147,20 +147,19 @@ class OfficialGatewayClient implements FabricGatewayClient {
     return {
       tx_id: proposal.getTransactionId(),
       endorse: async () => {
-        await this.assertAuthorized('endorse');
         // The SDK signs the proposal inside endorse(); the attestation install
         // and the signing call are serialised so nothing else on this
         // connection can consume or replace the decision context. Note the two
         // vocabularies at this point: the authorisation phase is 'endorse'
         // while the attestation records the signed artefact ('proposal'), so
         // audit reconciliation should expect that pairing rather than equal
-        // phase names.
-        const endorsed = await this.signed(this.attestation?.build(command, 'proposal', proposal.getTransactionId()), () => proposal.endorse());
+        // phase names. Authorisation runs inside the serialised section so it
+        // is evaluated at signing time, not before the queue wait.
+        const endorsed = await this.signed(this.attestation?.build(command, 'proposal', proposal.getTransactionId()), async () => { await this.assertAuthorized('endorse'); return proposal.endorse(); });
         let submitted: OfficialCommit | undefined;
         return {
           submit: async () => {
-            await this.assertAuthorized('submit');
-            const commit = await this.signed(this.attestation?.build(command, 'submit', proposal.getTransactionId()), () => endorsed.submit());
+            const commit = await this.signed(this.attestation?.build(command, 'submit', proposal.getTransactionId()), async () => { await this.assertAuthorized('submit'); return endorsed.submit(); });
             submitted = commit;
             this.commits.set(proposal.getTransactionId(), commit);
             return commit;

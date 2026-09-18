@@ -144,8 +144,8 @@ open; a pre-existing file must be a regular file with mode 600 and a single
 link, and a fresh path is created exclusively so a raced-in file fails the
 open rather than being adopted. The file is opened once with no-follow
 semantics, validated by descriptor,
-appended with complete writes, flushed before the response is acknowledged
-and closed with the service. Record timestamps are service-asserted
+appended with a single write call per record, flushed before the response is
+acknowledged and closed with the service. Record timestamps are service-asserted
 operational metadata, not part of the signed evidence. The gateway client
 serialises every signer-bearing SDK call on a connection — endorse, submit,
 status and evaluate — installing the attestation inside the same critical

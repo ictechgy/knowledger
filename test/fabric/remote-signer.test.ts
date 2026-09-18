@@ -412,23 +412,23 @@ test("signing service attests a bound human decision and records an audit receip
     const auditLogPath = join(directory, "audit.jsonl");
     const service = await startSigningService({ socketPath: join(directory, "sign.sock"), keys: [{ key_id: "person-sales-owner", certificate_path: identity.certificate_path, private_key_path: identity.private_key_path, org_id: "SalesMSP", require_attestation: true }], auditLogPath });
     try {
-    const certificate = identity.certificate;
-    const attestation = devAttestation();
-    const digest = Buffer.alloc(32, 21);
-    const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => attestation });
-    const signature = await signer(digest);
-    const publicJwk = new X509Certificate(certificate).publicKey.export({ format: "jwk" });
-    const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, "base64url"), Buffer.from(publicJwk.y!, "base64url")]);
-    const { p256 } = requireFabric("@noble/curves/nist.js");
-    assert.equal(p256.verify(signature, digest, rawPublicKey, { format: "der", prehash: false }), true);
-    const records = readFileSync(auditLogPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
-    assert.equal(records.length, 1);
-    const record = records[0];
-    assert.equal(record.record_type, "signing_attestation");
-    assert.equal(record.key_id, "person-sales-owner");
-    assert.deepEqual(record.attestation, attestation);
-    assert.equal(record.digest, digest.toString("base64url"));
-    assert.equal(p256.verify(Buffer.from(record.attestation_signature, "base64url"), attestationPayloadDigest("person-sales-owner", attestation, digest, certificate), rawPublicKey, { format: "der", prehash: false }), true);
+      const certificate = identity.certificate;
+      const attestation = devAttestation();
+      const digest = Buffer.alloc(32, 21);
+      const signer = createRemoteSigner({ socketPath: service.socketPath, keyId: "person-sales-owner", certificate, attestation: () => attestation });
+      const signature = await signer(digest);
+      const publicJwk = new X509Certificate(certificate).publicKey.export({ format: "jwk" });
+      const rawPublicKey = Buffer.concat([Buffer.from([4]), Buffer.from(publicJwk.x!, "base64url"), Buffer.from(publicJwk.y!, "base64url")]);
+      const { p256 } = requireFabric("@noble/curves/nist.js");
+      assert.equal(p256.verify(signature, digest, rawPublicKey, { format: "der", prehash: false }), true);
+      const records = readFileSync(auditLogPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(records.length, 1);
+      const record = records[0];
+      assert.equal(record.record_type, "signing_attestation");
+      assert.equal(record.key_id, "person-sales-owner");
+      assert.deepEqual(record.attestation, attestation);
+      assert.equal(record.digest, digest.toString("base64url"));
+      assert.equal(p256.verify(Buffer.from(record.attestation_signature, "base64url"), attestationPayloadDigest("person-sales-owner", attestation, digest, certificate), rawPublicKey, { format: "der", prehash: false }), true);
     } finally { await service.close(); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
