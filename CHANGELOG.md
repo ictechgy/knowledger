@@ -42,7 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shutdown. Rejection records carry a `reason` and the configured
   certificate's actor claims. Attested keys fail fast at load when the
   certificate's `actor_kind` is outside `allowed_actor_kinds` or the private
-  key is not EC.
+  key is not EC, and a key configured with `require_attestation` cannot start
+  without `--audit-log` so the service-side evidence chain always exists; the
+  development signing service derives its audit log beside the socket when no
+  path is given.
 
 ## [0.2.0] — 2026-09-18
 
