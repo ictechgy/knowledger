@@ -168,3 +168,21 @@ SQLite 커밋 전에 delta를 준비하고 성공 후 공개한다. 재시작에
 HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은 같은 JS substring 규칙을 유지하고,
 원문을 읽어 구한 digest 목록만 actor/조건/snapshot에 결속해 제한적으로 캐시한다.
 구조, 캐시 상한, 비교 측정과 쓰기 비용은 [조회 인덱스](26-BROWSE-INDEX.md)에 기록했다.
+
+### 벡터 후보 검색 읽기 모델 — 2026-09-19
+
+`VectorCandidateIndex` 포트는 임베딩 유사도로 문서 후보만 제안한다. `POST …/vector-search`는
+후보 digest를 요청 체크포인트의 검증된 브라우즈 색인·canonical 개정본·`resolveAt` 자격 판정으로
+재검증하고, 색인이 제안한 digest 중 체크포인트에서 확인되지 않는 것은 낡은 후보로 버린다.
+색인은 지식 사용을 승인하지 않으며, 결과는 `eligible`/`reason`/`active_agreement` 주석을 그대로 실는다.
+
+`document_ids`로 지정한 필수 참조는 색인을 거치지 않고 항상 검증된 색인에서 직접 해상한다.
+응답의 `candidate_source`(`derived-scan`|`external-index`)와 `complete`는 후보 수집 범위만 알린다 —
+외부 색인 모드에서 빈 페이지는 "지식이 없다"는 증거가 아니다. 외부 색인이 없을 때는
+체크포인트의 검증된 개정본을 전수 열거해 점수를 매기므로 후보 집합이 원장 스캔과 동일하다.
+
+개발 어댑터 `LocalVectorIndex`는 검증된 개정본에서 재구축하는 인프로세스 파생 색인이고,
+`developmentEmbedding`은 외부 모델 없는 결정적 토큰 해시 임베딩(의미 임베딩 아님)이다.
+`PgVectorIndex`는 `index_version`으로 스키마를 구분하는 pgvector 어댑터로, `pg`를 지연 로드해
+최소 로컬 런타임이 선택 의존성을 요구하지 않는다. 배포는 `createApp`의 `vectorIndex`·
+`embedQuery`·`embedRevision` 옵션으로 실제 임베딩 프로파일을 주입한다.
