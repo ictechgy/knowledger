@@ -640,6 +640,15 @@ test("signing service rejects hard-linked and non-regular audit paths", async t 
     fs.writeFileSync(aliased, "", { mode: 0o600 });
     linkSync(aliased, join(directory, "audit-alias-other.jsonl"));
     await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign6.sock"), keys, auditLogPath: aliased }), /single link|collides|regular file/);
+    // A pre-existing file with a permissive mode is refused; the same path at
+    // mode 600 is adopted and appended to.
+    const wrongMode = join(directory, "audit-wrong-mode.jsonl");
+    fs.writeFileSync(wrongMode, "", { mode: 0o644 });
+    await assert.rejects(() => startSigningService({ socketPath: join(directory, "sign7.sock"), keys, auditLogPath: wrongMode }), /regular file|mode 600/);
+    fs.chmodSync(wrongMode, 0o600);
+    const adopted = await startSigningService({ socketPath: join(directory, "sign8.sock"), keys, auditLogPath: wrongMode });
+    await adopted.close();
+    assert.equal(readFileSync(wrongMode, "utf8"), "");
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

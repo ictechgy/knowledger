@@ -175,7 +175,7 @@ function loadKeys(references: readonly SigningKeyReference[]): Map<string, Loade
       if (attested && (actor.actor_id === undefined || actor.actor_kind === undefined)) {
         throw new Error(`certificate is missing the actor attributes required for attested signing${actorError === undefined ? "" : `: ${actorError}`}`);
       }
-      const allowedActorKinds = reference.allowed_actor_kinds ?? Object.freeze(["human"]);
+      const allowedActorKinds: readonly ("human" | "agent")[] = reference.allowed_actor_kinds ?? Object.freeze(["human"]);
       if (attested && actor.actor_kind !== undefined && !allowedActorKinds.includes(actor.actor_kind)) {
         throw new Error("certificate actor_kind is outside the configured allowed_actor_kinds");
       }
@@ -496,6 +496,9 @@ async function main(): Promise<void> {
   if (!socketPath || (!demo && !configPath) || (demo && configPath) || (!demo && demoKeyId !== undefined)) {
     throw new Error('Usage: signing-service.ts --socket ABSOLUTE_UNIX_SOCKET_PATH (--config KEY_REFS_JSON | --demo) [--key-id ID] [--audit-log ABSOLUTE_PATH]');
   }
+  // Resolve like --config so a relative audit path fails the same validation
+  // instead of surfacing as an internal TypeError from openAuditLog.
+  if (auditLogPath !== undefined) auditLogPath = resolve(process.cwd(), auditLogPath);
   let service: SigningService;
   if (demo) {
     const wrapper = await import("../../examples/order-workflow/signing-service.ts");
