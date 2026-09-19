@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -145,4 +145,16 @@ test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
   const fifo = join(root, 'fifo');
   execFileSync('mkfifo', [fifo]);
   assert.throws(() => writeArtifact(fifo, 'x'));
+});
+
+test('adoption-metrics rejects a missing --ledger path without creating a file', t => {
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-pilot-cli-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const missing = join(root, 'no-such.sqlite');
+  const observations = join(root, 'obs.json');
+  writeFileSync(observations, JSON.stringify(log));
+  assert.throws(
+    () => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', missing, '--observations', observations], { stdio: 'ignore', cwd: join(import.meta.dirname, '..', '..') }),
+  );
+  assert.equal(existsSync(missing), false);
 });

@@ -59,7 +59,8 @@ function boundedText(value: unknown, max: number): string {
 }
 
 // RFC 3339 timestamp만 허용한다 — Date.parse는 비ISO 형식과 존재하지 않는 날짜의
-// 롤오버도 받아들이므로 형식과 필드 범위를 직접 검증한다.
+// 롤오버도 받아들이므로 형식과 필드 범위를 직접 검증한다. 윤초(:60)는 Date.parse가
+// 지원하지 않으므로 이 형식의 부분집합이다 — 관찰 기록에는 윤초가 필요하지 않다.
 const ISO_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/u;
 
 function isoTime(value: unknown): string {

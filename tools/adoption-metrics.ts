@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, mkdirSync } from 'node:fs';
+import { lstatSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
@@ -52,6 +52,9 @@ if (isMain()) {
       }
       if (!values.has('--observations') || (!values.has('--data') && !values.has('--ledger')) || (values.has('--data') && values.has('--ledger'))) throw new Error('invalid option');
       const ledgerPath = resolve(values.get('--ledger') ?? join(values.get('--data')!, 'shared-ledger.sqlite'));
+      // 오타 경로가 새 빈 저널을 만들어 조용히 0건 측정을 내지 못하게 기존 정규 파일만 연다.
+      const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false });
+      if (!ledgerStat?.isFile() || ledgerStat.isSymbolicLink()) throw new Error('invalid option');
       const observations = JSON.parse(readFileSync(resolve(values.get('--observations')!), 'utf8'));
       ledger = new LocalLedger(ledgerPath, values.get('--channel') ?? CHANNEL_ID);
       const result = readPilotMeasurement({ ledger, observations });

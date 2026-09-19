@@ -68,7 +68,7 @@ npm run kb:sync -- \
 - Git 하위 프로세스는 격리된 환경에서 실행된다 — 저장소 선택·행동을 바꾸는 `GIT_*` 환경 변수를 상속하지 않고, `GIT_NO_LAZY_FETCH=1`로 promisor 원격의 lazy fetch를, `GIT_NO_REPLACE_OBJECTS=1`로 `refs/replace/*` 치환을 끈다. 읽은 내용은 반환된 커밋에 묶인다.
 - allowlist 각 경로는 `ls-tree`로 확인해 일반 blob(`100644`)만 읽는다. symlink·gitlink·디렉터리는 거부하고, 없는 경로는 `missing_paths`가 된다.
 - 파일 크기·UTF-8·제어문자·전체 크기 한도와 SHA-256 다이제스트 계약은 filesystem connector와 같다.
-- snapshot은 고정된 `commit`을 함께 반환한다. Git 이력 검증(서명 커밋·보호 브랜치)은 이 커넥터 밖의 절차다 — 커넥터는 allowlist 내용의 결정적 읽기만 보장한다.
+- snapshot은 고정된 `commit`을 함께 반환한다. sha1·sha256 오브젝트 형식 저장소를 모두 지원한다. Git 이력 검증(서명 커밋·보호 브랜치)은 이 커넥터 밖의 절차다 — 커넥터는 allowlist 내용의 결정적 읽기만 보장한다.
 
 ## 동기화 순서
 

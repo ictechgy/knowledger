@@ -23,8 +23,8 @@
 
 `examples/pilot/observations.example.json` 형식을 따른다. `kind`는
 `interpretation_mixing`·`review_question`·`disclosure_burden` 세 가지이고, 각 항목은
-`subject`·RFC 3339 시각·선택 `detail`을 가진다. 스키마는 엄격히 검증된다 — 형식과 필드
-범위(존재하지 않는 날짜 포함)를 모두 확인한다.
+`subject`·RFC 3339 시각(윤초 `:60` 제외)·선택 `detail`을 가진다. 스키마는 엄격히
+검증된다 — 형식과 필드 범위(존재하지 않는 날짜 포함)를 모두 확인한다.
 
 ## 실행
 

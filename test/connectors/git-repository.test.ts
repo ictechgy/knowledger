@@ -106,6 +106,27 @@ test('git connector ignores replace objects and inherited GIT_* variables', { sk
   assert.equal(isolated.files[0].content_base64, item.content.toString('base64'));
 });
 
+test('git connector reads SHA-256 object-format repositories', { skip: !gitAvailable }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-git-sha256-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, 'repo');
+  mkdirSync(join(repo, 'docs'), { recursive: true });
+  try {
+    execFileSync('git', ['-C', repo, 'init', '-q', '--object-format=sha256'], { stdio: 'ignore' });
+  } catch {
+    t.skip('git does not support sha256 object format');
+    return;
+  }
+  const content = Buffer.from('# sha256 문서\n', 'utf8');
+  writeFileSync(join(repo, 'docs', 'guide.md'), content);
+  const head = commit(repo, 'sha256');
+  assert.equal(head.length, 64);
+  const manifest: MarkdownSourceManifest = { version: 1, source_id: 'kb-source-001', files: [{ path: 'docs/guide.md', policy_id: 'policy-v1', policy_version: 1, title: '가이드' }] };
+  const snapshot = await readGitSource({ root: repo, ref: 'HEAD', manifest });
+  assert.equal(snapshot.commit, head);
+  assert.equal(snapshot.files[0].content_base64, content.toString('base64'));
+});
+
 test('git connector enforces markdown decoding and manifest validation', { skip: !gitAvailable }, async t => {
   const item = fixture();
   t.after(() => rmSync(item.root, { recursive: true, force: true }));

@@ -7,7 +7,7 @@ import { MAX_SOURCE_BYTES, SourceInputError, sourcePath, validateSourceManifest 
 import type { MarkdownSourceSnapshot } from './filesystem-markdown.ts';
 import type { MarkdownSourceManifest } from './source-contract.ts';
 
-const COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+const COMMIT_PATTERN = /^[a-f0-9]+$/u;
 // ref 이름은 명령행 옵션·refspec·리비전 문법으로 해석될 수 없는 형태만 허용한다.
 const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u;
 const REGULAR_BLOB = '100644';
@@ -45,22 +45,30 @@ function git(root: string, args: string[], maxBuffer: number): Buffer {
   }
 }
 
-function resolveCommit(root: string, ref: string): string {
+/** 저장소의 오브젝트 형식(sha1/sha256)에 맞는 16진 오브젝트 ID 길이를 확인한다. */
+function objectIdLength(root: string): number {
+  const format = git(root, ['rev-parse', '--show-object-format'], 1024).toString('utf8').trim();
+  if (format === 'sha1') return 40;
+  if (format === 'sha256') return 64;
+  invalid();
+}
+
+function resolveCommit(root: string, ref: string, idLength: number): string {
   if (typeof ref !== 'string' || !REF_PATTERN.test(ref) || ref.includes('..') || ref.includes('@{') || ref.endsWith('/')
     || ref.split('/').some(part => part.startsWith('.') || part.endsWith('.lock'))) invalid('올바른 Git ref가 필요합니다.');
   const inside = git(root, ['rev-parse', '--is-inside-work-tree'], 1024).toString('utf8').trim();
   if (inside !== 'true') invalid();
   const commit = git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], 1024).toString('utf8').trim();
-  if (!COMMIT_PATTERN.test(commit)) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+  if (commit.length !== idLength || !COMMIT_PATTERN.test(commit)) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   return commit;
 }
 
 /** ls-tree 한 줄에서 blob 모드·오브젝트 id를 얻는다. 일반 파일이 아니면 거부한다. */
-function blobObject(root: string, commit: string, path: string): string | undefined {
+function blobObject(root: string, commit: string, path: string, idLength: number): string | undefined {
   const output = git(root, ['ls-tree', '-z', commit, '--', path], 64 * 1024);
   const entry = output.toString('utf8').split('\0').find(Boolean);
   if (!entry) return undefined;
-  const match = /^(\d{6}) (\w+) ([a-f0-9]{40})\t(.+)$/u.exec(entry);
+  const match = new RegExp(`^(\\d{6}) (\\w+) ([a-f0-9]{${idLength}})\\t(.+)$`, 'u').exec(entry);
   if (!match || match[4] !== path) invalid('원본 Git 응답이 올바르지 않습니다.');
   if (match[1] !== REGULAR_BLOB || match[2] !== 'blob') invalid('원본 경로는 일반 파일이어야 합니다.');
   return match[3];
@@ -83,13 +91,14 @@ export async function readGitSource(input: { root: string; ref: string; manifest
   try { rootStat = lstatSync(root); } catch { invalid(); }
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || root.split(sep).at(-1)?.startsWith('.')) invalid();
   const manifest = validateSourceManifest(input?.manifest);
-  const commit = resolveCommit(root, input.ref);
+  const idLength = objectIdLength(root);
+  const commit = resolveCommit(root, input.ref, idLength);
   const files: MarkdownSourceSnapshot['files'] = [];
   const missingPaths: string[] = [];
   let totalBytes = 0;
   for (const mapping of manifest.files) {
     const safePath = sourcePath(mapping.path);
-    const object = blobObject(root, commit, safePath);
+    const object = blobObject(root, commit, safePath, idLength);
     if (!object) { missingPaths.push(safePath); continue; }
     const bytes = blobBytes(root, object);
     totalBytes += bytes.byteLength;
