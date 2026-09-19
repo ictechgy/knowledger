@@ -60,12 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `modelEgress` policy (`policy_version` lands in the manifest's
   `model_egress_policy_version`; `allows` is consulted whenever the caller
   names a `model_adapter_id`). `resolve` withholds `EGRESS_POLICY_DENIED`
-  before issuing a manifest and `revalidate` re-checks the current policy
-  immediately before release, also comparing the policy, membership-epoch,
-  egress-version and retrieval-profile bindings server-side instead of
-  relying on client validation alone. `guardedGeneration` now forwards its
-  `adapterId` through `resolve` and both `revalidate` calls so the server
-  policy gate covers generate and release.
+  before issuing a manifest — adapter requests are denied outright when no
+  `allows` hook is configured — and `revalidate` re-checks the current policy
+  immediately before release against the adapter bound into the run record,
+  rejecting a different or missing adapter with `EGRESS_ADAPTER_MISMATCH` and
+  distinguishing a throwing policy hook as `EGRESS_POLICY_UNAVAILABLE`. The
+  policy, membership-epoch, egress-version and retrieval-profile bindings are
+  compared server-side instead of relying on client validation alone.
+  `guardedGeneration` now forwards its `adapterId` through `resolve` and both
+  `revalidate` calls so the server policy gate covers generate and release.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

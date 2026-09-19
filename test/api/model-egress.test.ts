@@ -23,7 +23,7 @@ async function fixture(t: any, modelEgress?: any) {
 }
 
 test('resolve embeds the configured egress policy version in the manifest', async t => {
-  const f = await fixture(t, { policy_version: 7 });
+  const f = await fixture(t, { policy_version: 7, allows: () => true });
   const result = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
   assert.equal(result.status, 'provided');
   assert.equal(result.manifest.model_egress_policy_version, 7);
@@ -53,11 +53,11 @@ test('revalidate rechecks the current egress policy immediately before release',
   assert.equal(revoked.reason, 'EGRESS_POLICY_DENIED');
 });
 
-test('a throwing egress callback fails closed rather than releasing output', async t => {
+test('a throwing egress callback fails closed as a policy unavailability, not a denial', async t => {
   const f = await fixture(t, { allows: () => { throw new Error('policy store down'); } });
   const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
   assert.equal(resolved.status, 'withheld');
-  assert.equal(resolved.reason, 'EGRESS_POLICY_DENIED');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
 });
 
 test('revalidate stays valid without an adapter id and rejects malformed adapter ids', async t => {
@@ -97,4 +97,74 @@ test('guardedGeneration forwards the adapter id to server-side resolve and reval
   assert.equal(result.status, 'provided');
   assert.deepEqual(calls.map(([name]) => name), ['resolve', 'revalidate', 'revalidate']);
   for (const [, options] of calls) assert.equal(options.modelAdapterId, 'adapter-production');
+});
+
+test('revalidate rejects a different or missing adapter for an adapter-bound run', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-a' });
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  const other = await f.service.revalidate(actor, runId, { action: 'use-context', model_adapter_id: 'adapter-b' });
+  assert.equal(other.status, 'withheld');
+  assert.equal(other.reason, 'EGRESS_ADAPTER_MISMATCH');
+  const missing = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(missing.status, 'withheld');
+  assert.equal(missing.reason, 'EGRESS_ADAPTER_MISMATCH');
+});
+
+test('revalidate rejects binding an adapter to a run issued without one', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, selection);
+  assert.equal(resolved.status, 'provided');
+  const bound = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-late' });
+  assert.equal(bound.status, 'withheld');
+  assert.equal(bound.reason, 'EGRESS_ADAPTER_MISMATCH');
+});
+
+test('an adapter request is denied when no egress policy hook is configured', async t => {
+  const f = await fixture(t);
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_DENIED');
+});
+
+test('revalidate reports a throwing egress callback as policy unavailability', async t => {
+  let fail = false;
+  const f = await fixture(t, { allows: () => { if (fail) throw new Error('policy store down'); return true; } });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  fail = true;
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'EGRESS_POLICY_UNAVAILABLE');
+});
+
+test('a truthy non-boolean egress verdict is still denied', async t => {
+  const f = await fixture(t, { allows: () => 'yes' });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_DENIED');
+});
+
+test('a tampered stored manifest binding field is detected at revalidation', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, selection);
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  const run = f.vault.get('run', runId, actor);
+  run.manifest.model_egress_policy_version = run.manifest.model_egress_policy_version + 1;
+  (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
+    .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
+  const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('invalid egress policy versions are rejected at construction', async t => {
+  for (const version of [0, -1, 1.5, Number.NaN]) {
+    const ledger = new LocalLedger(':memory:', 'kcl-demo');
+    const vault = new PrivateStore(':memory:');
+    assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { modelEgress: { policy_version: version } }), TypeError);
+    ledger.close(); vault.close();
+  }
 });

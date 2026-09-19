@@ -10,6 +10,7 @@ import type { Actor } from '../../packages/storage/local-ledger.ts';
 import type { ApplicationAuthentication, AuthenticatedSession } from '../../packages/auth/types.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KnowledgerService, onlyFields } from './service.ts';
+import type { ModelEgressPolicy } from './service.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import type { RuntimeScopeOrganization } from '../../packages/storage/runtime-scope.ts';
@@ -57,7 +58,8 @@ export interface AppOptions {
   embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
   /** embedQuery와 같은 임베딩 공간의 개정본 임베더 — 색인에 기록된 행의 임베더와 차원이 같아야 한다. */
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-  modelEgress?: { policy_version?: number; allows?: (input: { adapter_id: string; manifest: any; actor: Actor }) => boolean | Promise<boolean> };
+  /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
+  modelEgress?: ModelEgressPolicy;
 }
 
 export async function createApp(options: AppOptions) {

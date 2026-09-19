@@ -53,6 +53,24 @@ function identifier(value: unknown): string {
   return value;
 }
 
+/** 모델 어댑터 식별자 형식 — resolve·revalidate·클라이언트가 같은 규칙을 공유한다. */
+const MODEL_ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/;
+/** 지정된 경우에만 어댑터 식별자 형식을 검증한다 — undefined는 어댑터 미지정 요청이다. */
+function assertModelAdapterId(value: unknown): asserts value is string | undefined {
+  if (value !== undefined && (typeof value !== 'string' || !MODEL_ADAPTER_ID.test(value))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
+}
+
+/** 모델 egress 정책 훅 입력 — 어댑터 식별자, 현재 manifest 스냅샷 사본, 요청 actor 사본. */
+export interface ModelEgressCheck { adapter_id: string; manifest: Record<string, unknown>; actor: Actor }
+/** 어댑터별 현재 모델 전송 허용 여부 — 엄격한 true만 허용으로 간주한다. */
+export type ModelEgressAllows = (input: ModelEgressCheck) => boolean | Promise<boolean>;
+/**
+ * modelEgress 옵션 — policy_version은 manifest에 결속되고(기본 1), allows가
+ * resolve·revalidate 시점의 현재 전송 권한을 재확인한다. allows 미설정 시
+ * 어댑터 요청은 허가 근거가 없어 거부되고, 훅 예외는 장애로 구분해 fail-closed된다.
+ */
+export interface ModelEgressPolicy { policy_version?: number; allows?: ModelEgressAllows }
+
 /** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KnowledgerService {
   readonly ledger: ApplicationLedger;
@@ -72,12 +90,14 @@ export class KnowledgerService {
   private readonly embeddingCache = new Map<string, readonly number[]>();
   /** 진행 중인 색인 재구축 실행 — 동시 호출은 이 Promise에 합류해 중복 스캔·교체를 막는다. */
   private rebuildInFlight: Promise<{ indexed: number; checkpoint: Checkpoint }> | undefined;
+  /** modelEgress.policy_version — manifest에 결속되는 현재 egress 정책 버전(기본 1). */
   private readonly egressVersion: number;
-  private readonly egressAllows: ((input: { adapter_id: string; manifest: any; actor: Actor }) => boolean | Promise<boolean>) | undefined;
+  /** 어댑터별 전송 허용 훅 — 엄격한 true만 허용하고 미설정·예외는 거부·불가로 fail-closed된다. */
+  private readonly egressAllows: ModelEgressAllows | undefined;
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-      modelEgress?: { policy_version?: number; allows?: (input: { adapter_id: string; manifest: any; actor: Actor }) => boolean | Promise<boolean> } } = {}) {
+      modelEgress?: ModelEgressPolicy } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
@@ -98,11 +118,21 @@ export class KnowledgerService {
     this.egressAllows = options.modelEgress?.allows;
   }
 
-  /** 모델 전송 정책 — 검색 권한이 외부 전송 권한을 함축하지 않으므로 어댑터마다 현재 정책을 확인한다. */
-  private async checkEgress(actor: Actor, adapterId: string, manifest: any): Promise<boolean> {
-    if (!this.egressAllows) return true;
-    try { return await this.egressAllows({ adapter_id: adapterId, manifest: structuredClone(manifest), actor }) === true; }
-    catch { return false; }
+  /**
+   * 모델 전송 정책 — 검색 권한이 외부 전송 권한을 함축하지 않으므로 어댑터마다 현재
+   * 정책을 확인한다. 훅 미설정은 허가 근거 부재라 'denied', 훅 예외는 정책 저장소
+   * 장애와 정상 거부를 구분하도록 'unavailable'을 돌린다 — 둘 다 fail-closed다.
+   * manifest·actor는 사본으로 넘겨 훅이 서버 상태를 변조하지 못하게 한다.
+   */
+  private async checkEgress(actor: Actor, adapterId: string, manifest: any): Promise<'allowed' | 'denied' | 'unavailable'> {
+    if (!this.egressAllows) return 'denied';
+    try { return await this.egressAllows({ adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) }) === true ? 'allowed' : 'denied'; }
+    catch { return 'unavailable'; }
+  }
+
+  /** checkEgress 결과를 withheld 사유 코드로 변환한다 — 정책 장애와 정책 거부를 구분한다. */
+  private static egressReason(result: 'denied' | 'unavailable'): string {
+    return result === 'unavailable' ? 'EGRESS_POLICY_UNAVAILABLE' : 'EGRESS_POLICY_DENIED';
   }
 
   /**
@@ -1114,12 +1144,12 @@ export class KnowledgerService {
     }
   }
 
-  async resolve(actor: Actor, input: any) {
+  async resolve(actor: Actor, input: any, internal?: { run_id?: string }) {
     const started = performance.now();
     await this.refresh();
     this.actor(actor); onlyFields(input, ['document_ids', 'context_id', 'scope_id', 'usage_scope', 'query', 'model_adapter_id']);
     if (!Array.isArray(input.document_ids) || input.document_ids.length !== 1) throw new ApiError('INVALID_INPUT', 'v0.1에서는 정확한 문서 한 개의 사용 범위를 지정해 주세요.');
-    if (input.model_adapter_id !== undefined && (typeof input.model_adapter_id !== 'string' || !/^[A-Za-z][A-Za-z0-9._:-]{2,127}$/.test(input.model_adapter_id))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
+    assertModelAdapterId(input.model_adapter_id);
     const slot = { channel_id: this.ledger.channelId, document_id: identifier(input.document_ids[0]), context_id: identifier(input.context_id), scope_id: identifier(input.scope_id), usage_scope: input.usage_scope };
     if (typeof input.usage_scope !== 'string' || !/^[a-z][a-z0-9-]{1,40}\/v[1-9][0-9]*$/.test(input.usage_scope)) throw new ApiError('INVALID_INPUT', '버전이 있는 사용 범위가 필요합니다.');
     if (input.query !== undefined && (typeof input.query !== 'string' || input.query.length > 1000)) throw new ApiError('INVALID_INPUT', '검색어가 너무 깁니다.');
@@ -1139,7 +1169,7 @@ export class KnowledgerService {
     if (!resolved.eligible || !resolved.revision || !resolved.agreement) return { status: 'withheld', reason: resolved.reason ?? 'NO_ACTIVE_AGREEMENT', documents: [], checkpoint: at };
     const { revision, agreement } = resolved;
     domain.validateRevision(revision);
-    const runId = newId('run');
+    const runId = internal?.run_id ?? newId('run');
     const approvalDecisions = await domain.validateAgreementApprovals(async key => this.ledger.read(key, at), agreement);
     const finalConfig = this.config();
     const finalEpoch = this.ledger.read(domain.keyFor.eligibilityEpoch());
@@ -1155,8 +1185,13 @@ export class KnowledgerService {
       approval_decisions: approvalDecisions.map(item => ({ decision_id: item.decision_id, revision_digest: item.revision_digest, proposal_id: item.proposal_id })),
       private_sources: [], retrieval_profile_id: 'retrieval-scoped-markdown-v1', authorization_snapshot_id: newId('authz'), model_egress_policy_version: this.egressVersion,
     };
-    if (input.model_adapter_id !== undefined && !(await this.checkEgress(actor, input.model_adapter_id, manifest))) return { status: 'withheld', reason: 'EGRESS_POLICY_DENIED', documents: [], checkpoint: at };
-    this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now() });
+    if (input.model_adapter_id !== undefined) {
+      const egress = await this.checkEgress(actor, input.model_adapter_id, manifest);
+      if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), documents: [], checkpoint: at };
+    }
+    // 발급 run에 요청 어댑터를 결속한다 — revalidate는 같은 어댑터의 현재 전송 권한을 다시 확인해야 한다.
+    // 내부 재검증 호출은 원래 run의 manifest만 새로 만들 뿐 run 기록을 다시 발급하지 않는다.
+    if (!internal?.run_id) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id });
     return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
@@ -1164,21 +1199,29 @@ export class KnowledgerService {
     await this.refresh();
     this.actor(actor); onlyFields(input, ['action', 'model_adapter_id']);
     if (input.action !== 'use-context') throw new ApiError('UNSUPPORTED_ACTION', 'v0.1에서는 지식 사용 여부만 재검증할 수 있습니다.');
-    if (input.model_adapter_id !== undefined && (typeof input.model_adapter_id !== 'string' || !/^[A-Za-z][A-Za-z0-9._:-]{2,127}$/.test(input.model_adapter_id))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
-    const run = this.vault.get('run', identifier(runId), actor);
+    assertModelAdapterId(input.model_adapter_id);
+    const runIdStr = identifier(runId);
+    const run = this.vault.get('run', runIdStr, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
     if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
-    const result = await this.resolve(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope });
+    const result = await this.resolve(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, { run_id: runIdStr });
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const old = run.manifest.provided_revisions[0];
     const fresh = result.manifest!.provided_revisions[0];
     if (old.revision_digest !== fresh.revision_digest || old.agreement_id !== fresh.agreement_id) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
+    // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나
+    // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
     const freshManifest: any = result.manifest;
     for (const field of ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id']) {
       if (run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
-    if (input.model_adapter_id !== undefined && !(await this.checkEgress(actor, input.model_adapter_id, freshManifest))) return { status: 'withheld', reason: 'EGRESS_POLICY_DENIED', checkpoint: result.checkpoint };
+    // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 거부한다 — egress 확인을 우회할 수 없다.
+    if (input.model_adapter_id !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: result.checkpoint };
+    if (run.model_adapter_id !== undefined) {
+      const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
+      if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
+    }
     return { status: 'valid', checkpoint: result.checkpoint, refreshed_manifest: result.manifest };
   }
 }

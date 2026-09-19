@@ -192,7 +192,12 @@ HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은
 검색 권한이 외부 모델 전송 권한을 함축하지 않으므로 `modelEgress` 정책을 서비스 옵션으로 둔다.
 `policy_version`은 manifest의 `model_egress_policy_version`에 실리고, 호출자가 `model_adapter_id`를
 지정하면 `resolve`는 manifest 발급 전에, `revalidate`는 release 직전에 `allows` 콜백으로 현재
-전송 권한을 확인한다 — 거부·예외는 `EGRESS_POLICY_DENIED`로 withheld한다.
+전송 권한을 확인한다 — 정책 거부는 `EGRESS_POLICY_DENIED`, 훅 예외(정책 저장소 장애)는
+`EGRESS_POLICY_UNAVAILABLE`로 구분해 withheld하고, allows 미설정 시 어댑터 요청은 허가 근거가
+없어 거부된다. resolve는 요청 어댑터를 run 기록에 결속하고 revalidate는 다른 어댑터·무어댑터
+재검증을 `EGRESS_ADAPTER_MISMATCH`로 거부해 egress 확인 우회를 막는다.
 `revalidate`는 policy·membership epoch·egress version·retrieval profile 결속 필드를 서버에서도
-대조해 클라이언트 검증만에 의존하지 않는다. `guardedGeneration`은 `adapterId`를 resolve와 두
+대조해 클라이언트 검증만에 의존하지 않는다 — `egressVersion`은 한 boot 안에서 상수라 이 대조는
+run 기록 변조에 대한 심층 방어다(재시작은 boot_id 검사가 먼저 차단한다).
+`guardedGeneration`은 `adapterId`를 resolve와 두
 revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정책 게이트가 같은 어댑터를 가리킨다.
