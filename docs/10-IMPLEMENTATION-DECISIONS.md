@@ -210,5 +210,8 @@ revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정�
 `EGRESS_ADAPTER_REQUIRED`로 거부)를 켜거나 자체 게이트웨이에서 요청 수준 정책을 둬야 한다.
 현재 manifest 계약에는 어댑터 식별자가 없어 manifest만으로는 발급 대상 어댑터를 감사할 수
 없다 — 결속은 vault run 기록에만 있고, 원장 닻이 없는 그 결속은 per-boot 무결성 도장(HMAC,
-재시작 시 boot_id 검사가 기록을 폐기)으로 변조를 탐지한다. 후속 계약 버전에서 manifest에
-`model_adapter_id`를 포함해 `validateRefreshedManifest` 비교 대상에 넣는 것을 검토한다.
+재시작 시 boot_id 검사가 기록을 폐기)으로 변조를 탐지한다. 도장은 run_id·slot·어댑터 결속뿐
+아니라 발급 manifest 전체와 발급 대상 actor까지 덮으므로, 저장 manifest를 현재 원장 값으로
+교체해 대조를 통과시키는 변조나 다른 actor 행으로의 도장 복사도 무결성 불일치로 잡힌다.
+후속 계약 버전에서 manifest에 `model_adapter_id`를 포함해 `validateRefreshedManifest`
+비교 대상에 넣는 것을 검토한다.

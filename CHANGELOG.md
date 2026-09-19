@@ -68,9 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook as `EGRESS_POLICY_UNAVAILABLE` (`timeout_ms`, reported through the
   `onError` diagnostic). The policy, membership-epoch, egress-version and
   retrieval-profile bindings plus approval decisions are compared server-side
-  instead of relying on client validation alone, and the adapter/slot binding
-  is sealed with a per-boot HMAC integrity stamp so vault tampering that
-  rewrites or deletes the bound adapter is detected as `KNOWLEDGE_CHANGED`.
+  instead of relying on client validation alone. A per-boot HMAC integrity
+  stamp seals the run id, slot, adapter binding, issuance manifest, and issuing
+  actor so vault tampering — rewriting the bound adapter, deleting the key, or
+  swapping the stored manifest for currently-valid values — is detected as
+  `KNOWLEDGE_CHANGED`, and tamper-detected responses omit the stored
+  checkpoint.
   `modelEgress.require_adapter` opts a deployment into rejecting adapter-less
   resolves with `EGRESS_ADAPTER_REQUIRED`. `guardedGeneration` now forwards
   its `adapterId` through `resolve` and both `revalidate` calls so the server

@@ -148,7 +148,9 @@ export class KnowledgerService {
     if (onError !== undefined && typeof onError !== 'function') throw new TypeError('Model egress onError must be a function');
     // onError 미설정 배포도 정책 장애를 인지할 수 있게 기본 진단은 표준 오류로 남긴다 — 명시적 onError는 이를 대체한다.
     this.egressOnError = onError ?? ((error: unknown) => { console.error('model egress policy check failed:', error); });
-    this.egressRequireAdapter = options.modelEgress?.require_adapter === true;
+    const requireAdapter = options.modelEgress?.require_adapter;
+    if (requireAdapter !== undefined && typeof requireAdapter !== 'boolean') throw new TypeError('Model egress require_adapter must be a boolean');
+    this.egressRequireAdapter = requireAdapter === true;
   }
 
   /**
@@ -175,16 +177,21 @@ export class KnowledgerService {
       // 상한 신호가 울린 뒤 신호를 존중한 훅의 AbortError가 경주를 이겨도 진단에는 타임아웃으로 보고한다.
       const reported = controller.signal.aborted && !(error instanceof ModelEgressTimeoutError) ? new ModelEgressTimeoutError(error) : error;
       // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
-      try { this.egressOnError.call(undefined, reported); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
+      try {
+        this.egressOnError.call(undefined, reported);
+      } catch (diagnosticError) {
+        // 깨진 진단 싱크를 조용히 삼키지 않고 기본 출력으로 한 번 더 보고한다 — 출력 자체가 불가하면 더 보고할 곳이 없다.
+        try { console.error('model egress diagnostic callback failed:', diagnosticError); } catch { /* 출력 불가 환경 */ }
+      }
       return 'unavailable';
     } finally {
       clearTimeout(timer);
     }
   }
 
-  /** run 기록 중 원장 닻이 없는 필드(run_id·slot·어댑터 결속)의 per-boot 무결성 도장 — boot 비밀키라 재시작 기록은 자연 폐기된다. */
-  private runIntegrity(runId: string, slot: unknown, adapterId: string | null): string {
-    return createHmac('sha256', this.runIntegrityKey).update(domain.canonicalize({ run_id: runId, slot, model_adapter_id: adapterId })).digest('hex');
+  /** run 기록 중 원장 닻이 없는 필드(run_id·slot·어댑터 결속·발급 manifest·발급 대상 actor)의 per-boot 무결성 도장 — boot 비밀키라 재시작 기록은 자연 폐기된다. */
+  private runIntegrity(runId: string, slot: unknown, adapterId: string | null, manifest: unknown, actor: Actor): string {
+    return createHmac('sha256', this.runIntegrityKey).update(domain.canonicalize({ run_id: runId, slot, model_adapter_id: adapterId, manifest, org_id: actor.org_id, actor_id: actor.actor_id })).digest('hex');
   }
 
   /** checkEgress 결과를 withheld 사유 코드로 변환한다 — 정책 장애와 정책 거부를 구분한다. */
@@ -1264,7 +1271,7 @@ export class KnowledgerService {
     // 미지정은 null 센티널로 저장한다 — 키가 아예 없는 기록은 변조와 구분할 수 없기 때문이다(JSON은 undefined 키를 버린다).
     // integrity는 slot·어댑터처럼 원장 닻이 없는 결속 필드를 per-boot 도장으로 묶는다.
     // 내부 재검증 호출은 원래 run의 manifest만 새로 만들 뿐 run 기록을 다시 발급하지 않는다.
-    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id ?? null, integrity: this.runIntegrity(runId, slot, input.model_adapter_id ?? null) });
+    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id ?? null, integrity: this.runIntegrity(runId, slot, input.model_adapter_id ?? null, manifest, actor) });
     return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
@@ -1273,25 +1280,17 @@ export class KnowledgerService {
     this.actor(actor); onlyFields(input, ['action', 'model_adapter_id']);
     if (input.action !== 'use-context') throw new ApiError('UNSUPPORTED_ACTION', 'v0.1에서는 지식 사용 여부만 재검증할 수 있습니다.');
     assertModelAdapterId(input.model_adapter_id);
-    const runIdStr = identifier(runId);
-    const run: StoredRunRecord | undefined = this.vault.get('run', runIdStr, actor);
+    const validatedRunId = identifier(runId);
+    const run: StoredRunRecord | undefined = this.vault.get('run', validatedRunId, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN', checkpoint: run.manifest?.checkpoint };
-    // 발급 시점부터 어댑터 키는 항상 존재한다(null 센티널) — 키 부재는 기록 변조다.
-    if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
-    // 재해석에 필요한 slot 필드가 깨진 기록은 변조다 — 형태 확인이 도장 계산(canonicalize)보다 먼저여야 비-JSON 값이 예외로 새지 않는다.
-    if (!run.slot || typeof run.slot !== 'object' || typeof run.slot.document_id !== 'string' || typeof run.slot.context_id !== 'string' || typeof run.slot.scope_id !== 'string' || typeof run.slot.usage_scope !== 'string') {
-      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
-    }
-    // slot·어댑터 결속은 원장 닻이 없어 per-boot 도장으로 검증한다 — 어댑터를 null로 지운 기록도 무결성 불일치로 잡힌다.
-    // hex 형태를 먼저 확인해 멀티바이트 문자열이 timingSafeEqual의 RangeError로 새지 않게 한다.
-    const expectedIntegrity = this.runIntegrity(runIdStr, run.slot, run.model_adapter_id);
-    if (typeof run.integrity !== 'string' || !/^[0-9a-f]{64}$/.test(run.integrity) || !timingSafeEqual(Buffer.from(run.integrity), Buffer.from(expectedIntegrity))) {
-      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
-    }
+    // 미신뢰 저장 기록의 manifest는 형태가 보장되지 않는다 — 객체만 발급 checkpoint 근거로 에코한다.
+    const issuanceCheckpoint = run.manifest && typeof run.manifest === 'object' ? run.manifest.checkpoint : undefined;
+    const blocked = this.storedRunBlockReason(run, validatedRunId, actor);
+    // 변조 판정 경로에서는 미신뢰 기록의 checkpoint를 에코하지 않는다 — 재시작 안내만 발급 시점 근거를 돌려준다.
+    if (blocked) return { status: 'withheld', reason: blocked, checkpoint: blocked === 'SESSION_RESTARTED_RESOLVE_AGAIN' ? issuanceCheckpoint : undefined };
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
-    if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: run.manifest?.checkpoint };
-    const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
+    if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: issuanceCheckpoint };
+    const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, validatedRunId);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const freshManifest: Record<string, unknown> = result.manifest!;
     if (this.storedManifestMismatch(run, freshManifest)) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
@@ -1300,8 +1299,30 @@ export class KnowledgerService {
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
     }
     // 발급 manifest는 감사 기준점으로 유지하고 최신 재검증 manifest는 별도 필드에 보존한다.
-    this.vault.replace('run', runIdStr, actor, { ...run, last_refreshed_manifest: result.manifest });
+    this.vault.replace('run', validatedRunId, actor, { ...run, last_refreshed_manifest: result.manifest });
     return { status: 'valid', checkpoint: result.checkpoint, refreshed_manifest: result.manifest };
+  }
+
+  /**
+   * 저장 run 기록의 형태·무결성 대조 — boot 불일치·필드 부재·도장 불일치는 withheld
+   * 사유 코드로 돌리고, 통과하면 undefined를 돌린다. 미신뢰 기록이므로 형태 확인이
+   * 도장 계산(canonicalize)보다 먼저여야 비-JSON 값이 예외로 새지 않는다.
+   */
+  private storedRunBlockReason(run: StoredRunRecord, runId: string, actor: Actor): string | undefined {
+    if (run.boot_id !== this.bootId) return 'SESSION_RESTARTED_RESOLVE_AGAIN';
+    // 발급 시점부터 어댑터 키는 항상 존재한다(null 센티널) — 키 부재는 기록 변조다.
+    if (run.model_adapter_id === undefined) return 'KNOWLEDGE_CHANGED';
+    // 재해석에 필요한 slot 필드가 깨진 기록은 변조다.
+    if (!run.slot || typeof run.slot !== 'object' || typeof run.slot.document_id !== 'string' || typeof run.slot.context_id !== 'string' || typeof run.slot.scope_id !== 'string' || typeof run.slot.usage_scope !== 'string') {
+      return 'KNOWLEDGE_CHANGED';
+    }
+    // slot·어댑터·발급 manifest·발급 대상의 결속은 원장 닻이 없어 per-boot 도장으로 검증한다 — manifest를 현재 원장 값으로 교체한 기록도 무결성 불일치로 잡힌다.
+    // hex 형태를 먼저 확인해 멀티바이트 문자열이 timingSafeEqual의 RangeError로 새지 않게 한다.
+    const expectedIntegrity = this.runIntegrity(runId, run.slot, run.model_adapter_id, run.manifest, actor);
+    if (typeof run.integrity !== 'string' || !/^[0-9a-f]{64}$/.test(run.integrity) || !timingSafeEqual(Buffer.from(run.integrity), Buffer.from(expectedIntegrity))) {
+      return 'KNOWLEDGE_CHANGED';
+    }
+    return undefined;
   }
 
   /**
