@@ -241,10 +241,10 @@ function describeConnections(count: number): string {
   return count < 0 ? '알 수 없음' : `${count}개`;
 }
 
-/** 오류를 진단용 한 줄로 바꾼다 — message getter나 문자열 변환이 던지는 값도 진단과 종료를 막지 못하게 고정 폴백을 둔다. */
+/** 오류를 진단용 한 줄로 바꾼다 — message getter나 문자열 변환이 던지는 값도 진단과 종료를 막지 못하게 고정 폴백을 둔다. 반환 전에 여기서 문자열로 강제한다 — 변환을 호출자의 템플릿 보간에 맡기면 가드 밖에서 던진다. */
 function describeError(error: unknown): string {
   try {
-    return error instanceof Error ? error.message : String(error);
+    return String(error instanceof Error ? error.message : error);
   } catch {
     return '알 수 없는 오류';
   }

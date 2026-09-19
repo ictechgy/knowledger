@@ -490,8 +490,11 @@ test('closeHttpServer survives a sweep failure whose value cannot be stringified
   try {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
     await once(socket, 'data');
-    // 문자열 변환 자체가 던지는 값으로 스윕이 실패해도 진단 포맷이 종료를 막지 못해야 한다 —
-    // 초기 스윕의 거절이나 주기 스윕의 uncaught exception으로 번지지 않게 고정 폴백을 둔다.
+    // message 자체가 문자열 변환 시 던지는 객체인 Error로 스윕이 실패해도 진단 포맷이 종료를
+    // 막지 못해야 한다 — 변환을 호출자 보간에 맡기면 초기 스윕의 거절이나 주기 스윕의
+    // uncaught exception으로 번지므로 가드 안에서 강제 변환한다.
+    const evil = new Error('sweep placeholder');
+    Object.defineProperty(evil, 'message', { value: { [Symbol.toPrimitive]() { throw new Error('toPrimitive boom'); } } });
     server.close = ((callback?: (error?: Error) => void) => {
       isInsideServerClose = true;
       try {
@@ -503,7 +506,7 @@ test('closeHttpServer survives a sweep failure whose value cannot be stringified
     server.closeIdleConnections = (() => {
       if (isInsideServerClose) return originalCloseIdle();
       sweepAttempts++;
-      throw { [Symbol.toPrimitive]() { throw new Error('toPrimitive boom'); } };
+      throw evil;
     }) as Server['closeIdleConnections'];
     await closeHttpServer(server, { deadlineMs: 120, settleMs: 60, label: 'sweep-test' });
     assert.ok(sweepAttempts >= 2, 'the initial and periodic sweeps both ran with the unstringifiable failure');
