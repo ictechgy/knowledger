@@ -4,7 +4,7 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { closeHttpServer } from '../../packages/http/graceful-close.ts';
+import { closeHttpServer, MAX_TIMEOUT_MS } from '../../packages/http/graceful-close.ts';
 
 /** 포트 0으로 듣는 서버를 띄워 주소를 돌려준다 — 매 테스트가 독립 포트를 쓰게 한다. */
 async function listeningServer(handler: RequestListener): Promise<{ server: Server; port: number }> {
@@ -48,8 +48,8 @@ test('closeHttpServer rejects non-finite or out-of-range close bounds', async ()
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: Number.NaN }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { settleMs: Number.POSITIVE_INFINITY }), RangeError);
   // Node는 타이머 상한(2^31-1)을 넘는 지연을 1ms로 강등한다 — 마감 순서 역전을 막기 위해 거절한다.
-  await assert.rejects(() => closeHttpServer(server, { deadlineMs: 2 ** 31 }), RangeError);
-  await assert.rejects(() => closeHttpServer(server, { deadlineMs: 2 ** 31 - 1, settleMs: 2 }), RangeError);
+  await assert.rejects(() => closeHttpServer(server, { deadlineMs: MAX_TIMEOUT_MS + 1 }), RangeError);
+  await assert.rejects(() => closeHttpServer(server, { deadlineMs: MAX_TIMEOUT_MS, settleMs: 2 }), RangeError);
 });
 
 test('closeHttpServer reaps an idle keep-alive socket without waiting for the deadline', async (t) => {
@@ -226,6 +226,30 @@ test('closeHttpServer releases exactly once when deadline and settle are both ze
   } finally {
     server.closeAllConnections = originalCloseAll;
     socket.destroy();
+  }
+});
+
+test('closeHttpServer propagates a forced-release failure without lingering timers', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server, port } = await listeningServer((_req, res) => { res.writeHead(200); res.flushHeaders(); });
+  const socket = connect(port, '127.0.0.1');
+  const originalClose = server.close.bind(server);
+  const originalCloseAll = server.closeAllConnections.bind(server);
+  const timeouts = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length;
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    await once(socket, 'data');
+    // 마감의 강제 해제 자체가 실패하는 경로 — 오류는 전파되고 두 타이머는 정리돼야 한다.
+    server.closeAllConnections = (() => { throw new Error('release boom'); }) as Server['closeAllConnections'];
+    const before = timeouts();
+    await assert.rejects(() => closeHttpServer(server, { deadlineMs: 60, settleMs: 1_000, label: 'release-test' }), /release boom/);
+    await sleep(20);
+    assert.equal(timeouts(), before, 'a release failure must not leak the deadline timers');
+    assert.equal(httpDiagnostics(diagnostic).length, 0, 'a failed release must not masquerade as a completed one');
+  } finally {
+    server.closeAllConnections = originalCloseAll;
+    socket.destroy();
+    await releaseServer(server, originalClose);
   }
 });
 
