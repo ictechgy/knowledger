@@ -47,6 +47,14 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
   private readonly pgModule: unknown;
   private readonly pgLoader: (() => Promise<unknown>) | undefined;
   private opening: Promise<any> | undefined;
+  /**
+   * 공유 클라이언트 직렬화 큐 — pg는 개별 문장만 직렬화할 뿐 다중문 트랜잭션은
+   * 보호하지 못한다. BEGIN/SELECT/COMMIT이 다른 호출과 문장 단위로 섞이면
+   * 중첩 트랜잭션·설정 덮어쓰기·타 호출 ROLLBACK으로의 오염이 생기므로
+   * 공유 클라이언트의 모든 연산을 이 큐로 직렬화한다. 절대 거부되지 않게
+   * 유지해 await만으로 드레인할 수 있다.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(options: PgVectorIndexOptions) {
     if (!IDENTIFIER.test(options.table)) throw new TypeError('Vector index table must be a simple SQL identifier');
@@ -59,6 +67,7 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     this.pgLoader = options.pgLoader;
   }
 
+  /** pg 모듈을 해석한다 — 주입된 모듈·주입된 로더·지연 import 순서로 시도한다. */
   private async loadPg(): Promise<any> {
     if (this.pgModule) return this.pgModule;
     try { if (this.pgLoader) return await this.pgLoader(); }
@@ -90,33 +99,51 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     try { return await client.query(text, values); }
     catch (error) {
       const code = String((error as any)?.code ?? '');
-      if (code.startsWith('42') || code === '3D000' || code === '22000' || /different vector dimensions|expected \d+ dimensions/i.test(String((error as Error)?.message))) {
+      if (code.startsWith('42') || code.startsWith('22') || code === '3D000' || /different vector dimensions|expected \d+ dimensions/i.test(String((error as Error)?.message))) {
         throw new TypeError('pgvector rejected the request shape or schema — check index table, dimensions, and privileges', { cause: error });
       }
       throw error;
     }
   }
 
+  /**
+   * 공유 클라이언트 연산의 독점 실행 — 호출된 연산은 큐의 이전 작업이 끝난 뒤에만
+   * 시작해 다중문 트랜잭션이 다른 호출의 문장과 섞이지 않는다. 큐 자체는
+   * 결과와 무관하게 절대 거부되지 않게 유지해 다음 연산이 항상 진행된다.
+   */
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation, operation);
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
+   * 공유 클라이언트의 연결 Promise를 돌려준다 — 첫 호출이 연결을 열고 이후
+   * 호출은 같은 Promise를 공유한다. 연결 실패는 Promise를 비우고 클라이언트를
+   * 닫아 다음 호출이 재시도하게 한다.
+   */
   private connect(): Promise<any> {
     if (!this.opening) {
       // 클로저 안에서 자기 Promise를 참조해야 해 선언 후 할당한다 —
       // 참조는 첫 await 이후의 콜백에서만 일어나므로 할당 전 사용은 없다.
       let opening!: Promise<any>;
       opening = (async () => {
+        const pg = await this.loadPg();
+        const client = new pg.Client(this.connection);
+        // 유휴 연결 손실이 unhandled 'error'로 프로세스를 죽이지 않게 한다 —
+        // 자신의 연결만 비우고(지연 error가 새 연결을 버리지 않게) 소켓을 정리해 다음 호출이 재연결한다.
+        client.on('error', () => {
+          if (this.opening === opening) this.opening = undefined;
+          void client.end().catch(() => { /* 이미 죽은 클라이언트 — 정리 실패는 무시해도 안전하다 */ });
+        });
         try {
-          const pg = await this.loadPg();
-          const client = new pg.Client(this.connection);
-          // 유휴 연결 손실이 unhandled 'error'로 프로세스를 죽이지 않게 한다 —
-          // 자신의 연결만 비우고(지연 error가 새 연결을 버리지 않게) 소켓을 정리해 다음 호출이 재연결한다.
-          client.on('error', () => {
-            if (this.opening === opening) this.opening = undefined;
-            void client.end().catch(() => { /* 이미 죽은 클라이언트 — 정리 실패는 무시해도 안전하다 */ });
-          });
           await client.connect();
           return client;
         } catch (error) {
-          // 거부된 연결 시도는 남기지 않는다 — 이후 호출이 재시도할 수 있어야 한다.
+          // 거부된 연결 시도는 남기지 않는다 — 만든 클라이언트는 누수하지 않게
+          // 닫고 Promise는 비워 이후 호출이 재시도할 수 있어야 한다.
           if (this.opening === opening) this.opening = undefined;
+          void client.end().catch(() => { /* 연결이 열리지 못한 정리 실패는 무시해도 안전하다 */ });
           throw error;
         }
       })();
@@ -125,10 +152,16 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     return this.opening;
   }
 
+  /**
+   * 이 색인 버전의 행에서 코사인 근접 후보를 limit까지 돌려준다.
+   * 공유 클라이언트의 트랜잭션 안에서 LOCAL ef_search를 올려 요청 한도의
+   * 후보를 모두 훑되 다른 호출의 세션 설정과 섞이지 않게 한다.
+   */
   async candidates(query: VectorCandidateQuery): Promise<readonly VectorCandidate[]> {
     if (!isFiniteEmbedding(query.embedding)) throw new TypeError('Vector candidate query embedding is invalid');
     if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1000) throw new TypeError('Vector candidate query limit is invalid');
     const literal = `[${query.embedding.join(',')}]`;
+    return this.exclusive(async () => {
     const client = await this.connect();
     const clauses = ['index_version = $2'];
     const values: unknown[] = [literal, this.indexVersion];
@@ -157,12 +190,14 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     }
     return result.rows.map((row: any) => ({ revision_digest: row.revision_digest, document_id: row.document_id,
       context_id: row.context_id, scope_id: row.scope_id, usage_scope: row.usage_scope, score: Number(row.score) }));
+    });
   }
 
   /** 항목 하나를 올리거나 갱신한다 — (revision_digest, index_version) 재키잉으로 재구축이 멱등이다. */
   async upsert(entry: VectorIndexEntry): Promise<void> {
     if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
     const literal = `[${entry.embedding.join(',')}]`;
+    return this.exclusive(async () => {
     const client = await this.connect();
     await this.run(client,
       `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
@@ -171,17 +206,23 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
          document_id = EXCLUDED.document_id, context_id = EXCLUDED.context_id, scope_id = EXCLUDED.scope_id,
          usage_scope = EXCLUDED.usage_scope, embedding = EXCLUDED.embedding`,
       [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, literal, this.indexVersion]);
+    });
   }
 
+  /** 이 색인 버전에서 한 다이제스트의 행을 지운다. */
   async remove(revisionDigest: string): Promise<void> {
+    return this.exclusive(async () => {
     const client = await this.connect();
     await this.run(client, `DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
+    });
   }
 
   /** 이 색인 버전의 모든 행을 지운다 — 재구축 경로는 검증된 상태에서 다시 채운다. */
   async clear(): Promise<void> {
+    return this.exclusive(async () => {
     const client = await this.connect();
     await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
+    });
   }
 
   /**
@@ -195,15 +236,19 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     const client = new pg.Client(this.connection);
     // 전용 연결의 error 이벤트를 삼키지 않으면 프로세스가 죽는다 — 실패는 아래 await에서 잡힌다.
     client.on('error', () => { /* 실패는 query/connect await에서 전파된다 */ });
-    await client.connect();
     try {
+      // connect도 try 안에 둔다 — 연결 실패가 finally의 end()를 건너뛰면 안 된다.
+      await client.connect();
       await this.run(client, 'BEGIN', []);
       await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
-      for (const entry of entries) {
+      // 행 단위 왕복을 피해 200행씩 다중행 INSERT로 묶는다 — 대규모 원장의
+      // 재구축 트랜잭션과 트랜잭션을 여는 HTTP 요청이 지나치게 길어지지 않게 한다.
+      for (let start = 0; start < entries.length; start += 200) {
+        const batch = entries.slice(start, start + 200);
+        const placeholders = batch.map((_, row) => `($${row * 7 + 1},$${row * 7 + 2},$${row * 7 + 3},$${row * 7 + 4},$${row * 7 + 5},$${row * 7 + 6}::vector,$${row * 7 + 7})`).join(',');
         await this.run(client,
-          `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
-           VALUES ($1,$2,$3,$4,$5,$6::vector,$7)`,
-          [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, `[${entry.embedding.join(',')}]`, this.indexVersion]);
+          `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version) VALUES ${placeholders}`,
+          batch.flatMap(entry => [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, `[${entry.embedding.join(',')}]`, this.indexVersion]));
       }
       await this.run(client, 'COMMIT', []);
     } catch (error) {
@@ -216,7 +261,10 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     }
   }
 
+  /** 큐 작업을 드레인한 뒤 공유 클라이언트를 닫고 이후 호출이 재연결하게 둔다. */
   async close(): Promise<void> {
+    // 진행 중인 큐 작업이 끝날 때까지 기다린다 — 닫힌 클라이언트 위의 문장 실행을 막는다.
+    await this.queue;
     const opening = this.opening;
     this.opening = undefined;
     // 거부된 연결 시도는 닫을 대상이 없다 — 삼키지 않고 결과만 무시한다.

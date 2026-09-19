@@ -53,26 +53,47 @@ export interface VectorIndexEntry {
   readonly embedding: readonly number[];
 }
 
-const finite = (values: readonly number[]) => values.length > 0 && values.length <= 4096 && values.every(value => Number.isFinite(value));
+/**
+ * 배열 여부와 조밀한 유한 원소를 순서대로 확인한다 — 희소 배열의 구멍은
+ * undefined라 유한 검사에서 걸러지고, null·비배열은 예외 없이 거짓을 돌려
+ * 호출자의 오류 경계 안에서 처리되게 한다.
+ */
+const finite = (values: unknown): values is readonly number[] => {
+  if (!Array.isArray(values) || values.length < 1 || values.length > 4096) return false;
+  for (let index = 0; index < values.length; index += 1) if (!Number.isFinite(values[index])) return false;
+  return true;
+};
 
 /** 모든 어댑터와 질의 경로가 공유하는 임베딩 유효성 계약. */
-export function isFiniteEmbedding(values: readonly number[]): boolean {
+export function isFiniteEmbedding(values: unknown): values is readonly number[] {
   return finite(values);
 }
 
-/** 코사인 유사도 — 차원 불일치는 설정 오류, 비유한·영노름 입력은 0이다. */
+/**
+ * 코사인 유사도 — 차원 불일치는 설정 오류, 비유한·영노름 입력은 0이다.
+ * 각 벡터를 자신의 최대 절댓값으로 나눠 누적해 1e308의 제곱 오버플로와
+ * 1e-308의 언더플로 없이 극단적 유한 값에서도 유한한 점수를 보장한다.
+ */
 export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   if (a.length !== b.length) throw new TypeError('Embedding dimensions do not match');
   if (!finite(a) || !finite(b)) return 0;
+  const scale = (values: readonly number[]) => Math.max(...values.map(Math.abs));
+  const sa = scale(a), sb = scale(b);
+  if (sa === 0 || sb === 0) return 0;
   let dot = 0, na = 0, nb = 0;
-  for (let index = 0; index < a.length; index += 1) { dot += a[index]! * b[index]!; na += a[index]! * a[index]!; nb += b[index]! * b[index]!; }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  for (let index = 0; index < a.length; index += 1) {
+    const x = a[index]! / sa, y = b[index]! / sb;
+    dot += x * y; na += x * x; nb += y * y;
+  }
+  const score = dot / (Math.sqrt(na) * Math.sqrt(nb));
+  return Number.isFinite(score) ? score : 0;
 }
 
 /**
- * 개발과 테스트용 인프로세스 파생 색인. 항목은 검증된 개정본에서만 채워지고,
- * 재키잉 시 낡은 다이제스트가 제거되므로 재구축이 대체된 개정본을 되살리지 않는다.
+ * 개발과 테스트용 인프로세스 파생 색인. 항목은 검증된 개정본에서만 채워진다.
+ * upsert는 다이제스트 키 갱신이라 대체된 이전 다이제스트 행이 남지만,
+ * replaceAll 재구축이 맵을 통째로 갈아 낡은 행을 모두 버린다 — 재구축이
+ * 대체된 개정본을 되살리지 않는다.
  */
 export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
   private entries = new Map<string, VectorIndexEntry>();

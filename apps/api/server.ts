@@ -49,7 +49,13 @@ export interface AppOptions {
   binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
   /** Ownership transfers to the app — createApp closes it on shutdown and on initialization failure. */
   vectorIndex?: VectorCandidateIndex;
+  /**
+   * 외부 색인과 같은 임베딩 공간의 질의 임베더 — 같은 입력에 같은 출력을
+   * 돌려야 한다(커서는 순위 해시로 후보 집합을 고정). embedRevision과 반드시
+   * 쌍으로 설정한다.
+   */
   embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
+  /** embedQuery와 같은 임베딩 공간의 개정본 임베더 — 색인에 기록된 행의 임베더와 차원이 같아야 한다. */
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
 }
 
