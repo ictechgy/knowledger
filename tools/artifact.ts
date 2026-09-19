@@ -165,8 +165,8 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     // 대체돼도 대상 경로에 외부 객체를 남기지 않고 닫힌 실패로 둔다.
     const published = lstatSync(fileName, { throwIfNoEntry: false });
     if (!published || !published.isFile() || published.dev !== tmpStat.dev || published.ino !== tmpStat.ino || published.nlink !== 1) {
-      // 대체된 객체가 디렉터리일 수도 있어 재귀로 정리한다 — 심볼릭 링크는 따라가지 않는다.
-      try { rmSync(fileName, { recursive: true, force: true }); } catch { /* 대체된 객체 정리 시도만 한다 */ }
+      // 대상에 놓인 것이 우리 inode가 아니면 절대 지우지 않는다 — 경합자가 놓은 파일이나
+      // 디렉터리일 수 있어 거부만 하고 그대로 둔다.
       throw new Error('--out was replaced during publish');
     }
     try {

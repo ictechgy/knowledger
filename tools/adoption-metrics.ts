@@ -107,10 +107,14 @@ if (isMain()) {
         { path: observationsPath, inode: `${observationsStat.dev}:${observationsStat.ino}` },
       ];
       const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations });
-      // 고정한 inode와 저널 경로가 여전히 같은 대상인지 확인한다 — 읽기 중 대체됐으면
-      // 고정된 신원이 실제로 읽은 내용을 대표하지 못하므로 닫힌 실패로 둔다.
-      const ledgerCheck = lstatSync(ledgerPath, { throwIfNoEntry: false });
-      if (!ledgerCheck || ledgerCheck.dev !== ledgerStat.dev || ledgerCheck.ino !== ledgerStat.ino) throw new Error('invalid option');
+      // 고정한 신원을 가진 모든 입력이 읽기 후에도 같은 대상인지 확인한다 — 읽는 동안
+      // 바뀌거나 지워진 입력은 고정 신원이 실제 읽은 내용을 대표하지 못한다. 읽기 중
+      // 새로 생긴 sidecar는 출력 검증 시점의 재조회가 보호 비교에 쓴다.
+      for (const input of inputs) {
+        if (input.inode === undefined) continue;
+        const post = lstatSync(input.path, { throwIfNoEntry: false });
+        if (!post || `${post.dev}:${post.ino}` !== input.inode) throw new Error('invalid option');
+      }
       const output = JSON.stringify(result, null, 2);
       const out = values.get('--out');
       if (out) {
