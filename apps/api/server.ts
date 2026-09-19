@@ -19,6 +19,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
+import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -60,7 +61,15 @@ export interface AppOptions {
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
+  shutdownDeadlineMs?: number;
 }
+
+/** 해제 단계 이름을 단 오류 — 단일 실패에서만 원오류에 달린다. 복수 실패의 단계 목록은 TeardownAggregateError.stages를 본다. */
+export type TeardownStageError = Error & { stage?: string };
+
+/** 여러 해제 단계의 실패를 묶은 오류 — 실패한 단계 이름을 errors와 같은 순서로 실어 둔다. 개별 errors 항목은 원오류 그대로다. */
+export type TeardownAggregateError = AggregateError & { stages: string[] };
 
 export async function createApp(options: AppOptions) {
   let ledger: ApplicationLedger | undefined = options.ledger;
@@ -72,6 +81,8 @@ export async function createApp(options: AppOptions) {
   const workspaceRoot = definition ? `/v1/workspaces/${encodeURIComponent(definition.workspace.id)}` : '';
   let publicOrigin: string | undefined;
   try {
+    // 잘못된 종료 상한은 close() 시점이 아니라 기동에서 실패하게 한다 — listening 서버만 남는 반쪽 종료를 막는다.
+    assertOptionalCloseBound(options.shutdownDeadlineMs, 'shutdownDeadlineMs');
     if (options.organization && (options.ledger?.mode !== 'fabric-test-network' || !authentication)) throw new Error('Organization scope requires an authenticated Fabric runtime');
     if (options.binding) ensureConfigurationScope(options.dataDir, options.binding);
     else {
@@ -362,10 +373,41 @@ export async function createApp(options: AppOptions) {
       });
     },
     async close() {
-      readiness.close();
-      // keep-alive 소켓이 계속 재사용되면 close()가 유휴 대기로 멈출 수 있다 — 진행 중 요청만 끝나면 닫히도록 유휴 연결을 먼저 거둔다.
-      if (server.listening) await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); });
-      try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } }
+      // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
+      // 각 단계를 독립 실행해 한 단계의 실패가 다음 단계를 건너뛰게 하지 않고, 오류를 모아 한꺼번에 보고한다 — 중첩 finally의 오류 덮어쓰기를 없앤다.
+      const errors: { stage: string; error: unknown }[] = [];
+      const attempt = async (stage: string, step: () => unknown) => {
+        try {
+          await step();
+        } catch (error) {
+          errors.push({ stage, error });
+        }
+      };
+      await attempt('readiness', () => readiness.close());
+      await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
+      // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
+      await attempt('vectorIndex', () => options.vectorIndex?.close?.());
+      await attempt('ledger', () => ledger.close());
+      await attempt('vault', () => vault.close());
+      await attempt('authentication', () => authentication?.close());
+      if (errors.length === 1) {
+        // 단일 실패는 원오류를 그대로 던지되 단계 이름을 달아 둔다 — 복수 실패의 stages와 같은 정보를 잃지 않게 한다.
+        const [{ stage, error }] = errors;
+        if (error instanceof Error) {
+          try {
+            (error as TeardownStageError).stage = stage;
+          } catch {
+            // 동결·확장 불가인 호출자 소유 오류에는 단계를 못 단다 — 부가 정보 부착 실패가 원오류를 대체하지 않게 한다.
+          }
+        }
+        throw error;
+      }
+      if (errors.length > 1) {
+        // 단계 이름은 메시지에만 두지 않고 집계 오류에도 실어 둔다 — 로그 수집기가 문자열 파싱 없이 단계를 집계할 수 있다.
+        const aggregate = new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`) as TeardownAggregateError;
+        aggregate.stages = errors.map(entry => entry.stage);
+        throw aggregate;
+      }
     },
   };
 }

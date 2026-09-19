@@ -245,3 +245,33 @@ test('issuer uses fresh random values for its local cryptographic material', { s
   assert.equal(Object.hasOwn(firstJwks.keys[0] ?? {}, 'd'), false);
   assert.equal(Object.hasOwn(secondJwks.keys[0] ?? {}, 'd'), false);
 });
+
+test('issuer rejects an invalid shutdown deadline before binding a server', { skip: oidcTestSkip }, async () => {
+  // 다른 입력은 전부 유효하게 두고 메시지까지 단언한다 — 포트·리다이렉트·계정 검증의 오류로 위장 통과하지 않게 한다.
+  const { startDevelopmentIssuer: startIssuer } = await import('../../packages/auth/development-issuer.ts');
+  await assert.rejects(
+    () => startIssuer({ accounts: [{ subject: 'dev-owner', label: '담당자' }], port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: -1 }),
+    /shutdownDeadlineMs/,
+  );
+});
+
+test('issuer close forwards shutdownDeadlineMs and labels diagnostics as development-issuer', { skip: oidcTestSkip }, async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { startDevelopmentIssuer: startIssuer } = await import('../../packages/auth/development-issuer.ts');
+  const issuer = await startIssuer({ accounts: [{ subject: 'dev-owner', label: '담당자' }], port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: 60 });
+  const originalClose = issuer.server.close.bind(issuer.server);
+  try {
+    // close 콜백을 가로채 abandon 경로를 탄다 — 60ms 마감의 강제 해제와 issuer 레이블이 진단에 도달해야 한다.
+    issuer.server.close = (() => issuer.server) as typeof issuer.server.close;
+    const started = Date.now();
+    await issuer.close();
+    // 마감 60 + 기본 정착 250 + 진단 예산 100 — 기본값(5000)이 전달되지 않았다면 이 상한 안에 끝날 수 없다.
+    assert.ok(Date.now() - started < 2_000, 'the 60ms deadline must reach closeHttpServer');
+    const messages = diagnostic.mock.calls.map(call => String(call.arguments[0])).filter(m => /HTTP 종료/.test(m));
+    assert.ok(messages.some(m => /development-issuer/.test(m) && /강제 해제/.test(m)), 'the issuer label reaches the forced-release diagnostic');
+    assert.ok(messages.some(m => /development-issuer/.test(m) && /마감까지/.test(m)), 'the issuer label reaches the abandon diagnostic');
+  } finally {
+    issuer.server.close = originalClose;
+    await new Promise<void>(resolve => { issuer.server.close(() => resolve()); });
+  }
+});

@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
 
+import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../http/graceful-close.ts';
+
 const MAX_FORM_BYTES = 16 * 1024;
 const CSRF_COOKIE = 'knowledger_development_interaction_csrf';
 const DEFAULT_CLIENT_ID = 'knowledger-development-client';
@@ -38,6 +40,8 @@ export interface StartDevelopmentIssuerOptions {
   redirectUri: string;
   clientId?: string;
   subjects?: readonly string[];
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
+  shutdownDeadlineMs?: number;
 }
 
 function assertLoopbackRedirect(redirectUri: string): URL {
@@ -208,6 +212,8 @@ async function reservePort(requested: number): Promise<number> {
 export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOptions): Promise<DevelopmentIssuer> {
   assertPort(options.port);
   assertLoopbackRedirect(options.redirectUri);
+  // 잘못된 종료 상한은 close() 시점이 아니라 기동에서 실패하게 한다 — listening 서버만 남는 반쪽 종료를 막는다.
+  assertOptionalCloseBound(options.shutdownDeadlineMs, 'shutdownDeadlineMs');
   const clientId = options.clientId ?? DEFAULT_CLIENT_ID;
   assertClientId(clientId);
   if (!Array.isArray(options.accounts) || options.accounts.length < 1 || options.accounts.length > 128
@@ -426,7 +432,8 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
     async close() {
       provider.removeAllListeners();
       csrfByInteraction.clear();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      // keep-alive 소켓 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 둔다.
+      await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'development-issuer' });
     },
     setAccountEnabled(subject, enabled) {
       const account = accountFor(accounts, subject);

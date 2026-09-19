@@ -121,6 +121,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record marks the log torn so later signing fails closed until the file is
   repaired.
 
+### Fixed
+
+- HTTP shutdown now sweeps idle keep-alive connections immediately and
+  keeps re-sweeping while close waits, still waits for in-flight requests to
+  finish, and force-releases any remaining sockets after a five-second
+  deadline — reported on stderr with the server label, the reason
+  (forced release vs a missing close callback) and the affected
+  connection count — so a stuck request, an untracked socket, or a polling
+  client can no longer hang `server.close()`. The API server and the
+  development OIDC issuer share the same `closeHttpServer` implementation
+  (`packages/http`), resource teardown still runs when shutdown fails, and
+  the deadline is tunable via `shutdownDeadlineMs` on both apps.
+  `app.close()` now runs each teardown stage independently and reports
+  failures together — a single failure rethrows the original error, and
+  multiple failures surface as one `AggregateError` naming the failed
+  stages.
+
 ## [0.2.0] — 2026-09-18
 
 ### Added
