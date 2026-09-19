@@ -19,7 +19,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
-import { assertOptionalCloseBound, closeHttpServer } from '../../packages/http/graceful-close.ts';
+import { assertOptionalCloseBound, closeHttpServer, DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -61,7 +61,7 @@ export interface AppOptions {
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
-  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 DEFAULT_CLOSE_DEADLINE_MS, 초과 시 잔여 연결을 강제 해제한다. */
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
 
@@ -367,9 +367,9 @@ export async function createApp(options: AppOptions) {
       });
     },
     async close() {
-      readiness.close();
       // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
-      try { await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
+      // readiness 해제도 같은 보호 안에 둔다 — 그것의 실패가 HTTP 종료와 저장소 해제를 건너뛰게 하지 않는다.
+      try { readiness.close(); await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
       finally { try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } } }
     },
   };

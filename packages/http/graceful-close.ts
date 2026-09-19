@@ -30,6 +30,9 @@ export const MAX_TIMEOUT_MS = 2_147_483_647;
 /** 연결 수 조회 실패를 나타내는 센티널 — 진단이 실제 개수로 위장하지 않게 구분한다. */
 export const UNKNOWN_CONNECTION_COUNT = -1;
 
+/** 개수 포착·잔여 조회가 공유하는 진단 대기의 총 상한(ms) — 조회가 늦어져도 총 대기 상한을 넘기지 않게 한다. */
+export const REMAINING_LOOKUP_MS = 100;
+
 /** 마감·정착 상한은 0 이상 MAX_TIMEOUT_MS 이하의 유한 수여야 한다 — 범위 밖은 1ms 강등·순서 역전을 만든다. */
 export function assertCloseBound(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0 || value > MAX_TIMEOUT_MS) throw new RangeError(`${name} must be a finite number between 0 and ${MAX_TIMEOUT_MS}`);
@@ -41,8 +44,9 @@ export function assertCloseBound(value: number, name: string): void {
  * 기동 검증도 같은 합을 봐야 한다 — 합산을 빠뜨리면 close() 시점에 뒤늦게 거절된다.
  */
 export function assertOptionalCloseBound(value: number | undefined, name: string, settleMs: number = DEFAULT_SETTLE_MS): void {
-  if (value === undefined) return;
+  // 명시적으로 넘긴 정착 상한도 검증한다 — value가 undefined라고 잘못된 settleMs를 통과시키지 않는다.
   assertCloseBound(settleMs, 'settleMs');
+  if (value === undefined) return;
   assertCloseBound(value, name);
   assertCloseBound(value + settleMs, `${name} + settleMs`);
 }
@@ -148,9 +152,6 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     }
   });
 }
-
-/** 개수 포착·잔여 조회가 공유하는 진단 대기의 총 상한(ms) — 조회가 늦어져도 총 대기 상한을 넘기지 않게 한다. */
-export const REMAINING_LOOKUP_MS = 100;
 
 /** 서버의 현재 연결 수를 한 번 읽는다 — 조회 오류·동기 throw는 센티널로 강등해 진단이 위장하거나 거절로 번지지 않게 한다(진단용 best-effort다). */
 function connectionCount(server: Server): Promise<number> {

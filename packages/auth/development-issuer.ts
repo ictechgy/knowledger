@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
 
-import { assertOptionalCloseBound, closeHttpServer } from '../http/graceful-close.ts';
+import { assertOptionalCloseBound, closeHttpServer, DEFAULT_CLOSE_DEADLINE_MS } from '../http/graceful-close.ts';
 
 const MAX_FORM_BYTES = 16 * 1024;
 const CSRF_COOKIE = 'knowledger_development_interaction_csrf';
@@ -40,7 +40,7 @@ export interface StartDevelopmentIssuerOptions {
   redirectUri: string;
   clientId?: string;
   subjects?: readonly string[];
-  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 DEFAULT_CLOSE_DEADLINE_MS, 초과 시 잔여 연결을 강제 해제한다. */
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
 
