@@ -105,8 +105,8 @@ export class KnowledgerService {
   private readonly egressAllows: ModelEgressAllows | undefined;
   /** egress 훅 호출 상한(ms) — 정책 저장소 지연이 resolve/revalidate를 무기한 붙잡지 않게 한다. */
   private readonly egressTimeoutMs: number;
-  /** egress 훅 예외·타임아웃을 받는 진단 콜백 — 판정을 바꾸지 않고 장애 가시성만 제공한다. */
-  private readonly egressOnError: ((error: unknown) => void) | undefined;
+  /** egress 훅 예외·타임아웃을 받는 진단 콜백 — 미설정 시 표준 오류 출력으로 대체되고 판정을 바꾸지 않는다. */
+  private readonly egressOnError: (error: unknown) => void;
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
@@ -131,12 +131,13 @@ export class KnowledgerService {
     this.egressAllows = options.modelEgress?.allows;
     if (this.egressAllows !== undefined && typeof this.egressAllows !== 'function') throw new TypeError('Model egress allows must be a function');
     const timeoutMs = options.modelEgress?.timeout_ms ?? 10_000;
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('Model egress timeout must be a positive integer of milliseconds');
+    // Node 타이머는 2^31-1ms를 넘으면 1ms로 동작한다 — 상한을 넘는 설정은 조용한 전면 거부를 만든다.
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new TypeError('Model egress timeout must be a positive integer of milliseconds');
     this.egressTimeoutMs = timeoutMs;
-    this.egressOnError = options.modelEgress?.onError;
-    if (this.egressOnError !== undefined && typeof this.egressOnError !== 'function') throw new TypeError('Model egress onError must be a function');
+    const onError = options.modelEgress?.onError;
+    if (onError !== undefined && typeof onError !== 'function') throw new TypeError('Model egress onError must be a function');
     // onError 미설정 배포도 정책 장애를 인지할 수 있게 기본 진단은 표준 오류로 남긴다 — 명시적 onError는 이를 대체한다.
-    this.egressOnError ??= (error: unknown) => { console.error('model egress policy check failed:', error); };
+    this.egressOnError = onError ?? ((error: unknown) => { console.error('model egress policy check failed:', error); });
   }
 
   /**
@@ -160,7 +161,7 @@ export class KnowledgerService {
       return verdict === true ? 'allowed' : 'denied';
     } catch (error) {
       // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
-      try { this.egressOnError?.call(undefined, error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
+      try { this.egressOnError.call(undefined, error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
       return 'unavailable';
     }
   }
@@ -1255,28 +1256,42 @@ export class KnowledgerService {
     if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
     if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
+    // 재해석에 필요한 slot 형태가 깨진 기록은 변조다 — 필드 접근 전에 형태를 확인해 500 대신 fail-closed withheld로 돌린다.
+    if (!run.slot || typeof run.slot !== 'object') return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
-    const old = run.manifest.provided_revisions[0];
-    const fresh = result.manifest!.provided_revisions[0];
-    if (old.revision_digest !== fresh.revision_digest || old.agreement_id !== fresh.agreement_id) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+    return this.verifyRunBinding(actor, runIdStr, run, result);
+  }
+
+  /**
+   * 재검증 manifest를 저장 run 기록과 대조하고 결속 어댑터의 현재 전송 권한을 재확인한다.
+   * 저장 기록의 형태 이상·필드 부재·값 불일치는 모두 변조로 보아 fail-closed withheld다.
+   */
+  private async verifyRunBinding(actor: Actor, runId: string, run: any, result: any) {
+    const stored = run.manifest;
+    const storedRevision = Array.isArray(stored?.provided_revisions) ? stored.provided_revisions[0] : undefined;
+    const freshManifest: Record<string, unknown> = result.manifest;
+    const fresh = (freshManifest.provided_revisions as any[])[0];
+    if (!stored || typeof stored !== 'object' || !storedRevision || typeof storedRevision !== 'object'
+      || storedRevision.revision_digest !== fresh.revision_digest || storedRevision.agreement_id !== fresh.agreement_id) {
+      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+    }
     // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
-    // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나
-    // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
-    const freshManifest: Record<string, unknown> = result.manifest!;
+    // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나 run 기록 변조를 의미한다.
     for (const field of domain.MANIFEST_BINDING_FIELDS) {
       // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
-      if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+      if (stored[field] === undefined || stored[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
-    // 승인 결정 결속도 서버에서 대조한다 — 클라이언트 검증만에 의존하지 않는다.
-    const decisions = (manifest: any) => [...manifest.approval_decisions].sort((a: any, b: any) => a.decision_id.localeCompare(b.decision_id));
-    if (domain.canonicalize(decisions(run.manifest)) !== domain.canonicalize(decisions(freshManifest))) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+    // 승인 결정 결속도 서버에서 대조한다 — 배열이 아니거나 식별자 없는 원소는 변조된 기록이다.
+    const sorted = (manifest: any) => [...manifest.approval_decisions].sort((a: any, b: any) => a.decision_id.localeCompare(b.decision_id));
+    const storedDecisions = Array.isArray(stored.approval_decisions) && stored.approval_decisions.every((item: any) => typeof item?.decision_id === 'string') ? sorted(stored) : undefined;
+    if (!storedDecisions || domain.canonicalize(storedDecisions) !== domain.canonicalize(sorted(freshManifest))) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     if (run.model_adapter_id !== null) {
       const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
     }
     // 발급 manifest는 감사 기준점으로 유지하고 최신 재검증 manifest는 별도 필드에 보존한다.
-    this.vault.replace('run', runIdStr, actor, { ...run, last_refreshed_manifest: result.manifest });
+    this.vault.replace('run', runId, actor, { ...run, last_refreshed_manifest: result.manifest });
     return { status: 'valid', checkpoint: result.checkpoint, refreshed_manifest: result.manifest };
   }
 }

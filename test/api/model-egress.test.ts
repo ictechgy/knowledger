@@ -177,7 +177,7 @@ test('invalid egress policy versions are rejected at construction', async t => {
 });
 
 test('invalid egress hook shapes and timeouts are rejected at construction', async t => {
-  for (const modelEgress of [{ timeout_ms: 0 }, { timeout_ms: -1 }, { timeout_ms: 1.5 }, { timeout_ms: Number.NaN }, { allows: 'yes' }, { onError: 'log' }]) {
+  for (const modelEgress of [{ timeout_ms: 0 }, { timeout_ms: -1 }, { timeout_ms: 1.5 }, { timeout_ms: Number.NaN }, { timeout_ms: 2_147_483_648 }, { allows: 'yes' }, { onError: 'log' }]) {
     const ledger = new LocalLedger(':memory:', 'kcl-demo');
     const vault = new PrivateStore(':memory:');
     assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { modelEgress: modelEgress as any }), TypeError);
@@ -238,6 +238,8 @@ test('the egress hook receives isolated copies that cannot mutate server state',
   assert.notEqual(seen.manifest, resolved.manifest);
   assert.notEqual(resolved.manifest.policy_id, 'tampered');
   assert.equal(actor.actor_id, PERSONAS[0].actor_id);
+  assert.ok(seen.signal instanceof AbortSignal);
+  assert.equal(seen.signal.aborted, false);
 });
 
 test('a missing binding field in the stored run record is treated as tampering', async t => {
@@ -334,4 +336,23 @@ test('a tampered stored approval decision binding is detected at revalidation', 
   const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
   assert.equal(result.status, 'withheld');
   assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('malformed stored run shapes are withheld as tampering instead of throwing', async t => {
+  for (const mutate of [
+    (run: any) => { run.manifest.approval_decisions = null; },
+    (run: any) => { run.manifest.approval_decisions = [{ unexpected: 1 }]; },
+    (run: any) => { run.manifest.provided_revisions = []; },
+    (run: any) => { run.manifest = 'not-an-object'; },
+    (run: any) => { run.slot = undefined; },
+  ]) {
+    const f = await fixture(t, { allows: () => true });
+    const resolved = await f.service.resolve(actor, selection);
+    assert.equal(resolved.status, 'provided');
+    const runId = resolved.manifest.run_id;
+    tamperStoredRun(f.vault, runId, mutate);
+    const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+    assert.equal(result.status, 'withheld');
+    assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+  }
 });
