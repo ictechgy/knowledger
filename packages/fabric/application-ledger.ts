@@ -130,7 +130,6 @@ export class FabricApplicationLedger implements ApplicationLedger {
         this.queue = Promise.resolve();
         reject(new FabricLedgerError('FRESHNESS_UNAVAILABLE', '원장 갱신이 시간 안에 끝나지 않았습니다.'));
       }, this.options.refreshTimeoutMs ?? 30_000);
-      timer.unref();
       work.then(
         () => { clearTimeout(timer); resolve(); },
         error => { clearTimeout(timer); reject(error); },
