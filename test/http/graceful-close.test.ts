@@ -295,7 +295,7 @@ test('closeHttpServer survives a failing idle sweep and reports it once', async 
   const socket = connect(port, '127.0.0.1');
   const originalCloseIdle = server.closeIdleConnections.bind(server);
   const originalClose = server.close.bind(server);
-  let insideServerClose = false;
+  let isInsideServerClose = false;
   let sweepAttempts = 0;
   try {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
@@ -303,15 +303,15 @@ test('closeHttpServer survives a failing idle sweep and reports it once', async 
     // Node는 server.close() 내부(httpServerPreClose)에서도 closeIdleConnections를 호출한다 — 내부 호출은
     // 통과시키고 우리 스윕(초기 호출 + 첫 주기 호출)만 실패시킨다. 두 번 실패해도 진단은 한 번이어야 한다.
     server.close = ((callback?: (error?: Error) => void) => {
-      insideServerClose = true;
+      isInsideServerClose = true;
       try {
         return originalClose(callback);
       } finally {
-        insideServerClose = false;
+        isInsideServerClose = false;
       }
     }) as Server['close'];
     server.closeIdleConnections = (() => {
-      if (insideServerClose) return originalCloseIdle();
+      if (isInsideServerClose) return originalCloseIdle();
       sweepAttempts++;
       if (sweepAttempts <= 2) throw new Error('sweep boom');
       return originalCloseIdle();
