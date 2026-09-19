@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-19 KST (PR #7–#10·#12 머지 완료, PR #11 Track C 리베이스·리뷰 잔여)_
+_Last updated: 2026-09-20 KST (PR #7–#10·#12·#13 머지 완료 — Track A·B·C 모두 main 반영)_
 
 ## Goal
 
@@ -43,10 +43,16 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   `test:drill:multi-host`는 태그별 in-flight 프로토콜(begin/commit/failed)로 실제
   쓰기 중 SIGKILL을 입증하고 메인 DB 단독 통제군으로 WAL 리플레이를 증명한다.
   peer 격리·복원 비교는 전체 페이지네이션 저널·초안 레코드 다이제스트다.
-  5라운드 독립 리뷰(codex×2 APPROVE)로 수렴했다. 잔여 스택: PR #11
-  `feature/track-c`(Track C `readGitSource` 고정 커밋 커넥터·`adoption-metrics`
-  파일럿 측정)는 CLOSED 상태 — 구 ops-drills 커밋 위의 Track C 커밋 `919eaff`를
-  새 main에 리베이스하고 PR을 다시 열어 리뷰해야 한다.
+  5라운드 독립 리뷰(codex×2 APPROVE)로 수렴했다. **PR #13
+  `feature/track-c-v2`→main도 머지 완료(squash `4aad9ea`)** — CLOSED된 PR #11의
+  Track C 커밋 `919eaff`를 새 main에 cherry-pick해 재생성한 PR이다. Track C:
+  `readGitSource` 고정 커밋 Git 커넥터(SHA-1/SHA-256 저장소, heads/tags·전체
+  object ID만 허용하는 비모호 ref 해석, 환경 격리·리터럴 pathspec·엄격
+  `ls-tree -z` 파싱, 스냅샷+재검증 ref 변경 탐지), `adoption-metrics` 파일럿
+  측정(read-only 저널 검증, 디스크립터 기반 관찰 입력, 엄격 RFC 3339 타임스탬프,
+  window/evidence 신원 필드), 공유 `tools/artifact.ts` 원자 아티팩트 쓰기
+  (inode 고정 디렉터리, bigint 신원 비교, 게시 전후 재검증, 자기 inode만 정리).
+  22라운드 독립 리뷰(codex×2, 최종 APPROVE×2)로 수렴했다.
   리뷰 프로바이더 상태: claude 주간 쿼터 소진(9/21 12:00 KST 리셋), codex 정상,
   agy 미로그인, grok은 장문 diff 리뷰에서 오독 사례가 있어 보조 트랙으로만 신뢰한다.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
@@ -305,9 +311,9 @@ python3 -B tools/check_docs.py
    트랙A 첫 항목. 조직 바인딩 서명 키·일회성 attestation·암호 검증 영수증·
    필수 감사 로그·qscc 전용 슬롯을 갖춘 원격 서명 경계를 도입했다.
    `feature/org-signing-gateway` 브랜치는 머지 완료.
-7. **Track A·B 머지 완료(PR #7–#10·#12) — Track C 잔여**(위 PR 스택 항목 참조).
-   PR #11 `feature/track-c`는 CLOSED — Track C 커밋 `919eaff`를 새 main에
-   리베이스해 PR을 다시 연 뒤 리뷰·머지한다.
+7. **Track A·B·C 머지 완료(PR #7–#10·#12·#13)** — Track C는 PR #13(squash
+   `4aad9ea`)으로 main 반영. 잔여 로드맵: B7 인증서 유지보수·B8 알려진 한계·
+   Track D(릴리스 케이던스·의존성 정책)와 실제 파일럿 실행.
 8. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
@@ -316,10 +322,9 @@ python3 -B tools/check_docs.py
 공개 저장소는 https://github.com/ictechgy/knowledger, 릴리스 `v0.1.0`·`v0.2.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
-Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)는
-리뷰 수렴 후 main에 머지됐다. 잔여는 Track C — PR #11 `feature/track-c`는 CLOSED며
-Track C 커밋 `919eaff`(Git 커넥터·채택 측정)를 새 main에 리베이스해 PR을 다시 열고
-리뷰·머지한다. 남은 로드맵은 B7 인증서 유지보수(2027년1월)·B8 알려진 한계·
+Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
+Track C(PR #13 squash `4aad9ea` — Git 커넥터·채택 측정·원자 아티팩트)는 리뷰 수렴 후
+main에 머지됐다. 남은 로드맵은 B7 인증서 유지보수(2027년1월)·B8 알려진 한계·
 Track D(릴리스 케이던스·의존성 정책)와 실제 파일럿 실행이다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
