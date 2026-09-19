@@ -16,7 +16,9 @@ const selection = { document_ids: [sales.payload.document_id], context_id: sales
 async function fixture(t: any, modelEgress?: ModelEgressPolicy) {
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
-  const service = new KnowledgerService(ledger, vault, demoDefinition(), undefined, modelEgress ? { modelEgress } : {});
+  // 의도적으로 던지는 allows 테스트의 stderr 노이즈를 막는다 — 기본 console.error 경로는 별도 테스트가 덮는다.
+  const policy = modelEgress ? { onError: () => {}, ...modelEgress } : undefined;
+  const service = new KnowledgerService(ledger, vault, demoDefinition(), undefined, policy ? { modelEgress: policy } : {});
   await service.initialize();
   await seedDemo(service);
   t.after(() => { ledger.close(); vault.close(); });
@@ -404,4 +406,50 @@ test('require_adapter deployments reject adapter-less resolves but accept declar
   assert.equal(resolved.status, 'provided');
   const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
   assert.equal(result.status, 'valid');
+});
+
+test('forged multibyte integrity value is treated as tampering instead of throwing', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const first = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(first.status, 'provided');
+  const runId = first.manifest.run_id;
+  tamperStoredRun(f.vault, runId, (run: any) => { run.integrity = 'é'.repeat(64); });
+  const verdict = await f.service.revalidate(actor, runId, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(verdict.status, 'withheld');
+  assert.equal(verdict.reason, 'KNOWLEDGE_CHANGED');
+  assert.deepEqual(verdict.checkpoint, first.manifest.checkpoint);
+});
+
+test('null adapter input is rejected as invalid input', async t => {
+  const f = await fixture(t, { allows: () => true });
+  await assert.rejects(f.service.resolve(actor, { ...selection, model_adapter_id: null }), (error: any) => error.code === 'INVALID_INPUT');
+  const first = await f.service.resolve(actor, selection);
+  await assert.rejects(f.service.revalidate(actor, first.manifest.run_id, { action: 'use-context', model_adapter_id: null }), (error: any) => error.code === 'INVALID_INPUT');
+});
+
+test('default diagnostics report policy failures to console.error', async t => {
+  // onError를 명시적으로 비워 서비스 기본 진단 경로를 검증한다.
+  const f = await fixture(t, { allows: () => { throw new Error('policy crashed'); }, onError: undefined });
+  const original = console.error;
+  const reported: unknown[] = [];
+  console.error = (...args: unknown[]) => { reported.push(args); };
+  try {
+    const verdict = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+    assert.equal(verdict.status, 'withheld');
+    assert.equal(verdict.reason, 'EGRESS_POLICY_UNAVAILABLE');
+    assert.equal(reported.length, 1);
+  } finally {
+    console.error = original;
+  }
+});
+
+test('require_adapter without allows denies every resolve fail-closed', async t => {
+  // 선언 강제 + 정책 훅 부재 조합은 모든 resolve를 잠그는 의도된 폐쇄 구성이다.
+  const f = await fixture(t, { require_adapter: true });
+  const withoutAdapter = await f.service.resolve(actor, selection);
+  assert.equal(withoutAdapter.status, 'withheld');
+  assert.equal(withoutAdapter.reason, 'EGRESS_ADAPTER_REQUIRED');
+  const withAdapter = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(withAdapter.status, 'withheld');
+  assert.equal(withAdapter.reason, 'EGRESS_POLICY_DENIED');
 });

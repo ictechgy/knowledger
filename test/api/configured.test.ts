@@ -89,3 +89,11 @@ test('configured HTTPS proxy origin pins Host and Origin and ignores forwarded h
   assert.equal(await status({Host:'knowledge.example',Origin:'https://other.example'}),403);
   assert.equal(await status({Host:'knowledge.example','X-Forwarded-Host':'other.example'}),200);
 });
+
+test('createConfiguredApp forwards the modelEgress policy to the service', async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-configured-egress-'));
+  const config = createProjectTemplate(['OrionMSP','VegaMSP'], 'custom-workspace');
+  const app = await createConfiguredApp(config, { dataDir, port: 0, modelEgress: { policy_version: 7, allows: () => true } });
+  t.after(async()=>{await app.close();rmSync(dataDir,{recursive:true,force:true});});
+  assert.equal((app.service as any).egressVersion, 7);
+});

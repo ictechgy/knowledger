@@ -445,3 +445,18 @@ test('backs up and restores through the CLI using relative paths from a syntheti
   assert.equal(restoreSummary.files.length, 2);
   for (const name of ['private-local.sqlite', 'shared-ledger.sqlite']) assert.deepEqual(readFileSync(join(root, 'local-data', name)), readFileSync(join(root, 'relative-restored', name)));
 });
+
+test('PrivateStore.replace upserts the actor-scoped record instead of failing on conflict', () => {
+  const store = new PrivateStore(':memory:');
+  try {
+    const actor = { org_id: 'SalesMSP', actor_id: 'person-sales', kind: 'human' as const };
+    store.put('run', 'run-1', actor, { value: 'original' });
+    store.replace('run', 'run-1', actor, { value: 'refreshed' });
+    assert.deepEqual(store.get('run', 'run-1', actor), { value: 'refreshed' });
+    // 부재 레코드에도 삽입으로 동작해 발급-재검증 사이 삭제된 기록 재작성이 무성 실패하지 않는다.
+    store.replace('run', 'run-2', actor, { value: 'inserted' });
+    assert.deepEqual(store.get('run', 'run-2', actor), { value: 'inserted' });
+  } finally {
+    store.close();
+  }
+});
