@@ -27,6 +27,18 @@ export interface VectorCandidate {
 
 export interface VectorCandidateIndex {
   candidates(query: VectorCandidateQuery): readonly VectorCandidate[] | Promise<readonly VectorCandidate[]>;
+  /** Optional lifecycle hook — indexes holding connections should release them here. */
+  close?(): void | Promise<void>;
+}
+
+/**
+ * Write side of a candidate index — a derived store rebuilt only from
+ * verified revisions. Implementations may be sync (local) or async (pg).
+ */
+export interface VectorIndexWriter {
+  upsert(entry: VectorIndexEntry): void | Promise<void>;
+  remove(revisionDigest: string): void | Promise<void>;
+  clear(): void | Promise<void>;
 }
 
 export interface VectorIndexEntry {
@@ -40,9 +52,15 @@ export interface VectorIndexEntry {
 
 const finite = (values: readonly number[]) => values.length > 0 && values.length <= 4096 && values.every(value => Number.isFinite(value));
 
-/** Cosine similarity; non-finite or zero-norm inputs yield 0 rather than NaN. */
+/** Shared embedding validity contract for every adapter and query path. */
+export function isFiniteEmbedding(values: readonly number[]): boolean {
+  return finite(values);
+}
+
+/** Cosine similarity; mismatched dimensions are a configuration error, non-finite or zero-norm inputs yield 0. */
 export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
-  if (a.length !== b.length || !finite(a) || !finite(b)) return 0;
+  if (a.length !== b.length) throw new TypeError('Embedding dimensions do not match');
+  if (!finite(a) || !finite(b)) return 0;
   let dot = 0, na = 0, nb = 0;
   for (let index = 0; index < a.length; index += 1) { dot += a[index]! * b[index]!; na += a[index]! * a[index]!; nb += b[index]! * b[index]!; }
   if (na === 0 || nb === 0) return 0;
@@ -54,7 +72,7 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
  * from verified revisions — stale digests are removed on re-keying so an
  * index rebuild cannot resurrect a superseded revision.
  */
-export class LocalVectorIndex implements VectorCandidateIndex {
+export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
   private readonly entries = new Map<string, VectorIndexEntry>();
 
   upsert(entry: VectorIndexEntry): void {
@@ -87,7 +105,7 @@ export class LocalVectorIndex implements VectorCandidateIndex {
 export function developmentEmbedding(text: string, dimensions = 64): number[] {
   if (!Number.isSafeInteger(dimensions) || dimensions < 8 || dimensions > 4096) throw new TypeError('Embedding dimensions out of bounds');
   const vector = new Array<number>(dimensions).fill(0);
-  const tokens = text.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter(token => token.length > 0 && token.length <= 64);
+  const tokens = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(token => token.length > 0 && token.length <= 64);
   for (const token of tokens) {
     let hash = 2166136261;
     for (let index = 0; index < token.length; index += 1) { hash ^= token.charCodeAt(index); hash = Math.imul(hash, 16777619); }
