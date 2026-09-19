@@ -43,12 +43,15 @@ test('closeHttpServer returns immediately for a non-listening server', async () 
   assert.ok(Date.now() - started < 50, 'non-listening close must not wait for the deadline');
 });
 
-test('closeHttpServer rejects non-finite or negative close bounds', async () => {
+test('closeHttpServer rejects non-finite or out-of-range close bounds', async () => {
   const server = createServer();
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: -1 }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { settleMs: -5 }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: Number.NaN }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { settleMs: Number.POSITIVE_INFINITY }), RangeError);
+  // Node는 타이머 상한(2^31-1)을 넘는 지연을 1ms로 강등한다 — 마감 순서 역전을 막기 위해 거절한다.
+  await assert.rejects(() => closeHttpServer(server, { deadlineMs: 2 ** 31 }), RangeError);
+  await assert.rejects(() => closeHttpServer(server, { deadlineMs: 2 ** 31 - 1, settleMs: 2 }), RangeError);
 });
 
 test('closeHttpServer reaps an idle keep-alive socket without waiting for the deadline', async (t) => {
@@ -174,11 +177,62 @@ test('closeHttpServer propagates a server.close error instead of hanging', async
   }
 });
 
+test('closeHttpServer still reports the forced release when close errors after the deadline', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server, port } = await listeningServer((_req, res) => { res.writeHead(200); res.flushHeaders(); });
+  const socket = connect(port, '127.0.0.1');
+  const originalClose = server.close.bind(server);
+  let closeCallback: ((error?: Error) => void) | undefined;
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    await once(socket, 'data');
+    // 마감 뒤 도착하는 close 오류가 강제 해제 사실을 지우지 않는지 본다 — 콜백은 가로채 둔다.
+    server.close = ((callback: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
+    const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 1_000, label: 'forced-error' });
+    await sleep(120);
+    closeCallback?.(new Error('late close boom'));
+    await assert.rejects(() => closePromise, /late close boom/);
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 1, 'the forced release is reported even when close rejects');
+    assert.match(messages[0], /강제 해제/, 'the diagnostic names the forced-release reason');
+  } finally {
+    socket.destroy();
+    await releaseServer(server, originalClose);
+  }
+});
+
+test('closeHttpServer releases exactly once when deadline and settle are both zero', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server, port } = await listeningServer((_req, res) => { res.writeHead(200); res.flushHeaders(); });
+  const socket = connect(port, '127.0.0.1');
+  const originalCloseAll = server.closeAllConnections.bind(server);
+  let releases = 0;
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    await once(socket, 'data');
+    server.closeAllConnections = (() => { releases++; originalCloseAll(); }) as Server['closeAllConnections'];
+    await closeHttpServer(server, { deadlineMs: 0, settleMs: 0, label: 'zero-zero' });
+    assert.equal(releases, 1, 'release runs exactly once even when both timers fire together');
+    assert.equal(httpDiagnostics(diagnostic).length, 1, 'a single diagnostic is emitted');
+  } finally {
+    server.closeAllConnections = originalCloseAll;
+    socket.destroy();
+  }
+});
+
 test('createApp rejects an invalid shutdown deadline at startup instead of half-closing', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-bound-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: -1 }), RangeError);
   await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: Number.NaN }), RangeError);
+});
+
+test('startDevelopmentIssuer rejects an invalid shutdown deadline at startup', async () => {
+  const { startDevelopmentIssuer } = await import('../../packages/auth/development-issuer.ts');
+  await assert.rejects(
+    () => startDevelopmentIssuer({ accounts: [], port: 1, redirectUri: 'http://127.0.0.1:1/auth/callback', shutdownDeadlineMs: -1 }),
+    RangeError,
+  );
 });
 
 test('closeHttpServer propagates a synchronous server.close throw without lingering timers', async () => {
