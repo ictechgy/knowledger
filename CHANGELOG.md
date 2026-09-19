@@ -91,14 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the anchor, and the client requires the run id to match, so server and
   client should be deployed together.
 - CI operations drills: `npm run test:backup` rehearses the offline runtime
-  snapshot/restore procedure end to end — clean stop, snapshot, restore into
-  a new directory, checkpoint/journal/private-draft equivalence, plus the
-  WAL-sidecar, existing-destination and overlapping-path refusals.
-  `npm run test:drill:multi-host` runs a two-administrative-domain failure
-  drill: one worker process is force-killed mid-operation while the peer
-  keeps its verified state and stops cleanly, and the killed domain recovers
-  through WAL replay and a snapshot restore — the evidence marks the
-  process+filesystem boundary explicitly (not physical hosts).
+  snapshot/restore procedure end to end — clean stop (asserting no real
+  WAL/SHM sidecar survives it), snapshot, restore into a new directory, and
+  checkpoint/journal-digest/private-draft-digest equivalence, plus the
+  WAL-sidecar, existing-destination and overlapping-path refusals; the
+  `details` record binds checkpoint, journal digest, and snapshot file
+  hashes. `npm run test:drill:multi-host` runs a two-administrative-domain
+  failure drill: one worker process keeps committing writes and is
+  force-killed mid-operation — a non-empty WAL sidecar must survive — while
+  the peer keeps its verified state and exits with code 0 on SIGTERM, and
+  the killed domain recovers through WAL replay and a snapshot restore —
+  the evidence marks the process+filesystem boundary explicitly (not
+  physical hosts) and binds pids, signals, exit codes, and recovered
+  checkpoints.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,

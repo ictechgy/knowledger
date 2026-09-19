@@ -15,7 +15,18 @@ function dataPath(): string {
   return value;
 }
 
+/** 선택적 쓰기 루프 주기(ms) — 드릴이 프로세스를 실제 작업 중에 강제 종료하도록 한다. */
+function writeEveryMs(): number {
+  const args = process.argv.slice(2);
+  const index = args.indexOf('--write-every');
+  if (index < 0) return 0;
+  const value = Number(args[index + 1]);
+  if (!Number.isFinite(value) || value <= 0) throw new Error('write interval must be positive');
+  return value;
+}
+
 const dataDir = dataPath();
+const writeEvery = writeEveryMs();
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const ledger = new LocalLedger(join(dataDir, 'shared-ledger.sqlite'), CHANNEL_ID);
 const vault = new PrivateStore(join(dataDir, 'private-local.sqlite'));
@@ -37,14 +48,34 @@ try {
   const receipt = await service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: commandId });
   if (receipt.status !== 'committed') throw new Error('resilience fixture did not commit');
   process.stdout.write(`${JSON.stringify({ ready: true, draft_id: draft.draft_id, preview_id: preview.preview_id, command_id: commandId, checkpoint: receipt.checkpoint, event_count: ledger.events(0, 1000).length })}\n`);
-  const timer = setInterval(() => undefined, 1_000);
+  // 쓰기 루프가 켜지면 실제 커밋이 진행 중인 상태로 강제 종료될 수 있게 계속 발행한다.
+  let loopBusy = false;
+  let loopWrites = 0;
+  const timer = setInterval(() => {
+    if (writeEvery <= 0 || loopBusy || stopped) return;
+    loopBusy = true;
+    loopWrites += 1;
+    const tag = loopWrites;
+    void (async () => {
+      const loopDraft = await service.draft(actor, {
+        title: 'Resilience loop document', body_markdown: '# resilience-loop\n',
+        context_id: 'context-fulfillment', scope_id: 'scope-order-2026-001', usage_scope: 'domain-definition/v1',
+        document_id: `doc-resilience-loop-${tag}`,
+      });
+      const loopPreview = await service.preview(actor, { draft_id: loopDraft.draft_id });
+      await service.publish(actor, { preview_id: loopPreview.preview_id, confirm_shared: true, command_id: `resilience-loop-publish-${tag}` });
+    })().catch((error: unknown) => {
+      process.stderr.write(`resilience loop write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }).finally(() => { loopBusy = false; });
+  }, writeEvery > 0 ? writeEvery : 1_000);
+  const finish = () => { ledger.close(); vault.close(); process.exit(0); };
   const close = () => {
     if (stopped) return;
     stopped = true;
     clearInterval(timer);
-    ledger.close();
-    vault.close();
-    process.exit(0);
+    // 진행 중인 루프 쓰기가 끝나면 닫는다 — 상한을 두어 정상 종료가 무한 대기하지 않게 한다.
+    const deadline = Date.now() + 2_000;
+    const drain = setInterval(() => { if (!loopBusy || Date.now() > deadline) { clearInterval(drain); finish(); } }, 10);
   };
   process.once('SIGTERM', close);
   process.once('SIGINT', close);
