@@ -4,7 +4,7 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { closeHttpServer, MAX_TIMEOUT_MS, REMAINING_LOOKUP_MS } from '../../packages/http/graceful-close.ts';
+import { assertOptionalCloseBound, closeHttpServer, DEFAULT_SETTLE_MS, MAX_TIMEOUT_MS, REMAINING_LOOKUP_MS } from '../../packages/http/graceful-close.ts';
 
 /** 포트 0으로 듣는 서버를 띄워 주소를 돌려준다 — 매 테스트가 독립 포트를 쓰게 한다. */
 async function listeningServer(handler: RequestListener): Promise<{ server: Server; port: number }> {
@@ -56,6 +56,19 @@ test('closeHttpServer rejects non-finite or out-of-range close bounds', async ()
   // Node는 타이머 상한(2^31-1)을 넘는 지연을 1ms로 강등한다 — 마감 순서 역전을 막기 위해 거절한다.
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: MAX_TIMEOUT_MS + 1 }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: MAX_TIMEOUT_MS, settleMs: 2 }), RangeError);
+});
+
+test('assertOptionalCloseBound validates bounds and an explicit settleMs argument', () => {
+  // 미설정 값은 통과 — 기본 정착 상한을 쓴다.
+  assertOptionalCloseBound(undefined, 'shutdownDeadlineMs');
+  assertOptionalCloseBound(100, 'shutdownDeadlineMs');
+  // 값 자체와 합산 모두 검증된다 — 합산 초과는 단독으로 유효한 값도 거절한다.
+  assert.throws(() => assertOptionalCloseBound(-1, 'shutdownDeadlineMs'), RangeError);
+  assert.throws(() => assertOptionalCloseBound(MAX_TIMEOUT_MS - 100, 'shutdownDeadlineMs'), RangeError);
+  // 명시적 settleMs 인자도 검증된다 — value 미설정이어도 잘못된 settleMs는 통과하지 않는다.
+  assert.throws(() => assertOptionalCloseBound(undefined, 'shutdownDeadlineMs', -5), RangeError);
+  assert.throws(() => assertOptionalCloseBound(10, 'shutdownDeadlineMs', MAX_TIMEOUT_MS), RangeError);
+  assertOptionalCloseBound(undefined, 'shutdownDeadlineMs', DEFAULT_SETTLE_MS);
 });
 
 test('closeHttpServer reaps an idle keep-alive socket without waiting for the deadline', async (t) => {

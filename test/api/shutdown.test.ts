@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDemoApp } from '../../examples/order-workflow/application.ts';
+import { ReadinessMonitor } from '../../apps/api/readiness.ts';
 import { MAX_TIMEOUT_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
@@ -18,7 +19,7 @@ test('createApp rejects an invalid shutdown deadline at startup instead of half-
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   // 검증이 회귀해 앱이 생성돼도 러너가 매달리지 않게 성공 시 닫고 실패를 보고한다.
   const rejectsStartup = async (shutdownDeadlineMs: number) => {
-    const created = await createDemoApp({ dataDir: directory, shutdownDeadlineMs }).then(app => app, (error: unknown) => error);
+    const created: unknown = await createDemoApp({ dataDir: directory, shutdownDeadlineMs }).then(app => app, (error: unknown) => error);
     if (created instanceof Error) { assert.match(created.message, /shutdownDeadlineMs/); return; }
     // Error가 아닌 거절 값이면 close() 접근이 TypeError로 원인을 가린다 — 형태를 먼저 단언한다.
     const closable = created as { close?: unknown };
@@ -49,4 +50,28 @@ test('app.close still runs resource teardown when the HTTP close rejects', async
   });
   await assert.rejects(() => app.close(), /injected close boom/);
   assert.equal(indexClosed, true, 'vectorIndex.close must still run when the HTTP close rejects');
+});
+
+test('app.close still tears down HTTP and stores when readiness teardown fails', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-readiness-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let indexClosed = false;
+  const vectorIndex: VectorCandidateIndex = { candidates: () => [], close: () => { indexClosed = true; } };
+  const app = await createDemoApp({ dataDir: directory, vectorIndex, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0], seed: false });
+  await app.listen(0);
+  let serverCloseCalls = 0;
+  const originalServerClose = app.server.close.bind(app.server);
+  app.server.close = ((callback?: (error?: Error) => void) => { serverCloseCalls++; return originalServerClose(callback); }) as Server['close'];
+  const originalReadinessClose = ReadinessMonitor.prototype.close;
+  try {
+    // readiness 해제 실패가 HTTP 종료와 저장소 해제를 건너뛰게 하지 않는지 본다.
+    ReadinessMonitor.prototype.close = () => { throw new Error('readiness boom'); };
+    await assert.rejects(() => app.close(), /readiness boom/);
+    assert.equal(serverCloseCalls, 1, 'HTTP close must still run when readiness teardown fails');
+    assert.equal(indexClosed, true, 'store teardown must still run when readiness teardown fails');
+  } finally {
+    ReadinessMonitor.prototype.close = originalReadinessClose;
+    app.server.close = originalServerClose;
+    await new Promise<void>(resolve => { app.server.close(() => resolve()); });
+  }
 });

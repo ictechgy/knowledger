@@ -368,8 +368,10 @@ export async function createApp(options: AppOptions) {
     },
     async close() {
       // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
-      // readiness 해제도 같은 보호 안에 둔다 — 그것의 실패가 HTTP 종료와 저장소 해제를 건너뛰게 하지 않는다.
-      try { readiness.close(); await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
+      // readiness 해제를 중첩 finally로 감싼다 — 그 실패도 HTTP 종료를 건너뛰게 하지 않고, HTTP 종료 실패도 저장소 해제를 건너뛰게 하지 않는다.
+      try {
+        try { readiness.close(); } finally { await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
+      }
       finally { try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } } }
     },
   };
