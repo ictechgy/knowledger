@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync, type Stats } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync, type BigIntStats } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -81,11 +81,11 @@ if (isMain()) {
       // 관찰 입력은 디스크립터로 열어 정규 파일·크기를 검증한다 — FIFO는 열기가 막히고
       // 심볼릭 링크는 따라가지 않는다. 디스크립터의 inode가 곧 읽은 대상의 신원이다.
       const observationsFd = openSync(observationsPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      let observationsStat: Stats;
+      let observationsStat: BigIntStats;
       let observations: unknown;
       let observationsBytes: Buffer;
       try {
-        observationsStat = fstatSync(observationsFd);
+        observationsStat = fstatSync(observationsFd, { bigint: true });
         if (!observationsStat.isFile()) throw new Error('invalid option');
         // 경계 읽기 — 크기 검사 후 읽는 사이 자라는 파일은 MAX+1바이트로 넘쳐 거부된다.
         const buffer = Buffer.alloc(MAX_SOURCE_BYTES + 1);
@@ -94,7 +94,7 @@ if (isMain()) {
         if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
         // 같은 디스크립터의 읽기 후 메타를 비교한다 — 같은 inode의 제자리 덮어쓰기가
         // 읽는 사이 섞여 들어오면 거부한다.
-        const afterStat = fstatSync(observationsFd);
+        const afterStat = fstatSync(observationsFd, { bigint: true });
         if (afterStat.size !== observationsStat.size || afterStat.mtimeNs !== observationsStat.mtimeNs || afterStat.ctimeNs !== observationsStat.ctimeNs) throw new Error('invalid option');
         observationsBytes = buffer.subarray(0, total);
         // 치명적 디코딩 — 잘못된 UTF-8을 U+FFFD로 고쳐 읽지 않는다.
