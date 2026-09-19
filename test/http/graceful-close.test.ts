@@ -180,6 +180,30 @@ test('closeHttpServer degrades a connection-count lookup failure to an unknown c
   }
 });
 
+test('closeHttpServer bounds the post-abandon connection lookup instead of waiting forever', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server } = await listeningServer((_req, res) => { res.end('ok'); });
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  try {
+    // close 콜백도 연결 수 콜백도 오지 않는 최악 — 마감 뒤 진단 조회가 영원히 기다리지 않고 '알 수 없음'으로 끝나야 한다.
+    server.close = (() => server) as Server['close'];
+    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    const started = Date.now();
+    await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'lookup-bound' });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 150, 'the abandon at 90ms plus the bounded lookup at ~100ms still applies');
+    assert.ok(elapsed < 2_000, 'a hung connection-count lookup cannot stall shutdown');
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 2, 'forced release and abandon each report a diagnostic');
+    assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
+    assert.match(messages[1], /알 수 없음/, 'the timed-out lookup degrades to an unknown count');
+  } finally {
+    server.getConnections = originalGetConnections;
+    await releaseServer(server, originalClose);
+  }
+});
+
 test('closeHttpServer propagates a server.close error instead of hanging', async () => {
   const { server } = await listeningServer((_req, res) => res.end());
   const originalClose = server.close.bind(server);

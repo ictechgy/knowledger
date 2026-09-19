@@ -40,10 +40,10 @@ export function assertCloseBound(value: number, name: string): void {
  * close() 전에 실패하게 한다. closeHttpServer가 마감과 기본 정착 상한의 합까지 검증하므로
  * 기동 검증도 같은 합을 봐야 한다 — 합산을 빠뜨리면 close() 시점에 뒤늦게 거절된다.
  */
-export function assertOptionalCloseBound(value: number | undefined, name: string): void {
+export function assertOptionalCloseBound(value: number | undefined, name: string, settleMs: number = DEFAULT_SETTLE_MS): void {
   if (value === undefined) return;
   assertCloseBound(value, name);
-  assertCloseBound(value + DEFAULT_SETTLE_MS, `${name} + default settleMs`);
+  assertCloseBound(value + settleMs, `${name} + settleMs`);
 }
 
 /**
@@ -73,7 +73,13 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     const release = () => {
       isForced = true;
       const counted = new Promise<void>(resolve => {
-        server.getConnections((error, count) => { connections = error ? UNKNOWN_CONNECTION_COUNT : count; resolve(); });
+        // 조회의 동기 throw가 미처리 거부로 새지 않게 센티널로 강등한다 — 개수 포착은 진단용 best-effort다.
+        try {
+          server.getConnections((error, count) => { connections = error ? UNKNOWN_CONNECTION_COUNT : count; resolve(); });
+        } catch {
+          connections = UNKNOWN_CONNECTION_COUNT;
+          resolve();
+        }
       });
       server.closeAllConnections();
       return counted;
