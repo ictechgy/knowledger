@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-18 KST (Track A–C 구현 완료, PR #7–#11 스택 CI 통과)_
+_Last updated: 2026-09-19 KST (PR #7–#9·#12 머지 완료, PR #10·#11 잔여)_
 
 ## Goal
 
@@ -29,14 +29,19 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   성능 도구 개선 PR #3(`b073c81`)·정리 PR #4(`e636166`)·v0.2.0 릴리스 PR #5(`16c06f6`)도 포함됐다.
   `infra/fabric`의 `knowledger-chaincode` 0.1.0은 배포된 `kcl_0.1.0` 계약이라 범프하지 않았다.
   사용자 `.serena/`와 `scorpionfish/`는 보존·커밋 제외.
-- **로드맵 PR 스택(모두 OPEN·MERGEABLE·CI 통과, 머지 순서는 아래부터)**:
-  PR #7 `feature/sso-adapter`→main(A2 SSO 어댑터 경계, `createOidcAdapter` 공유 팩토리),
-  PR #8 `feature/vector-search`→main(A3 벡터 검색 read model, `VectorCandidateIndex`·
-  pgvector 어댑터·원장 eligibility 재검증), PR #9 `feature/model-egress`→vector-search
-  (A4 `modelEgress` 서버 정책 게이트, resolve/revalidate 현재 권한 재확인),
-  PR #10 `feature/ops-drills`→model-egress(Track B 백업 리허설·이중 도메인 드릴 CI),
-  PR #11 `feature/track-c`→ops-drills(Track C `readGitSource` 고정 커밋 커넥터·
-  `adoption-metrics` 파일럿 측정). 아직 리뷰·머지되지 않았다.
+- **로드맵 PR 스택 진행**: PR #7 `feature/sso-adapter`(A2 SSO 어댑터 경계)·
+  PR #8 `feature/vector-search`(A3 벡터 검색 read model)·PR #9 `feature/model-egress`
+  (A4 `modelEgress` 서버 정책 게이트)는 **머지 완료**. **PR #12 `fix/graceful-close`→main도
+  머지 완료(squash `d39a9b1`)** — 공유 HTTP 종료 상태 기계(`packages/http/graceful-close.ts`):
+  유휴 keep-alive 즉시·주기 스윕, 마감 후 강제 해제, close 콜백 미도착 시 bounded 마감,
+  강제·마감·늦은 도착의 인과 순서 진단, 총 대기 `deadlineMs+settleMs+REMAINING_LOOKUP_MS`
+  상한, 귀결 시 모든 타이머 해제, app.close 단계별 독립 해제(단일 실패는 stage를 단
+  원오류, 복수는 stages를 단 AggregateError), 기동 시 합산 검증. 약 30라운드 독립
+  리뷰로 수렴했다. 잔여 스택(OPEN): PR #10 `feature/ops-drills`→main(Track B 백업
+  리허설·이중 도메인 드릴 CI, MERGEABLE·CI 통과), PR #11 `feature/track-c`→ops-drills
+  (Track C `readGitSource` 고정 커밋 커넥터·`adoption-metrics` 파일럿 측정).
+  리뷰 프로바이더 상태: claude 주간 쿼터 소진(9/21 12:00 KST 리셋), codex 정상,
+  agy 미로그인, grok은 장문 diff 리뷰에서 오독 사례가 있어 보조 트랙으로만 신뢰한다.
 - **마지막 실제 네트워크 실행 검증: 2026-09-16 늦은 밤 KST(실제 장애 시험까지 포함).**
   앱4317/4318/4319/4321/4331/4341을 새 코드로 재시작해 모두 readiness200을 확인했다.
   재시작 중 발견된 두 결함을 수정했다: peer gRPC keepalive(`26e75a8`)와 원장 갱신 상한
