@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { lstatSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { MAX_SOURCE_BYTES } from '../packages/connectors/source-contract.ts';
 import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
 import { assertWritableTarget, writeArtifact } from './artifact.ts';
 import { measureAdoption, validateObservationLog } from '../packages/measurement/adoption.ts';
@@ -73,7 +74,19 @@ if (isMain()) {
       // 오타 경로가 새 빈 저널을 만들어 조용히 0건 측정을 내지 못하게 기존 정규 파일만 연다.
       const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false });
       if (!ledgerStat?.isFile() || ledgerStat.isSymbolicLink()) throw new Error('invalid option');
-      const observations = JSON.parse(readFileSync(resolve(values.get('--observations')!), 'utf8'));
+      const observationsPath = resolve(values.get('--observations')!);
+      // 관찰 입력은 디스크립터로 열어 정규 파일·크기를 검증한다 — FIFO는 열기가 막히고
+      // 심볼릭 링크는 따라가지 않는다. 디스크립터의 inode가 곧 읽은 대상의 신원이다.
+      const observationsFd = openSync(observationsPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let observationsStat: Stats;
+      let observations: unknown;
+      try {
+        observationsStat = fstatSync(observationsFd);
+        if (!observationsStat.isFile() || observationsStat.size > MAX_SOURCE_BYTES) throw new Error('invalid option');
+        observations = JSON.parse(readFileSync(observationsFd, 'utf8'));
+      } finally {
+        closeSync(observationsFd);
+      }
       const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations });
       const output = JSON.stringify(result, null, 2);
       const out = values.get('--out');
@@ -81,9 +94,15 @@ if (isMain()) {
         const target = resolve(out);
         // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크·대소문자
         // 별칭 포함)이면 측정 결과가 입력을 덮어쓴다 — 저널 sidecar(-wal/-shm/-journal)와
-        // 그 하위 경로도 보호 대상이다. 충돌 검증은 writeArtifact의 inode 고정 디렉터리
-        // 안에서 수행돼 검증과 쓰기가 같은 디렉터리를 본다.
-        const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
+        // 그 하위 경로도 보호 대상이다. 입력은 읽을 때 확정한 inode 신원을 보존한다.
+        // 충돌 검증은 writeArtifact의 inode 고정 디렉터리 안에서 수행돼 검증과 쓰기가
+        // 같은 디렉터리를 본다.
+        const pin = (p: string) => ({ path: p, inode: lstatSync(p, { throwIfNoEntry: false }) });
+        const inputs = [
+          { path: ledgerPath, inode: ledgerStat },
+          pin(`${ledgerPath}-wal`), pin(`${ledgerPath}-shm`), pin(`${ledgerPath}-journal`),
+          { path: observationsPath, inode: observationsStat },
+        ].map((input) => ({ path: input.path, inode: input.inode ? `${input.inode.dev}:${input.inode.ino}` : undefined }));
         // 아무것도 만들지 않는 선검사로 충돌을 먼저 거부한다 — 거부된 출력이 보호 경로
         // 위에 디렉터리를 남기지 않는다. 출력 디렉터리는 기존에 있어야 한다 — 재귀
         // 생성은 네임스페이스 변경이 만든 곳에 디렉터리를 남길 수 있다.

@@ -111,6 +111,9 @@ function median(sorted: number[]): number | undefined {
  * 저널 파생분(합의 시간·검토 수고·재사용)은 도메인 기록의 타임스탬프와 결정 종류를 그대로 쓰고,
  * 사람 관찰분(해석 혼합·공개 부담)은 관찰 로그의 건수만 집계한다.
  * 이 결과는 한 파일럿의 측정 기록이며 일반화된 운영 지표나 SLA가 아니다.
+ * 주의: 저널 이벤트에는 파일럿 식별자가 없어 전달된 범위 전체를 이 파일럿의 기록으로
+ * 집계한다 — 파일럿 전용 채널이나 기간이 제한된 저널을 준비하는 것이 계약이며,
+ * 결과의 window 필드가 실제 집계 범위를 보고한다.
  */
 export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObservationLog }): AdoptionMeasurement {
   const log = validateObservationLog(input?.log);

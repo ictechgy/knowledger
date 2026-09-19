@@ -6,9 +6,16 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 // 가시성으로 진행한다. 그 외 I/O 실패는 쓰기 실패로 보고해 조용한 내구성 손실을 막는다.
 const UNSUPPORTED_DIR_FSYNC = new Set(['ENOSYS', 'ENOTSUP', 'EINVAL', 'EPERM']);
 
+/** 보호할 입력 — path는 이름·하위 비교용, inode는 읽을 때 확정한 신원 보존용이다. */
+export interface ProtectedInput {
+  path: string;
+  // 읽은 대상의 dev:ino — 있으면 경로 재조회 대신 이 신원으로 비교해 입력이 옮겨져도 본다.
+  inode?: string;
+}
+
 export interface ArtifactGuard {
-  // 대상이 이 경로들과 같은 파일이거나 그 하위면 거부한다 — 저널·관찰 입력 보호용.
-  protectedPaths?: string[];
+  // 대상이 이 입력들과 같은 파일이거나 그 하위면 거부한다 — 저널·관찰 입력 보호용.
+  protectedPaths?: ProtectedInput[];
 }
 
 /**
@@ -59,12 +66,13 @@ function foldsCase(dir: string): boolean {
  * 링크 우회·하드링크·대소문자 별칭 포함)이거나 그 하위 경로면 거부한다. 대상의
  * 파일시스템이 대소문자를 접을 때만 철자 비교를 접는다.
  */
-function assertNotProtected(targetCanonical: string, targetInode: string | undefined, protectedPaths: string[], fold: (p: string) => string): void {
+function assertNotProtected(targetCanonical: string, targetInode: string | undefined, protectedPaths: ProtectedInput[], fold: (p: string) => string): void {
   const targetFolded = fold(targetCanonical);
   for (const input of protectedPaths) {
-    const base = fold(canonicalPath(input).canonical);
+    const base = fold(canonicalPath(input.path).canonical);
     if (targetFolded === base || targetFolded.startsWith(`${base}${sep}`)) throw new Error('--out must not overwrite its inputs');
-    const inputInode = inodeOf(input);
+    // 읽을 때 확정한 신원이 있으면 그것을 쓴다 — 입력이 옮겨진 뒤 대상 위치에 놓여도 잡는다.
+    const inputInode = input.inode ?? inodeOf(input.path);
     if (targetInode !== undefined && inputInode !== undefined && inputInode === targetInode) throw new Error('--out must not overwrite its inputs');
   }
 }
@@ -74,7 +82,7 @@ function assertNotProtected(targetCanonical: string, targetInode: string | undef
  * 먼저 호출해 거부된 출력이 보호 경로 위에 디렉터리를 남기지 않게 한다. 이 검사와
  * writeArtifact의 고정 안 재검증이 함께 네임스페이스 경합을 덮는다.
  */
-export function assertWritableTarget(path: string, protectedPaths: string[]): void {
+export function assertWritableTarget(path: string, protectedPaths: ProtectedInput[]): void {
   const { canonical, ancestor } = canonicalPath(path);
   const fold = foldsCase(ancestor) ? (p: string) => p.normalize('NFC').toLowerCase() : (p: string) => p;
   assertNotProtected(canonical, inodeOf(canonical), protectedPaths, fold);
