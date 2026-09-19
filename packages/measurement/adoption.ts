@@ -33,7 +33,12 @@ export interface AgreementTiming {
 export interface AdoptionMeasurement {
   schema_version: 1;
   pilot: { pilot_id: string; concept: string; workflow: string };
-  window: { event_count: number; first_event_at?: string; last_event_at?: string };
+  // window는 집계한 저널 범위를 식별한다 — 채널·시퀀스 경계·검증된 팁 해시로 어떤
+  // 저널 상태를 측정했는지 아티팩트가 스스로 증명한다.
+  window: {
+    event_count: number; first_event_at?: string; last_event_at?: string;
+    channel_id?: string; first_sequence?: number; last_sequence?: number; tip_hash?: string;
+  };
   derived: {
     time_to_agreement: { count: number; median_seconds?: number; samples: AgreementTiming[] };
     review_effort: {
@@ -187,7 +192,14 @@ export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObserv
     pilot: { pilot_id: log.pilot_id, concept: log.concept, workflow: log.workflow },
     window: {
       event_count: events.length,
-      ...(events.length ? { first_event_at: events[0].timestamp, last_event_at: events[events.length - 1].timestamp } : {}),
+      ...(events.length ? {
+        first_event_at: events[0].timestamp, last_event_at: events[events.length - 1].timestamp,
+        // 검증된 저널 범위의 신원 — 채널·시퀀스 경계와 말단 블록 해시를 그대로 보고한다.
+        channel_id: events[0].checkpoint?.channel_id,
+        first_sequence: events[0].checkpoint?.block_number,
+        last_sequence: events[events.length - 1].checkpoint?.block_number,
+        tip_hash: events[events.length - 1].checkpoint?.block_hash,
+      } : {}),
     },
     derived: {
       time_to_agreement: { count: timings.length, median_seconds: median(sortedSeconds), samples: timings },
