@@ -28,7 +28,7 @@ export const SWEEP_INTERVAL_MS = 50;
 export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /** 연결 수 조회 실패를 나타내는 센티널 — 진단이 실제 개수로 위장하지 않게 구분한다. */
-const UNKNOWN_CONNECTION_COUNT = -1;
+export const UNKNOWN_CONNECTION_COUNT = -1;
 
 /** 마감·정착 상한은 0 이상 MAX_TIMEOUT_MS 이하의 유한 수여야 한다 — 범위 밖은 1ms 강등·순서 역전을 만든다. */
 export function assertCloseBound(value: number, name: string): void {
@@ -134,8 +134,9 @@ function reportForcedRelease(label: string, connections: number): void {
  * 유휴 keep-alive 소켓은 즉시 거두고 진행 중 요청이 끝나길 기다린 뒤, 마감을
  * 넘긴 잔여 연결은 강제 해제한다 — 종료 중 완료되는 요청의 소켓도 주기 스윕이
  * 다시 거둬 마감 낭비와 강제 해제 오탐을 막는다. 강제 해제나 close 콜백
- * 미도착이 일어나면 stderr에 식별자·사유·연결 수를 남긴다. 전체 대기는
- * deadlineMs + settleMs를 넘기지 않는다.
+ * 미도착이 일어나면 stderr에 식별자·사유·연결 수를 남긴다. close 대기 자체는
+ * deadlineMs + settleMs를 넘기지 않고, 콜백 미도착 뒤 잔여 수를 읽는 진단
+ * 조회만 추가로 REMAINING_LOOKUP_MS 안에서 끝난다.
  */
 export async function closeHttpServer(server: Server, options: CloseHttpServerOptions = {}): Promise<void> {
   const { deadlineMs = DEFAULT_CLOSE_DEADLINE_MS, settleMs = DEFAULT_SETTLE_MS, label = 'http' } = options;

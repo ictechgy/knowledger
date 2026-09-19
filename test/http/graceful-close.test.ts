@@ -18,7 +18,13 @@ async function listeningServer(handler: RequestListener): Promise<{ server: Serv
 /** 소켓이 끊길 때까지 기다리되 상한을 둔다 — 이미 끊겼거나 close 이벤트가 안 오는 경우에도 테스트가 멈추지 않게 한다. */
 async function waitForClose(socket: Socket): Promise<void> {
   if (socket.destroyed) return;
-  await Promise.race([once(socket, 'close'), sleep(2_000, undefined, { ref: false })]);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([once(socket, 'close'), new Promise<void>(resolve => { timer = setTimeout(resolve, 2_000); timer.unref(); })]);
+  } finally {
+    // 경주에서 진 쪽의 대기 타이머는 해제한다 — 이후 테스트의 활성 타이머 계산이 흔들리지 않게 한다.
+    clearTimeout(timer);
+  }
 }
 
 /** 우리 종료 진단만 골라낸다 — 같은 stderr를 쓰는 Node 경고(실험 기능 경고 등)가 모킹에 섞이지 않게 한다. */
@@ -105,11 +111,13 @@ test('closeHttpServer force-releases a request that never finishes after the dea
     assert.ok(elapsed < 3_000, 'stuck requests are force-released after the deadline');
     await waitForClose(socket);
     assert.equal(socket.destroyed, true, 'forced close destroys the held socket');
-    assert.equal(httpDiagnostics(diagnostic).length, 1, 'forced release reports a diagnostic');
-    const message = String(httpDiagnostics(diagnostic)[0][0]);
-    assert.match(message, /test-server/, 'the diagnostic carries the server label');
-    assert.match(message, /강제 해제/, 'the diagnostic names the forced-release reason');
-    assert.match(message, /연결 [1-9]\d*개/, 'the diagnostic counts the sockets held at release');
+    // close 콜백이 settle 안에 오면 '강제 해제' 단독, settle를 넘기면 마감 진단이 뒤따른다 — 둘 다 허용한다.
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.ok(messages.length >= 1 && messages.length <= 2, 'forced release reports a diagnostic, abandon at most one more');
+    assert.match(messages[0], /test-server/, 'the diagnostic carries the server label');
+    assert.match(messages[0], /강제 해제/, 'the diagnostic names the forced-release reason');
+    assert.match(messages[0], /연결 [1-9]\d*개/, 'the diagnostic counts the sockets held at release');
+    if (messages.length === 2) assert.match(messages[1], /콜백이 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
   } finally {
     socket.destroy();
   }
@@ -136,6 +144,7 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     assert.equal(messages.length, 2, 'forced release and abandon each report a diagnostic');
     assert.match(messages[0], /abandon-test/, 'the forced diagnostic carries the server label');
     assert.match(messages[0], /강제 해제/, 'the forced release is not swallowed by the abandon outcome');
+    assert.match(messages[0], /연결 0개/, 'the swept socket means the release captured zero connections');
     assert.match(messages[1], /abandon-test/, 'the abandon diagnostic carries the server label');
     assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
     assert.match(messages[1], /미해제 연결 0개/, 'the released socket leaves exactly zero remaining connections');
