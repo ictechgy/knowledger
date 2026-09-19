@@ -617,3 +617,37 @@ test('PgVectorIndex replaceAll merges duplicate digests like the local index', a
     'one row survives per digest — last write wins');
   await index.close();
 });
+
+test('scope filters apply to required refs too — out-of-scope documents stay hidden', async t => {
+  // document_ids가 요구하는 문서가 범위 밖이면 필수 참조도 드러나지 않는다 —
+  // 색인이나 필수 해상이 범위 경계를 우회할 수 없다는 정보 노출 계약의 회귀다.
+  const f = await fixture(t);
+  const result = await f.service.vectorSearch(actor,
+    { query: '주문', document_ids: [sales.payload.document_id], scope_id: 'scope-nonexistent' });
+  assert.equal(result.total, 0, 'a required ref outside the requested scope must not leak');
+});
+
+test('a dimension mismatch between embedders is a non-retryable configuration error', async t => {
+  // 질의·개정본 임베더의 차원이 다르면 영구 설정 오류다 — 조용한 0점이 아니다.
+  const f = await fixture(t, { embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0] });
+  await assert.rejects(f.service.vectorSearch(actor, { query: '주문' }),
+    (error: any) => error.code === 'INDEX_MISCONFIGURED' && error.retryable === false);
+});
+
+test('a replaceAll failure during rebuild is classified through indexError', async t => {
+  const failing = { candidates: () => [],
+    replaceAll: async () => { throw new Error('index write failed'); } };
+  const f = await fixture(t, { vectorIndex: failing, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  await assert.rejects(f.service.rebuildVectorIndex(BOOTSTRAP_ACTOR, {}),
+    (error: any) => error.code === 'INDEX_UNAVAILABLE' && error.retryable === true);
+});
+
+test('PgVectorIndex retries after the pg loader itself fails', async () => {
+  let loads = 0;
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pgLoader: () => { loads++; return Promise.reject(Object.assign(new Error('Cannot find module'), { code: 'ERR_MODULE_NOT_FOUND' })); } });
+  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }), /optional "pg" package/);
+  // 거부된 연결 Promise는 고착되지 않는다 — 다음 호출이 로더를 다시 시도해야 한다.
+  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }), /optional "pg" package/);
+  assert.equal(loads, 2, 'a rejected opening promise is cleared so calls retry');
+});

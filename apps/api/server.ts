@@ -90,7 +90,10 @@ export async function createApp(options: AppOptions) {
     service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision });
     await service.initialize();
   } catch (error) {
-    try { await options.vectorIndex?.close?.(); } finally { try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } } }
+    // 색인 정리 실패가 원래 초기화 오류를 가리지 않게 원인에 부착한다.
+    try { await options.vectorIndex?.close?.(); }
+    catch (closeError) { (error as any).vectorIndexClose = closeError; }
+    finally { try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } } }
     throw error;
   }
   const sessions = new Map<string, Session>();
