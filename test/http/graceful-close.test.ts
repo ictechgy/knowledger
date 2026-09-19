@@ -478,6 +478,47 @@ test('closeHttpServer survives a failing idle sweep and reports it once', async 
   }
 });
 
+test('closeHttpServer survives a sweep failure whose value cannot be stringified', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  // 진행 중 요청을 붙잡아 두고 마감까지 close 대기를 만들어 초기 스윕과 주기 스윕이 모두 돌게 한다.
+  const { server, port } = await listeningServer((_req, res) => { res.writeHead(200); res.flushHeaders(); });
+  const socket = connect(port, '127.0.0.1');
+  const originalCloseIdle = server.closeIdleConnections.bind(server);
+  const originalClose = server.close.bind(server);
+  let isInsideServerClose = false;
+  let sweepAttempts = 0;
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    await once(socket, 'data');
+    // 문자열 변환 자체가 던지는 값으로 스윕이 실패해도 진단 포맷이 종료를 막지 못해야 한다 —
+    // 초기 스윕의 거절이나 주기 스윕의 uncaught exception으로 번지지 않게 고정 폴백을 둔다.
+    server.close = ((callback?: (error?: Error) => void) => {
+      isInsideServerClose = true;
+      try {
+        return originalClose(callback);
+      } finally {
+        isInsideServerClose = false;
+      }
+    }) as Server['close'];
+    server.closeIdleConnections = (() => {
+      if (isInsideServerClose) return originalCloseIdle();
+      sweepAttempts++;
+      throw { [Symbol.toPrimitive]() { throw new Error('toPrimitive boom'); } };
+    }) as Server['closeIdleConnections'];
+    await closeHttpServer(server, { deadlineMs: 120, settleMs: 60, label: 'sweep-test' });
+    assert.ok(sweepAttempts >= 2, 'the initial and periodic sweeps both ran with the unstringifiable failure');
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 2, 'one guarded sweep report plus the forced-release diagnostic');
+    assert.match(messages[0], /스윕에 실패/, 'the diagnostic names the sweep failure');
+    assert.match(messages[0], /알 수 없는 오류/, 'the guarded formatter falls back instead of throwing');
+    assert.match(messages[1], /강제 해제/, 'the close still settles with the forced-release diagnostic');
+  } finally {
+    server.closeIdleConnections = originalCloseIdle;
+    socket.destroy();
+    await releaseServer(server, originalClose);
+  }
+});
+
 test('closeHttpServer propagates a synchronous server.close throw without lingering timers', async () => {
   const { server } = await listeningServer((_req, res) => res.end());
   const originalClose = server.close.bind(server);

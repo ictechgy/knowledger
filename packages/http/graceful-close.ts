@@ -241,6 +241,15 @@ function describeConnections(count: number): string {
   return count < 0 ? '알 수 없음' : `${count}개`;
 }
 
+/** 오류를 진단용 한 줄로 바꾼다 — message getter나 문자열 변환이 던지는 값도 진단과 종료를 막지 못하게 고정 폴백을 둔다. */
+function describeError(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return '알 수 없는 오류';
+  }
+}
+
 /** 강제 해제 사실을 stderr에 남긴다 — close 오류로 reject되는 경로에서도 같은 진단이 남게 두 지점이 공유한다. */
 function reportForcedRelease(label: string, connections: number): void {
   emitDiagnostic(label, `마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(connections)}`);
@@ -248,7 +257,7 @@ function reportForcedRelease(label: string, connections: number): void {
 
 /** settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다. */
 function reportLateClose(label: string, lateError: Error | null | undefined): void {
-  if (lateError) emitDiagnostic(label, `마감 후 close 오류가 도착했다: ${lateError.message}`);
+  if (lateError) emitDiagnostic(label, `마감 후 close 오류가 도착했다: ${describeError(lateError)}`);
   else emitDiagnostic(label, '마감 후 close 콜백이 늦게 도착했다');
 }
 
@@ -282,7 +291,7 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   const reportSweepFailure = (error: unknown) => {
     if (hasSweepWarned) return;
     hasSweepWarned = true;
-    emitDiagnostic(label, `유휴 연결 스윕에 실패했다: ${error instanceof Error ? error.message : String(error)}`);
+    emitDiagnostic(label, `유휴 연결 스윕에 실패했다: ${describeError(error)}`);
   };
   const sweep = setInterval(() => {
     try {
