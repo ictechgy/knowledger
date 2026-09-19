@@ -70,6 +70,8 @@ export class KnowledgerService {
   private readonly embedRevision: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 개정본 다이제스트는 불변이므로 임베딩도 불변 — derived-scan의 요청당 O(N) 재계산을 막는 상한 캐시다. */
   private readonly embeddingCache = new Map<string, readonly number[]>();
+  /** 진행 중인 색인 재구축 실행 — 동시 호출은 이 Promise에 합류해 중복 스캔·교체를 막는다. */
+  private rebuildInFlight: Promise<{ indexed: number; checkpoint: Checkpoint }> | undefined;
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]> } = {}) {
@@ -86,9 +88,19 @@ export class KnowledgerService {
     this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));
   }
 
+  /**
+   * 불변 개정본의 임베딩을 다이제스트 키로 재사용한다 — derived-scan·재구축의
+   * 요청당 O(N) 임베더 호출을 막는 상한 LRU 캐시다. 상한을 넘는 순차 스캔에서는
+   * 적중률이 떨어지지만 메모리는 유한하게 유지되고 정확성은 영향받지 않는다.
+   */
   private async embedRevisionCached(digest: string, title: string, body: string): Promise<readonly number[]> {
     const cached = this.embeddingCache.get(digest);
-    if (cached) return cached;
+    if (cached) {
+      // LRU 갱신 — 적중한 항목을 최근 사용으로 옮겨 뜨거운 부분집합을 유지한다.
+      this.embeddingCache.delete(digest);
+      this.embeddingCache.set(digest, cached);
+      return cached;
+    }
     const embedded = await this.embedRevision(title, body);
     if (!isFiniteEmbedding(embedded)) throw new TypeError('embedRevision returned an invalid embedding');
     if (this.embeddingCache.size >= EMBEDDING_CACHE_LIMIT) this.embeddingCache.delete(this.embeddingCache.keys().next().value!);
@@ -99,10 +111,13 @@ export class KnowledgerService {
   /**
    * 임베딩·후보 수집 경로의 오류 분류 — TypeError·RangeError는 영구 설정 오류라
    * 재시도 불가 INDEX_MISCONFIGURED로, 그 외 연결·조회 실패는 재시도 가능
-   * INDEX_UNAVAILABLE로 감싼다. 원인은 cause에 보존한다.
+   * INDEX_UNAVAILABLE로 감싼다. 단 Node fetch는 네트워크 실패를 TypeError로
+   * 던지므로 cause.code의 전이적 네트워크 코드가 있으면 재시도 가능으로 되돌린다.
+   * 원인은 cause에 보존한다.
    */
   private indexError(error: unknown): ApiError {
-    const permanent = error instanceof TypeError || error instanceof RangeError;
+    const transientNetwork = /^(ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR)/.test(String((error as any)?.cause?.code ?? (error as any)?.code ?? ''));
+    const permanent = (error instanceof TypeError || error instanceof RangeError) && !transientNetwork;
     const wrapped = new ApiError(permanent ? 'INDEX_MISCONFIGURED' : 'INDEX_UNAVAILABLE',
       permanent ? '후보 색인 설정이 올바르지 않습니다. 배포 설정을 확인해 주세요.' : '후보 색인을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
       permanent ? 500 : 503, !permanent);
@@ -916,16 +931,7 @@ export class KnowledgerService {
     catch (error) { throw this.indexError(error); }
     if (!isFiniteEmbedding(embedding)) throw this.indexError(new TypeError('embedQuery returned an invalid embedding'));
     const scores = new Map<string, number | null>();
-    const required = new Set<string>();
-
-    // 필수 문서 참조는 벡터 색인을 거치지 않고 검증된 원장 상태에서 직접 해상한다.
-    // 범위 필터는 필수 참조에도 그대로 적용된다 — 범위 밖 문서를 색인이 요구해도 드러내지 않는다.
-    for (const documentId of input.document_ids ?? []) {
-      for (const { reference } of this.verifiedRevisionEntries(page.checkpoint, { document_id: documentId })) {
-        if (!scores.has(reference.revision_digest)) scores.set(reference.revision_digest, null);
-        required.add(reference.revision_digest);
-      }
-    }
+    const required = this.resolveRequiredReferences(page.checkpoint, input.document_ids, scores);
 
     if (this.vectorIndex) {
       // 외부 색인은 후보 제안기다 — 색인이 놓친 문서를 없다고 단정할 수 없다.
@@ -933,34 +939,10 @@ export class KnowledgerService {
         if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
       }
     } else {
-      // 외부 색인이 없으면 검증된 개정본을 체크포인트에서 전수 열거해 점수를 매긴다 —
-      // 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
-      // 필수 참조는 점수 없는 고정 참조 계약을 유지한다 — 모드마다 응답 형태가 달라지지 않게 한다.
-      for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, { context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope })) {
-        if (required.has(reference.revision_digest)) continue;
-        let score: number;
-        try { score = cosineSimilarity(embedding, await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)); }
-        catch (error) { throw this.indexError(error); }
-        scores.set(reference.revision_digest, score);
-      }
+      await this.addDerivedScanScores(scores, required, embedding, input, page.checkpoint);
     }
 
-    // 색인이 제안한 다이제스트 중 체크포인트에서 검증되지 않는 것은 낡은 후보로 버린다.
-    // 범위 필터는 색인 태그가 아니라 검증된 개정본의 slot과 대조한다 — 태그가 낡거나
-    // 잘못되어도 요청 범위 밖 개정본이 결과에 섞이지 않는다.
-    const digests = [...scores.keys()];
-    for (let index = 0; index < digests.length; index += ANNOTATION_BATCH_LIMIT) this.annotate(context, digests.slice(index, index + ANNOTATION_BATCH_LIMIT));
-    const ranked: { digest: string; score: number | null }[] = [];
-    for (const [digest, score] of scores) {
-      const reference = context.annotations.get(digest)?.revision;
-      if (!reference) continue;
-      if (input.context_id !== undefined && reference.slot.context_id !== input.context_id) continue;
-      if (input.scope_id !== undefined && reference.slot.scope_id !== input.scope_id) continue;
-      if (input.usage_scope !== undefined && reference.slot.usage_scope !== input.usage_scope) continue;
-      ranked.push({ digest, score });
-    }
-    // 필수 참조는 점수와 무관하게 앞에 고정한다 — 후보가 많아도 페이지 밖으로 밀리지 않는다.
-    ranked.sort((a, b) => Number(!required.has(a.digest)) - Number(!required.has(b.digest)) || (b.score ?? -1) - (a.score ?? -1) || a.digest.localeCompare(b.digest));
+    const ranked = this.verifyAndRankCandidates(scores, context, input, required);
 
     // 커서는 첫 페이지의 순위 목록 해시에 묶인다 — 외부 색인이 가변 저장소이므로
     // 페이지 사이에 색인이 바뀌면 조용한 중복·누락 대신 커서를 무효로 돌린다.
@@ -974,6 +956,59 @@ export class KnowledgerService {
     this.actor(actor);
     return { view: 'summary', results, total: ranked.length, next_cursor: this.nextCursor(page, ranked.length, setHash), checkpoint: page.checkpoint,
       candidate_source: this.vectorIndex ? 'external-index' : 'derived-scan', complete: this.vectorIndex === undefined };
+  }
+
+  /**
+   * 필수 문서 참조를 벡터 색인을 거치지 않고 검증된 원장 상태에서 직접 해상한다.
+   * 점수 없는 고정 항목으로 등록하고, 범위 필터는 나중 순위 단계에서
+   * 필수 참조에도 그대로 적용된다 — 범위 밖 문서를 요구해도 드러내지 않는다.
+   */
+  private resolveRequiredReferences(at: Checkpoint, documentIds: unknown, scores: Map<string, number | null>): Set<string> {
+    const required = new Set<string>();
+    for (const documentId of (documentIds as string[] | undefined) ?? []) {
+      for (const { reference } of this.verifiedRevisionEntries(at, { document_id: documentId })) {
+        if (!scores.has(reference.revision_digest)) scores.set(reference.revision_digest, null);
+        required.add(reference.revision_digest);
+      }
+    }
+    return required;
+  }
+
+  /**
+   * 외부 색인이 없을 때 검증된 개정본을 체크포인트에서 전수 열거해 점수를 매긴다 —
+   * 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
+   * 필수 참조는 점수 없는 고정 참조 계약을 유지한다 — 모드마다 응답 형태가 달라지지 않게 한다.
+   */
+  private async addDerivedScanScores(scores: Map<string, number | null>, required: Set<string>, embedding: readonly number[], input: any, at: Checkpoint): Promise<void> {
+    for (const { reference, revision } of this.verifiedRevisionEntries(at, { context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope })) {
+      if (required.has(reference.revision_digest)) continue;
+      let score: number;
+      try { score = cosineSimilarity(embedding, await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)); }
+      catch (error) { throw this.indexError(error); }
+      scores.set(reference.revision_digest, score);
+    }
+  }
+
+  /**
+   * 후보를 체크포인트의 검증된 개정본과 대조해 순위를 매긴다 — 색인이 제안한
+   * 다이제스트 중 검증되지 않는 것은 낡은 후보로 버리고, 범위 필터는 색인 태그가
+   * 아니라 검증된 개정본의 slot과 대조한다. 필수 참조는 점수와 무관하게 앞에
+   * 고정해 후보가 많아도 페이지 밖으로 밀리지 않게 한다.
+   */
+  private verifyAndRankCandidates(scores: Map<string, number | null>, context: BrowseRequestContext, input: any, required: Set<string>): { digest: string; score: number | null }[] {
+    const digests = [...scores.keys()];
+    for (let index = 0; index < digests.length; index += ANNOTATION_BATCH_LIMIT) this.annotate(context, digests.slice(index, index + ANNOTATION_BATCH_LIMIT));
+    const ranked: { digest: string; score: number | null }[] = [];
+    for (const [digest, score] of scores) {
+      const reference = context.annotations.get(digest)?.revision;
+      if (!reference) continue;
+      if (input.context_id !== undefined && reference.slot.context_id !== input.context_id) continue;
+      if (input.scope_id !== undefined && reference.slot.scope_id !== input.scope_id) continue;
+      if (input.usage_scope !== undefined && reference.slot.usage_scope !== input.usage_scope) continue;
+      ranked.push({ digest, score });
+    }
+    ranked.sort((a, b) => Number(!required.has(a.digest)) - Number(!required.has(b.digest)) || (b.score ?? -1) - (a.score ?? -1) || a.digest.localeCompare(b.digest));
+    return ranked;
   }
 
   /**
@@ -998,16 +1033,28 @@ export class KnowledgerService {
    * 빈·부분 색인이 읽기 경로에 노출되지 않는다.
    * 전수 스캔·전체 교체를 유발하므로 배포 운영자(bootstrap actor)만 호출할 수 있다.
    */
-  async rebuildVectorIndex(actor: Actor) {
-    const writer = this.vectorIndex as (VectorCandidateIndex & Partial<VectorIndexWriter>) | undefined;
-    if (!writer || typeof writer.replaceAll !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '원자적 재구축을 지원하는 벡터 색인이 설정되지 않았습니다.');
+  async rebuildVectorIndex(actor: Actor, input: any = {}) {
+    onlyFields(input, []);
     await this.refresh();
     this.actor(actor);
     const operator = this.definition.bootstrap_actor;
+    // 권한 검사를 색인 구성 확인보다 앞에 둔다 — 비운영자에게 색인 설정 여부를 노출하지 않는다.
     if (actor.org_id !== operator.org_id || actor.actor_id !== operator.actor_id || actor.kind !== operator.kind) throw new ApiError('FORBIDDEN', '벡터 색인 재구축은 배포 운영자만 실행할 수 있습니다.', 403);
-    const page = this.page(actor, 'vector-index-rebuild', {}, {});
+    const writer = this.vectorIndex as (VectorCandidateIndex & Partial<VectorIndexWriter>) | undefined;
+    if (!writer || typeof writer.replaceAll !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '원자적 재구축을 지원하는 벡터 색인이 설정되지 않았습니다.');
+    // 동시 재구축 호출은 진행 중인 실행에 합류한다 — 전수 스캔·전체 교체의 중복 실행을 막는다.
+    this.rebuildInFlight ??= this.runVectorIndexRebuild(writer as VectorCandidateIndex & VectorIndexWriter).finally(() => { this.rebuildInFlight = undefined; });
+    return this.rebuildInFlight;
+  }
+
+  /**
+   * 재구축 실행부 — 체크포인트의 검증된 개정본을 임베딩해 원자적으로 교체한다.
+   * rebuildVectorIndex에서 분리해 동시 호출 합류가 실행 자체와 섞이지 않게 한다.
+   */
+  private async runVectorIndexRebuild(writer: VectorCandidateIndex & VectorIndexWriter) {
+    const checkpoint = this.ledger.checkpoint()!;
     const entries: VectorIndexEntry[] = [];
-    for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, {})) {
+    for (const { reference, revision } of this.verifiedRevisionEntries(checkpoint, {})) {
       let embedded: readonly number[];
       try { embedded = await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown); }
       catch (error) { throw this.indexError(error); }
@@ -1016,7 +1063,7 @@ export class KnowledgerService {
     }
     try { await writer.replaceAll(entries); }
     catch (error) { throw this.indexError(error); }
-    return { indexed: entries.length, checkpoint: page.checkpoint };
+    return { indexed: entries.length, checkpoint };
   }
 
   /**

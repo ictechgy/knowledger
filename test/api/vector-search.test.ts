@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -9,9 +9,8 @@ import { KnowledgerService } from '../../apps/api/service.ts';
 import { LocalVectorIndex, cosineSimilarity, developmentEmbedding } from '../../packages/storage/vector-index.ts';
 import type { VectorIndexEntry } from '../../packages/storage/vector-index.ts';
 import { PgVectorIndex } from '../../packages/storage/pgvector-index.ts';
-import { demoFixtures, actorIdentity, PERSONAS, BOOTSTRAP_ACTOR } from '../../examples/order-workflow/config.ts';
+import { demoFixtures, actorIdentity, PERSONAS, BOOTSTRAP_ACTOR, demoDefinition } from '../../examples/order-workflow/config.ts';
 import { seedDemo, createDemoApp } from '../../examples/order-workflow/application.ts';
-import { demoDefinition } from '../../examples/order-workflow/config.ts';
 
 const fixtures = demoFixtures();
 const sales = fixtures.revisions[0];
@@ -64,7 +63,7 @@ test('LocalVectorIndex drops removed entries and rejects malformed input', () =>
   assert.equal(developmentEmbedding('주문 완료 기준').length, 64);
 });
 
-test('PgVectorIndex guards its configuration and lazily requires the optional pg package', async () => {
+test('PgVectorIndex guards its configuration and entry shapes', async () => {
   assert.throws(() => new PgVectorIndex({ connection: {}, table: 'bad-name!', indexVersion: 1 }), TypeError);
   assert.throws(() => new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 0 }), TypeError);
   const index = new PgVectorIndex({ connection: { connectionString: 'postgres://unused.invalid/kcl' }, table: 'kcl_vector_v1', indexVersion: 1 });
@@ -278,14 +277,17 @@ test('PgVectorIndex issues version-scoped SQL through an injectable client', asy
   const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 7,
     pg: { Client: function () { return client; } } });
   await index.candidates({ embedding: [1, 0, 0], limit: 5, context_id: 'context-sales' });
-  // HNSW는 ef_search까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면 세션 값을 올린다.
-  assert.match(calls.at(-2)!.text, /set_config\('hnsw\.ef_search', \$1, false\)/);
-  assert.deepEqual(calls.at(-2)!.values, ['5']);
-  const select = calls.at(-1)!;
+  // HNSW는 ef_search까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면 올려야 하는데,
+  // 세션 전역 설정이 한도 다른 동시 호출과 섞이지 않게 트랜잭션 LOCAL로 묶는다.
+  assert.equal(calls[0]!.text, 'BEGIN');
+  assert.match(calls[1]!.text, /set_config\('hnsw\.ef_search', \$1, true\)/);
+  assert.deepEqual(calls[1]!.values, ['5']);
+  const select = calls[2]!;
   assert.match(select.text, /index_version = \$2/);
   assert.match(select.text, /context_id = \$3/);
   assert.match(select.text, /LIMIT \$4/);
   assert.deepEqual(select.values, ['[1,0,0]', 7, 'context-sales', 5]);
+  assert.equal(calls[3]!.text, 'COMMIT');
 
   await index.upsert(entry(0));
   const insert = calls.at(-1)!;
@@ -323,18 +325,24 @@ test('PgVectorIndex retries after a failed connection attempt', async () => {
   await index.close();
 });
 
-test('PgVectorIndex lazily reports the missing optional pg package as a permanent error', async () => {
-  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1 });
-  // 이 개발 환경에는 pg가 설치되어 있지 않다 — 모듈 부재는 재시도 불가 TypeError다.
-  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }),
+test('PgVectorIndex reports a missing pg module as permanent and rethrows other loader failures', async () => {
+  // 주입된 로더로 환경과 무관하게 결정한다 — pg가 설치된 CI에서도 같은 경로를 검증한다.
+  const missing = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pgLoader: () => Promise.reject(Object.assign(new Error('Cannot find module'), { code: 'ERR_MODULE_NOT_FOUND' })) });
+  await assert.rejects(missing.candidates({ embedding: [1], limit: 1 }),
     (error: any) => error instanceof TypeError && /optional "pg" package/.test(error.message));
+  // 모듈 부재가 아닌 로더 실패는 그대로 다시 던져 원인을 보존한다.
+  const broken = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pgLoader: () => Promise.reject(new SyntaxError('corrupt pg install')) });
+  await assert.rejects(broken.candidates({ embedding: [1], limit: 1 }), /corrupt pg install/);
 });
 
 test('PgVectorIndex translates pgvector shape rejections into permanent TypeErrors', async () => {
   const client = {
     on: () => {}, connect: async () => {}, end: async () => {},
     query: async (text: string) => {
-      if (/set_config/.test(text)) return { rows: [] };
+      // 트랜잭션 경계·세션 설정은 통과하고 후보 SELECT에서만 차원 오류를 던진다.
+      if (!/embedding <=>/.test(text)) return { rows: [] };
       const error: any = new Error('different vector dimensions 3 and 64');
       error.code = '22000';
       throw error;
@@ -343,16 +351,36 @@ test('PgVectorIndex translates pgvector shape rejections into permanent TypeErro
   const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
     pg: { Client: function () { return client; } } });
   await assert.rejects(index.candidates({ embedding: [1, 0, 0], limit: 5 }),
-    (error: any) => error instanceof TypeError && /embedding shape/.test(error.message));
+    (error: any) => error instanceof TypeError && /request shape or schema/.test(error.message));
+});
+
+test('PgVectorIndex treats missing schema and privilege errors as permanent too', async () => {
+  const calls: string[] = [];
+  const client = {
+    on: () => {}, connect: async () => {}, end: async () => {},
+    query: async (text: string) => {
+      calls.push(text);
+      if (!/embedding <=>/.test(text)) return { rows: [] };
+      throw Object.assign(new Error('relation "kcl_vector_v1" does not exist'), { code: '42P01' });
+    },
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pg: { Client: function () { return client; } } });
+  // 테이블 부재(42P01)는 재시도로 해소되지 않는 설정 오류다 — TypeError로 변환돼야 한다.
+  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }),
+    (error: any) => error instanceof TypeError && /request shape or schema/.test(error.message));
+  assert.ok(calls.some(text => text === 'ROLLBACK'), 'the aborted read transaction is rolled back');
 });
 
 test('an over-limit adapter result is truncated to the candidate bound', async t => {
-  // 인터리브된 240행 — 절단 없이 처리하면 과잉 주석·정렬 작업이 생긴다.
-  const flooded = { candidates: () => Array.from({ length: 60 }, () =>
-    fixtures.revisions.map((revision: any) => ({ revision_digest: revision.revision_digest, score: 0.5 }))).flat() };
+  // 200개까지만 후보가 된다 — 뒤쪽 40행에만 유효 다이제스트를 넣어 절단을 실제로 검증한다.
+  const flooded = { candidates: () => [
+    ...Array.from({ length: 200 }, () => ({ revision_digest: fixtures.revisions[0].revision_digest, score: 0.9 })),
+    ...fixtures.revisions.slice(1).map((revision: any) => ({ revision_digest: revision.revision_digest, score: 0.5 })),
+  ] };
   const f = await fixture(t, { vectorIndex: flooded, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'q' });
-  assert.equal(result.total, fixtures.revisions.length, 'over-limit rows are truncated then collapse to verified digests');
+  assert.equal(result.total, 1, 'digests that only appear beyond the bound are truncated, not merely deduplicated');
 });
 
 test('async embedders are awaited on both query and revision paths', async t => {
@@ -382,7 +410,7 @@ test('POST /vector-search and /vector-index/rebuild route through the service an
     embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const url = await app.listen(0);
   let appClosed = false;
-  t.after(async () => { if (!appClosed) await app.close(); });
+  t.after(async () => { if (!appClosed) await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const initial = await fetch(`${url}/api/session`);
   const cookie = initial.headers.get('set-cookie')!.split(';')[0];
   const session = await initial.json() as any;
@@ -404,4 +432,62 @@ test('POST /vector-search and /vector-index/rebuild route through the service an
   await app.close();
   appClosed = true;
   assert.equal(closed, 1, 'the app owns the index lifecycle');
+});
+
+test('a network failure inside a fetch-based embedder stays retryable', async t => {
+  // Node fetch는 네트워크 실패를 TypeError로 던진다 — cause.code의 전이적 코드가
+  // 있으면 영구 설정 오류가 아니라 재시도 가능 INDEX_UNAVAILABLE로 분류돼야 한다.
+  const f = await fixture(t, {
+    embedQuery: () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } }); },
+    embedRevision: () => [1, 0, 0],
+  });
+  await assert.rejects(f.service.vectorSearch(actor, { query: 'q' }),
+    (error: any) => error.code === 'INDEX_UNAVAILABLE' && error.retryable === true);
+});
+
+test('rebuildVectorIndex checks operator authorization before index configuration', async t => {
+  // 색인이 없는 배포에서도 비운영자는 FORBIDDEN이다 — 구성 여부를 먼저 노출하지 않는다.
+  const f = await fixture(t);
+  await assert.rejects(f.service.rebuildVectorIndex(actor, {}),
+    (error: any) => error.code === 'FORBIDDEN' && error.status === 403);
+});
+
+test('concurrent rebuildVectorIndex calls join a single execution', async t => {
+  let replaced = 0;
+  const index = new LocalVectorIndex();
+  const tracked = { candidates: (query: any) => index.candidates(query),
+    replaceAll: async (entries: any) => { replaced++; await new Promise(resolve => setImmediate(resolve)); return index.replaceAll(entries); } };
+  const f = await fixture(t, { vectorIndex: tracked, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const [first, second] = await Promise.all([
+    f.service.rebuildVectorIndex(BOOTSTRAP_ACTOR, {}),
+    f.service.rebuildVectorIndex(BOOTSTRAP_ACTOR, {}),
+  ]);
+  assert.equal(replaced, 1, 'concurrent rebuilds join one scan-and-replace execution');
+  assert.equal(first.indexed, second.indexed);
+});
+
+test('rebuildVectorIndex rejects unexpected input fields', async t => {
+  const index = new LocalVectorIndex();
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  await assert.rejects(f.service.rebuildVectorIndex(BOOTSTRAP_ACTOR, { force: true }),
+    (error: any) => error.code === 'INVALID_INPUT');
+});
+
+test('PgVectorIndex replaceAll rolls back and closes the dedicated client on failure', async () => {
+  const calls: string[] = [];
+  let ended = 0;
+  const client = {
+    on: () => {}, connect: async () => {}, end: async () => { ended++; },
+    query: async (text: string) => {
+      calls.push(text);
+      // 두 번째 INSERT에서 실패시켜 롤백 경로를 검증한다.
+      if (/INSERT/.test(text) && calls.filter(item => /INSERT/.test(item)).length === 2) throw new Error('disk full');
+      return { rows: [] };
+    },
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pg: { Client: function () { return client; } } });
+  await assert.rejects(index.replaceAll([entry(0), entry(1)]), /disk full/);
+  assert.ok(calls.includes('ROLLBACK'), 'a failed batch is rolled back atomically');
+  assert.equal(ended, 1, 'the dedicated rebuild connection is closed even on failure');
 });
