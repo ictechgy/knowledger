@@ -113,11 +113,12 @@ test('closeHttpServer force-releases a request that never finishes after the dea
     assert.equal(socket.destroyed, true, 'forced close destroys the held socket');
     // close 콜백이 settle 안에 오면 '강제 해제' 단독, settle를 넘기면 마감 진단이 뒤따른다 — 둘 다 허용한다.
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
-    assert.ok(messages.length >= 1 && messages.length <= 2, 'forced release reports a diagnostic, abandon at most one more');
+    assert.ok(messages.length >= 1 && messages.length <= 3, 'forced release reports a diagnostic, abandon at most one more, a late callback at most one more');
     assert.match(messages[0], /test-server/, 'the diagnostic carries the server label');
     assert.match(messages[0], /강제 해제/, 'the diagnostic names the forced-release reason');
     assert.match(messages[0], /연결 [1-9]\d*개/, 'the diagnostic counts the sockets held at release');
-    if (messages.length === 2) assert.match(messages[1], /콜백이 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
+    if (messages.length >= 2) assert.match(messages[1], /마감까지 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
+    if (messages.length === 3) assert.match(messages[2], /늦게 도착/, 'a third diagnostic can only be the late callback');
   } finally {
     socket.destroy();
   }
@@ -146,7 +147,7 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     assert.match(messages[0], /강제 해제/, 'the forced release is not swallowed by the abandon outcome');
     assert.match(messages[0], /연결 0개/, 'the swept socket means the release captured zero connections');
     assert.match(messages[1], /abandon-test/, 'the abandon diagnostic carries the server label');
-    assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
+    assert.match(messages[1], /마감까지 도착하지 않아/, 'the diagnostic names the abandon reason');
     assert.match(messages[1], /미해제 연결 0개/, 'the released socket leaves exactly zero remaining connections');
     // 마감 뒤 도착한 close 오류는 settled promise가 버리지 않고 진단으로 남긴다.
     closeCallback?.(new Error('late boom'));
@@ -154,6 +155,33 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     assert.match(String(httpDiagnostics(diagnostic)[2][0]), /abandon-test/, 'the late error carries the server label');
   } finally {
     socket.destroy();
+    await releaseServer(server, originalClose);
+  }
+});
+
+test('closeHttpServer treats a close callback inside the abandon window as a late arrival', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server } = await listeningServer((_req, res) => res.end('ok'));
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  let closeCallback: ((error?: Error) => void) | undefined;
+  try {
+    // close 콜백은 가로채 두고 연결 수 콜백은 영원히 오지 않는 최악 — abandon의 진단 대기 창에 close 콜백이 도착한다.
+    server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
+    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-cb' });
+    // abandon(90ms) 발화 뒤 포착 대기(최대 +100ms)가 진행 중인 창에 close 오류 콜백을 도착시킨다.
+    await sleep(120);
+    closeCallback?.(new Error('late cb boom'));
+    await closePromise;
+    // 지연된 settle이 isSettled를 재검사하므로 강제 해제 진단은 중복되지 않고 오류는 늦은 도착으로 남는다.
+    await sleep(80);
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 3, 'forced release, abandon, and the late close error each report once');
+    assert.equal(messages.filter(m => /강제 해제/.test(m)).length, 1, 'the forced diagnostic is not duplicated');
+    assert.match(messages[2], /late cb boom/, 'the late close error is reported instead of swallowed');
+  } finally {
+    server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
   }
 });
@@ -197,7 +225,7 @@ test('closeHttpServer bounds the post-abandon connection lookup instead of waiti
     assert.ok(elapsed < 90 + REMAINING_LOOKUP_MS + 1_000, 'capture wait and remaining lookup must share one bounded budget');
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 2, 'forced release and abandon each report a diagnostic');
-    assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
+    assert.match(messages[1], /마감까지 도착하지 않아/, 'the diagnostic names the abandon reason');
     assert.match(messages[1], /알 수 없음/, 'the timed-out lookup degrades to an unknown count');
   } finally {
     server.getConnections = originalGetConnections;
@@ -286,9 +314,10 @@ test('closeHttpServer releases exactly once when deadline and settle are both ze
     assert.equal(releases, 1, 'release runs exactly once even when both timers fire together');
     // close 콜백과 마감 타이머의 도착 순서에 따라 진단은 '강제 해제' 단독이거나 '강제 해제 + 콜백 미도착' 둘이다.
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
-    assert.ok(messages.length >= 1 && messages.length <= 2, 'each happened event reports at most one diagnostic');
+    assert.ok(messages.length >= 1 && messages.length <= 3, 'each happened event reports at most one diagnostic');
     assert.match(messages[0], /강제 해제/, 'the forced release is always diagnosed');
-    if (messages.length === 2) assert.match(messages[1], /콜백이 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
+    if (messages.length >= 2) assert.match(messages[1], /마감까지 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
+    if (messages.length === 3) assert.match(messages[2], /늦게 도착/, 'a third diagnostic can only be the late callback');
   } finally {
     server.closeAllConnections = originalCloseAll;
     socket.destroy();

@@ -73,10 +73,16 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     };
     // 개수 포착 promise를 주어진 상한으로 기다린다 — 늦거나 오지 않으면 그냥 넘겨 대기가 마감을 넘기지 않게 한다.
     // 돌려주는 promise가 거절될 수 있으므로 소비 측이 거절 경로까지 귀결시켜야 한다.
+    // 상한 타이머는 unref다 — 경주에서 진 쪽이 남아도 프로세스를 붙잡지 않고 경주 종료 시 스스로 해제된다.
     const boundedWait = (pending: Promise<void>, timeoutMs: number): Promise<void> => {
       let boundTimer: NodeJS.Timeout | undefined;
-      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); })])
+      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); boundTimer.unref(); })])
         .finally(() => clearTimeout(boundTimer));
+    };
+    // settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다.
+    const reportLateClose = (lateError: Error | null | undefined) => {
+      if (lateError) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${lateError.message}`);
+      else console.error(`[${label}] HTTP 종료 마감 후 close 콜백이 늦게 도착했다`);
     };
     // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     // getConnections 콜백은 nextTick 이후 도착해 비클러스터 경로에서는 소켓 파괴 전 값을 읽는다 — 클러스터 primary의 IPC 왕복에서는 늦어질 수 있다.
@@ -95,10 +101,11 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         // 진단 예산(REMAINING_LOOKUP_MS)을 나눠 두 대기가 직렬로 쌓여 총 상한을 넘기는 일이 없게 한다.
         const counting = pendingCount ?? release();
         // 이 창에 도착한 close 콜백은 절대 마감을 넘긴 '늦은' 도착이다 — 포착 대기가 끝나면 이 finish가 먼저
-        // settle해 'abandoned'로 결정하고, 늦게 도착한 콜백은 isSettled 분기가 늦은 오류로만 다룬다.
+        // settle해 'abandoned'로 결정하고, 늦게 도착한 콜백은 isSettled 분기가 늦은 도착으로 다룬다.
         const budgetEnd = Date.now() + REMAINING_LOOKUP_MS;
         void boundedWait(counting, Math.max(0, budgetEnd - Date.now()))
-          .then(() => connectionCountBounded(server, Math.max(0, budgetEnd - Date.now())))
+          // 다른 경로가 먼저 settle했으면 닫힌 서버에 잔여 조회를 다시 걸지 않는다.
+          .then(() => isSettled ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - Date.now())))
           .then(
             remaining => finish(() => resolve({ outcome: 'abandoned', connections, remaining })),
             lookupError => finish(() => reject(lookupError)),
@@ -110,12 +117,14 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     try {
       server.close(error => {
         if (isSettled) {
-          if (error) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${error.message}`);
+          reportLateClose(error);
           return;
         }
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
         const settle = () => {
           try {
+            // 포착 대기 사이 abandon이 먼저 마감했을 수 있다 — 재검사해 진단 중복과 오류 삼킴을 막는다.
+            if (isSettled) { reportLateClose(error); return; }
             if (error && isForced) reportForcedRelease(label, connections);
             finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
           } catch (settleError) {
@@ -159,7 +168,7 @@ function connectionCountBounded(server: Server, timeoutMs: number): Promise<numb
   let lookupTimer: NodeJS.Timeout | undefined;
   return Promise.race([
     connectionCount(server),
-    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); }),
+    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); lookupTimer.unref(); }),
   ]).finally(() => clearTimeout(lookupTimer));
 }
 
@@ -216,5 +225,5 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   }
   // 콜백 미도착 경로는 마감이든 폴백이든 강제 해제가 반드시 실행됐다 — 해제 사실과 포착 수를 버리지 않는다.
   reportForcedRelease(label, result.connections);
-  console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
+  console.error(`[${label}] HTTP 종료 close 콜백이 마감까지 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
 }

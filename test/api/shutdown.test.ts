@@ -20,6 +20,8 @@ test('createApp rejects an invalid shutdown deadline at startup instead of half-
   const rejectsStartup = async (shutdownDeadlineMs: number) => {
     const created = await createDemoApp({ dataDir: directory, shutdownDeadlineMs }).then(app => app, (error: unknown) => error);
     if (created instanceof Error) { assert.match(created.message, /shutdownDeadlineMs/); return; }
+    // Error가 아닌 거절 값이면 close() 접근이 TypeError로 원인을 가린다 — 형태를 먼저 단언한다.
+    if (!created || typeof created.close !== 'function') assert.fail('startup must reject with an Error, not a non-Error value');
     await created.close();
     assert.fail(`shutdownDeadlineMs=${shutdownDeadlineMs} must reject at startup`);
   };
