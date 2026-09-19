@@ -47,6 +47,7 @@ export interface AppOptions {
   dataDir: string; definition: ApplicationDefinition; ledger?: ApplicationLedger; personas?: Persona[];
   authentication?: ApplicationAuthentication; organization?: RuntimeScopeOrganization;
   binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
+  /** Ownership transfers to the app — createApp closes it on shutdown and on initialization failure. */
   vectorIndex?: VectorCandidateIndex;
   embedQuery?: (text: string) => readonly number[];
   embedRevision?: (title: string, body: string) => readonly number[];
