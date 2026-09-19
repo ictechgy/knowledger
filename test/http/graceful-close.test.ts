@@ -233,7 +233,6 @@ test('closeHttpServer reports a successful close callback that arrives after aba
     server.getConnections = (() => { getCalls += 1; if (getCalls === 2) closeCallback?.(); }) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-ok' });
     await closePromise;
-    await sleep(150);
     // 오류 없는 늦은 도착도 진단으로 남아 소켓 추적 유실과 단순 지연을 구분할 수 있다 — 결과에 실어 오므로 항상 마지막에 찍힌다.
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 3, 'forced release, abandon, and the late callback each report once');
@@ -302,17 +301,20 @@ test('closeHttpServer waits for the count capture when the close callback arrive
   try {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
     await once(socket, 'data');
-    // close 콜백이 개수 포착보다 먼저 도착하는 순서를 결정적으로 만든다 — 포착 콜백과 close 콜백을 둘 다 가로채 둔다.
+    // close 콜백이 개수 포착보다 먼저 도착하는 순서를 결정적으로 만든다 — 포착 호출 시점에 close 콜백을
+    // 마이크로태스크로 발화해 pendingCount 할당 뒤 도착을 보장하고, 개수 응답은 테스트가 직접 준다.
     let captured: ((error: Error | null, count: number) => void) | undefined;
     let closeCallback: ((error?: Error) => void) | undefined;
-    server.getConnections = ((callback: (error: Error | null, count: number) => void) => { captured = callback; }) as Server['getConnections'];
+    server.getConnections = ((callback: (error: Error | null, count: number) => void) => {
+      captured = callback;
+      queueMicrotask(() => closeCallback?.());
+    }) as Server['getConnections'];
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 200, label: 'race-test' });
-    // 마감(60ms) 뒤 release가 포착을 시작했지만 콜백이 아직 없는 창에 close 콜백을 도착시킨다.
-    await sleep(120);
-    closeCallback?.();
-    await sleep(20);
-    captured?.(null, 7);
+    // 마감(60ms) 발화 뒤 포착이 시작될 때까지 기다린다 — 느린 러너의 타이머 지터를 흡수하게 폴링한다.
+    for (let i = 0; i < 100 && !captured; i += 1) await sleep(10);
+    assert.ok(captured, 'the count capture must have started before we answer it');
+    captured(null, 7);
     await closePromise;
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 1, 'the close callback arrived so only the forced release reports');

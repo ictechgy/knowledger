@@ -65,8 +65,11 @@ export interface AppOptions {
   shutdownDeadlineMs?: number;
 }
 
+/** 해제 단계 이름을 단 오류 — 단일 실패는 원오류에 직접 달리고, 복수 실패는 AggregateError.errors 각 항목에 붙는다. */
+export type TeardownStageError = Error & { stage?: string };
+
 /** 여러 해제 단계의 실패를 묶은 오류 — 실패한 단계 이름을 errors와 같은 순서로 실어 둔다. */
-type TeardownAggregateError = AggregateError & { stages: string[] };
+export type TeardownAggregateError = AggregateError & { stages: string[] };
 
 export async function createApp(options: AppOptions) {
   let ledger: ApplicationLedger | undefined = options.ledger;
@@ -390,7 +393,7 @@ export async function createApp(options: AppOptions) {
       if (errors.length === 1) {
         // 단일 실패는 원오류를 그대로 던지되 단계 이름을 달아 둔다 — 복수 실패의 stages와 같은 정보를 잃지 않게 한다.
         const [{ stage, error }] = errors;
-        if (error instanceof Error) (error as Error & { stage?: string }).stage = stage;
+        if (error instanceof Error) (error as TeardownStageError).stage = stage;
         throw error;
       }
       if (errors.length > 1) {
