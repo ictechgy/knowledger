@@ -247,9 +247,10 @@ test('issuer uses fresh random values for its local cryptographic material', { s
 });
 
 test('issuer rejects an invalid shutdown deadline before binding a server', { skip: oidcTestSkip }, async () => {
-  // 메시지까지 단언한다 — RangeError만 보면 포트·리다이렉트 검증의 RangeError로 위장 통과할 수 있다.
+  // 다른 입력은 전부 유효하게 두고 메시지까지 단언한다 — 포트·리다이렉트·계정 검증의 오류로 위장 통과하지 않게 한다.
+  const { startDevelopmentIssuer: startIssuer } = await import('../../packages/auth/development-issuer.ts');
   await assert.rejects(
-    () => startDevelopmentIssuer({ port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: -1 }),
+    () => startIssuer({ accounts: [{ subject: 'dev-owner', label: '담당자' }], port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: -1 }),
     /shutdownDeadlineMs/,
   );
 });

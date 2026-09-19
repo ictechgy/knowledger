@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDemoApp } from '../../examples/order-workflow/application.ts';
+import { MAX_TIMEOUT_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 /**
@@ -18,6 +19,8 @@ test('createApp rejects an invalid shutdown deadline at startup instead of half-
   // 메시지까지 단언한다 — RangeError만 보면 다른 기동 검증의 RangeError로 위장 통과할 수 있다.
   await assert.rejects(() => createDemoApp({ dataDir: directory, shutdownDeadlineMs: -1 }), /shutdownDeadlineMs/);
   await assert.rejects(() => createDemoApp({ dataDir: directory, shutdownDeadlineMs: Number.NaN }), /shutdownDeadlineMs/);
+  // 단독으로는 범위 안이지만 기본 정착 상한과의 합이 넘치는 값 — 기동에서 거절되지 않으면 close() 시점에 뒤늦게 실패한다.
+  await assert.rejects(() => createDemoApp({ dataDir: directory, shutdownDeadlineMs: MAX_TIMEOUT_MS - 100 }), /shutdownDeadlineMs/);
 });
 
 test('app.close still runs resource teardown when the HTTP close rejects', async (t) => {

@@ -35,9 +35,15 @@ export function assertCloseBound(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0 || value > MAX_TIMEOUT_MS) throw new RangeError(`${name} must be a finite number between 0 and ${MAX_TIMEOUT_MS}`);
 }
 
-/** 선택적 종료 상한을 기동 시점에 검증한다 — 미설정은 기본값 사용으로 통과시키고, 잘못된 값은 close() 전에 실패하게 한다. */
+/**
+ * 선택적 종료 상한을 기동 시점에 검증한다 — 미설정은 기본값 사용으로 통과시키고, 잘못된 값은
+ * close() 전에 실패하게 한다. closeHttpServer가 마감과 기본 정착 상한의 합까지 검증하므로
+ * 기동 검증도 같은 합을 봐야 한다 — 합산을 빠뜨리면 close() 시점에 뒤늦게 거절된다.
+ */
 export function assertOptionalCloseBound(value: number | undefined, name: string): void {
-  if (value !== undefined) assertCloseBound(value, name);
+  if (value === undefined) return;
+  assertCloseBound(value, name);
+  assertCloseBound(value + DEFAULT_SETTLE_MS, `${name} + default settleMs`);
 }
 
 /**
@@ -63,17 +69,22 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     };
     // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     // getConnections 콜백은 nextTick 이후 도착해 비클러스터 경로에서는 소켓 파괴 전 값을 읽는다 — 클러스터 primary의 IPC 왕복에서는 늦어질 수 있다.
+    // 돌려주는 promise는 개수 포착이 끝나는 시점을 알린다 — abandon 폴백처럼 해제 직후 resolve하는 경로만 기다린다.
     const release = () => {
       isForced = true;
-      server.getConnections((error, count) => { connections = error ? UNKNOWN_CONNECTION_COUNT : count; });
+      const counted = new Promise<void>(resolve => {
+        server.getConnections((error, count) => { connections = error ? UNKNOWN_CONNECTION_COUNT : count; resolve(); });
+      });
       server.closeAllConnections();
+      return counted;
     };
     forceTimer = setTimeout(() => { try { release(); } catch (error) { finish(() => reject(error)); } }, deadlineMs);
-    // forceTimer가 어떤 이유로든 못 돈 최악(타이머 순서 역전)에도 강제 해제는 시도한 뒤 마감한다.
+    // forceTimer가 어떤 이유로든 못 돈 최악(타이머 순서 역전)에도 강제 해제는 시도한 뒤 마감한다 — 폴백 해제는 개수 포착을 기다려 UNKNOWN 남발을 피한다.
     abandonTimer = setTimeout(() => {
       try {
-        if (!isForced) release();
-        finish(() => resolve({ outcome: 'abandoned', forced: isForced, connections }));
+        const counting = isForced ? undefined : release();
+        const settle = () => finish(() => resolve({ outcome: 'abandoned', forced: isForced, connections }));
+        if (counting) void counting.then(settle, settle); else settle();
       } catch (error) {
         finish(() => reject(error));
       }
@@ -102,9 +113,15 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
 /** 잔여 연결 수 진단 조회의 상한(ms) — 조회가 늦어져도 총 대기 상한을 넘기지 않게 한다. */
 const REMAINING_LOOKUP_MS = 100;
 
-/** 잔여 연결 수를 단회 읽는다 — 조회 오류는 센티널로 강등해 진단이 끊긴 수를 위장하지 않게 한다(진단용 best-effort다). */
+/** 잔여 연결 수를 단회 읽는다 — 조회 오류·동기 throw는 센티널로 강등해 진단이 끊긴 수를 위장하거나 종료를 거절로 돌리지 않게 한다(진단용 best-effort다). */
 async function remainingConnections(server: Server): Promise<number> {
-  return new Promise<number>(resolve => server.getConnections((error, count) => resolve(error ? UNKNOWN_CONNECTION_COUNT : count)));
+  return new Promise<number>(resolve => {
+    try {
+      server.getConnections((error, count) => resolve(error ? UNKNOWN_CONNECTION_COUNT : count));
+    } catch {
+      resolve(UNKNOWN_CONNECTION_COUNT);
+    }
+  });
 }
 
 /** 잔여 연결 수를 짧은 상한 안에 읽는다 — 클러스터 IPC 같은 느린 조회는 '알 수 없음'으로 강등해 총 대기 상한을 지킨다. */
