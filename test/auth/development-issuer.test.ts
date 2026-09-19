@@ -245,3 +245,11 @@ test('issuer uses fresh random values for its local cryptographic material', { s
   assert.equal(Object.hasOwn(firstJwks.keys[0] ?? {}, 'd'), false);
   assert.equal(Object.hasOwn(secondJwks.keys[0] ?? {}, 'd'), false);
 });
+
+test('issuer rejects an invalid shutdown deadline before binding a server', { skip: oidcTestSkip }, async () => {
+  // 메시지까지 단언한다 — RangeError만 보면 포트·리다이렉트 검증의 RangeError로 위장 통과할 수 있다.
+  await assert.rejects(
+    () => startDevelopmentIssuer({ port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: -1 }),
+    /shutdownDeadlineMs/,
+  );
+});

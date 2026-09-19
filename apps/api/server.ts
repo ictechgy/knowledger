@@ -61,7 +61,7 @@ export interface AppOptions {
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
-  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 5_000, 초과 시 잔여 연결을 강제 해제한다. */
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 DEFAULT_CLOSE_DEADLINE_MS, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
 

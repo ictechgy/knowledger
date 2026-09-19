@@ -40,7 +40,7 @@ export interface StartDevelopmentIssuerOptions {
   redirectUri: string;
   clientId?: string;
   subjects?: readonly string[];
-  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 5_000, 초과 시 잔여 연결을 강제 해제한다. */
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 DEFAULT_CLOSE_DEADLINE_MS, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
 

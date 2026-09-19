@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
  * closeHttpServer의 동작을 조절하는 옵션 — 마감과 정착 상한은 환경별로 조정할 수 있다.
  */
 export interface CloseHttpServerOptions {
-  /** 진행 중 요청이 끝나기를 기다리는 상한(ms) — 초과하면 잔여 연결을 강제 해제한다. 기본 5_000. */
+  /** 진행 중 요청이 끝나기를 기다리는 상한(ms) — 초과하면 잔여 연결을 강제 해제한다. 기본 DEFAULT_CLOSE_DEADLINE_MS. */
   deadlineMs?: number;
   /** close 콜백이 오지 않는 최악까지 기다리는 추가 상한(ms) — 기본 250. */
   settleMs?: number;
@@ -12,8 +12,11 @@ export interface CloseHttpServerOptions {
   label?: string;
 }
 
-/** 서버 종료 대기의 결과 — 정상 종료는 수를 싣지 않고, 강제 해제는 시점의 연결 수를, 콜백 미도착은 사유만 구분해 돌려준다. */
-type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned' };
+/** 서버 종료 대기의 결과 — 강제 해제와 콜백 미도착은 해제 실행 여부와 그 시점에 포착한 연결 수를 함께 돌려준다. */
+type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned'; forced: boolean; connections: number };
+
+/** 종료 마감의 기본값(ms) — 앱 옵션 문서가 이 상수를 참조해 기본값 설명이 갈라지지 않게 한다. */
+export const DEFAULT_CLOSE_DEADLINE_MS = 5_000;
 
 /** Node setTimeout의 최대 지연 — 이를 넘는 값은 1ms로 강등돼 마감·강제 해제의 발화 순서가 깨진다. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -37,7 +40,7 @@ export function assertOptionalCloseBound(value: number | undefined, name: string
  * 오지 않는 최악에는 deadlineMs + settleMs에 'abandoned'로 돌아온다. 모든 타이머는 finish
  * 경로에서 정리하고, settle 후 도착한 close 오류는 버리지 않고 진단으로 남긴다.
  */
-function waitForServerClose(server: Server, deadlineMs: number, settleMs: number, label: string): Promise<CloseWaitResult> {
+function waitForServerClose(server: Server, deadlineMs: number, settleMs: number, label: string, onSweepFailure: (error: unknown) => void): Promise<CloseWaitResult> {
   return new Promise<CloseWaitResult>((resolve, reject) => {
     let settled = false;
     let forced = false;
@@ -64,7 +67,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     abandonTimer = setTimeout(() => {
       try {
         if (!forced) release();
-        finish(() => resolve({ outcome: 'abandoned' }));
+        finish(() => resolve({ outcome: 'abandoned', forced, connections }));
       } catch (error) {
         finish(() => reject(error));
       }
@@ -79,7 +82,11 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         if (error && forced) reportForcedRelease(label, connections);
         finish(() => error ? reject(error) : resolve(forced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
       });
-      server.closeIdleConnections();
+      try {
+        server.closeIdleConnections();
+      } catch (error) {
+        onSweepFailure(error);
+      }
     } catch (error) {
       finish(() => reject(error));
     }
@@ -109,17 +116,30 @@ function reportForcedRelease(label: string, connections: number): void {
  * deadlineMs + settleMs를 넘기지 않는다.
  */
 export async function closeHttpServer(server: Server, options: CloseHttpServerOptions = {}): Promise<void> {
-  const { deadlineMs = 5_000, settleMs = 250, label = 'http' } = options;
+  const { deadlineMs = DEFAULT_CLOSE_DEADLINE_MS, settleMs = 250, label = 'http' } = options;
   assertCloseBound(deadlineMs, 'deadlineMs');
   assertCloseBound(settleMs, 'settleMs');
   // 두 타이머의 합도 타이머 상한 안이어야 한다 — 합이 넘치면 마감이 강제 해제보다 먼저 발화하는 순서 역전이 된다.
   assertCloseBound(deadlineMs + settleMs, 'deadlineMs + settleMs');
   if (!server.listening) return;
-  const sweep = setInterval(() => server.closeIdleConnections(), 50);
+  // 스윕 실패는 종료 자체를 막지 않는다 — 50ms 간격의 반복 실패가 stderr를 도배하지 않게 첫 실패만 진단으로 남긴다.
+  let sweepWarned = false;
+  const reportSweepFailure = (error: unknown) => {
+    if (sweepWarned) return;
+    sweepWarned = true;
+    console.error(`[${label}] HTTP 종료 중 유휴 연결 스윕에 실패했다: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  const sweep = setInterval(() => {
+    try {
+      server.closeIdleConnections();
+    } catch (error) {
+      reportSweepFailure(error);
+    }
+  }, 50);
   sweep.unref();
   let result: CloseWaitResult;
   try {
-    result = await waitForServerClose(server, deadlineMs, settleMs, label);
+    result = await waitForServerClose(server, deadlineMs, settleMs, label, reportSweepFailure);
   } finally {
     clearInterval(sweep);
   }
@@ -128,6 +148,8 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
     reportForcedRelease(label, result.connections);
     return;
   }
+  // 마감이 먼저 발화해 강제 해제가 실행됐다면 그 사실과 포착한 연결 수를 버리지 않는다 — 콜백 미도착 진단만 남기면 해제가 무소음이 된다.
+  if (result.forced) reportForcedRelease(label, result.connections);
   const remaining = await remainingConnections(server);
   console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(remaining)}`);
 }

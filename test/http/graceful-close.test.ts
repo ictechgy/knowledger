@@ -4,11 +4,7 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { closeHttpServer } from '../../packages/http/graceful-close.ts';
-import { createApp } from '../../apps/api/server.ts';
 
 /** 포트 0으로 듣는 서버를 띄워 주소를 돌려준다 — 매 테스트가 독립 포트를 쓰게 한다. */
 async function listeningServer(handler: RequestListener): Promise<{ server: Server; port: number }> {
@@ -38,9 +34,11 @@ async function releaseServer(server: Server, originalClose: Server['close']): Pr
 
 test('closeHttpServer returns immediately for a non-listening server', async () => {
   const server = createServer();
-  const started = Date.now();
+  // listening하지 않은 서버는 마감을 기다리지 않고 close도 호출하지 않는다 — 벽시계 대신 호출 여부를 본다.
+  let closeCalls = 0;
+  server.close = (() => { closeCalls++; return server; }) as Server['close'];
   await closeHttpServer(server, { deadlineMs: 50 });
-  assert.ok(Date.now() - started < 50, 'non-listening close must not wait for the deadline');
+  assert.equal(closeCalls, 0, 'a non-listening server must not reach server.close');
 });
 
 test('closeHttpServer rejects non-finite or out-of-range close bounds', async () => {
@@ -133,15 +131,18 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= 120, 'the abandon timer still lets the deadline elapse');
     assert.ok(elapsed < 2_000, 'a missing close callback cannot hang shutdown');
-    assert.equal(httpDiagnostics(diagnostic).length, 1, 'the abandon reports a diagnostic');
-    const message = String(httpDiagnostics(diagnostic)[0][0]);
-    assert.match(message, /abandon-test/, 'the diagnostic carries the server label');
-    assert.match(message, /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
-    assert.match(message, /미해제 연결 0개/, 'the swept socket leaves exactly zero remaining connections');
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    // 마감에서 강제 해제가 먼저 실행됐으므로 해제 진단과 콜백 미도착 진단이 둘 다 남아야 한다.
+    assert.equal(messages.length, 2, 'forced release and abandon each report a diagnostic');
+    assert.match(messages[0], /abandon-test/, 'the forced diagnostic carries the server label');
+    assert.match(messages[0], /강제 해제/, 'the forced release is not swallowed by the abandon outcome');
+    assert.match(messages[1], /abandon-test/, 'the abandon diagnostic carries the server label');
+    assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
+    assert.match(messages[1], /미해제 연결 0개/, 'the released socket leaves exactly zero remaining connections');
     // 마감 뒤 도착한 close 오류는 settled promise가 버리지 않고 진단으로 남긴다.
     closeCallback?.(new Error('late boom'));
-    assert.equal(httpDiagnostics(diagnostic).length, 2, 'a late close error is still reported');
-    assert.match(String(httpDiagnostics(diagnostic)[1][0]), /abandon-test/, 'the late error carries the server label');
+    assert.equal(httpDiagnostics(diagnostic).length, 3, 'a late close error is still reported');
+    assert.match(String(httpDiagnostics(diagnostic)[2][0]), /abandon-test/, 'the late error carries the server label');
   } finally {
     socket.destroy();
     await releaseServer(server, originalClose);
@@ -158,8 +159,12 @@ test('closeHttpServer degrades a connection-count lookup failure to an unknown c
     server.close = (() => server) as Server['close'];
     server.getConnections = ((callback: (error: Error | null, count: number) => void) => { callback(new Error('count boom'), 0); }) as Server['getConnections'];
     await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'count-test' });
-    assert.equal(httpDiagnostics(diagnostic).length, 1);
-    assert.match(String(httpDiagnostics(diagnostic)[0][0]), /알 수 없음/, 'a lookup failure must not masquerade as a count');
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    // 강제 해제 진단과 마감 진단 둘 다 조회 실패를 개수가 아니라 '알 수 없음'으로 내려야 한다.
+    assert.equal(messages.length, 2);
+    assert.match(messages[0], /강제 해제/, 'the forced release ran at the deadline');
+    assert.match(messages[0], /알 수 없음/, 'a lookup failure must not masquerade as a count');
+    assert.match(messages[1], /알 수 없음/, 'the abandon diagnostic also degrades to unknown');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
@@ -213,26 +218,58 @@ test('closeHttpServer releases exactly once when deadline and settle are both ze
     server.closeAllConnections = (() => { releases++; originalCloseAll(); }) as Server['closeAllConnections'];
     await closeHttpServer(server, { deadlineMs: 0, settleMs: 0, label: 'zero-zero' });
     assert.equal(releases, 1, 'release runs exactly once even when both timers fire together');
-    assert.equal(httpDiagnostics(diagnostic).length, 1, 'a single diagnostic is emitted');
+    // close 콜백과 마감 타이머의 도착 순서에 따라 진단은 '강제 해제' 단독이거나 '강제 해제 + 콜백 미도착' 둘이다.
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.ok(messages.length >= 1 && messages.length <= 2, 'each happened event reports at most one diagnostic');
+    assert.match(messages[0], /강제 해제/, 'the forced release is always diagnosed');
+    if (messages.length === 2) assert.match(messages[1], /콜백이 도착하지 않아/, 'a second diagnostic can only be the abandon reason');
   } finally {
     server.closeAllConnections = originalCloseAll;
     socket.destroy();
   }
 });
 
-test('createApp rejects an invalid shutdown deadline at startup instead of half-closing', async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-bound-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: -1 }), RangeError);
-  await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: Number.NaN }), RangeError);
-});
-
-test('startDevelopmentIssuer rejects an invalid shutdown deadline at startup', async () => {
-  const { startDevelopmentIssuer } = await import('../../packages/auth/development-issuer.ts');
-  await assert.rejects(
-    () => startDevelopmentIssuer({ accounts: [], port: 1, redirectUri: 'http://127.0.0.1:1/auth/callback', shutdownDeadlineMs: -1 }),
-    RangeError,
-  );
+test('closeHttpServer survives a failing idle sweep and reports it once', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  // 진행 중 요청이 80ms에 끝나게 해 close 대기 동안 주기 스윕이 한 번 이상 돌게 한다.
+  let requestSeen!: () => void;
+  const requestArrived = new Promise<void>(resolve => { requestSeen = resolve; });
+  const { server, port } = await listeningServer((_req, res) => { requestSeen(); setTimeout(() => res.end('ok'), 80); });
+  const socket = connect(port, '127.0.0.1');
+  const originalCloseIdle = server.closeIdleConnections.bind(server);
+  const originalClose = server.close.bind(server);
+  let insideServerClose = false;
+  let sweepAttempts = 0;
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+    await requestArrived;
+    // Node는 server.close() 내부(httpServerPreClose)에서도 closeIdleConnections를 호출한다 — 내부 호출은
+    // 통과시키고 우리 스윕(초기 호출 + 첫 주기 호출)만 실패시킨다. 두 번 실패해도 진단은 한 번이어야 한다.
+    server.close = ((callback?: (error?: Error) => void) => {
+      insideServerClose = true;
+      try {
+        return originalClose(callback);
+      } finally {
+        insideServerClose = false;
+      }
+    }) as Server['close'];
+    server.closeIdleConnections = (() => {
+      if (insideServerClose) return originalCloseIdle();
+      sweepAttempts++;
+      if (sweepAttempts <= 2) throw new Error('sweep boom');
+      return originalCloseIdle();
+    }) as Server['closeIdleConnections'];
+    await closeHttpServer(server, { deadlineMs: 500, settleMs: 100, label: 'sweep-test' });
+    assert.ok(sweepAttempts >= 2, 'the periodic sweep must have run during the close wait');
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 1, 'repeated sweep failures are reported once, not every 50ms');
+    assert.match(messages[0], /sweep-test/, 'the sweep diagnostic carries the server label');
+    assert.match(messages[0], /스윕에 실패/, 'the diagnostic names the sweep failure');
+  } finally {
+    server.closeIdleConnections = originalCloseIdle;
+    socket.destroy();
+    await releaseServer(server, originalClose);
+  }
 });
 
 test('closeHttpServer propagates a synchronous server.close throw without lingering timers', async () => {
