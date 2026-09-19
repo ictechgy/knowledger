@@ -101,6 +101,23 @@ test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip
   const hexTag = 'b'.repeat(40);
   execFileSync('git', ['-C', item.repo, 'update-ref', `refs/tags/${hexTag}`, blobId], { stdio: 'ignore' });
   await assert.rejects(() => readGitSource({ root: item.repo, ref: hexTag, manifest: item.manifest }), /모호|ref/);
+  // 다른 철자의 느슨한 ref가 덮어써도 정확한 이름의 저장 오브젝트만 해석된다.
+  execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/shadow', item.head], { stdio: 'ignore' });
+  execFileSync('git', ['-C', item.repo, 'pack-refs', '--all'], { stdio: 'ignore' });
+  const shadowTree = execFileSync('git', ['-C', item.repo, 'rev-parse', `${item.head}^{tree}`]).toString().trim();
+  const otherCommit = execFileSync('git', ['-C', item.repo, 'commit-tree', shadowTree, '-p', item.head, '-m', 'shadow']).toString().trim();
+  execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/Shadow', otherCommit], { stdio: 'ignore' });
+  const shadowed = await readGitSource({ root: item.repo, ref: 'refs/heads/shadow', manifest: item.manifest });
+  assert.equal(shadowed.commit, item.head);
+  // 정확한 이름 없이 후손 ref만 있으면 해석되지 않는다 — 접두 일치는 이름 일치가 아니다.
+  // (Git의 D/F 규칙상 이름과 후손은 공존할 수 없어 후손 전용 홍수 시나리오가 유일하다.)
+  execFileSync('git', ['-C', item.repo, 'update-ref', '--stdin'], {
+    input: `${Array.from({ length: 300 }, (_, index) => `update refs/heads/flood/r${index} ${item.head}`).join('\n')}\n`,
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  await assert.rejects(() => readGitSource({ root: item.repo, ref: 'flood', manifest: item.manifest }));
+  const leaf = await readGitSource({ root: item.repo, ref: 'refs/heads/flood/r7', manifest: item.manifest });
+  assert.equal(leaf.commit, item.head);
   // 저장소 안의 일반 하위 디렉터리는 root로 받지 않는다 — worktree top만 허용한다.
   await assert.rejects(() => readGitSource({ root: join(item.repo, 'docs'), ref: item.head, manifest: item.manifest }));
 });

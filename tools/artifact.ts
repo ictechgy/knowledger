@@ -1,4 +1,4 @@
-import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 
@@ -10,10 +10,16 @@ const UNSUPPORTED_DIR_FSYNC = new Set(['ENOSYS', 'ENOTSUP', 'EINVAL', 'EPERM']);
  * 증거 아티팩트를 원자적으로 쓴다 — 같은 디렉터리의 임시 파일(0600, O_EXCL)에 전체
  * 내용을 쓰고 fsync한 뒤 rename으로 교체하므로, 쓰기 실패·크래시가 기존 아티팩트의
  * 부분 파일을 남기지 않는다. 목적지가 심볼릭 링크·비정규 파일·하드링크된 파일이면
- * rename 전에 거부한다.
+ * rename 전에 거부한다. 대상 디렉터리는 realpath로 고정하고 cwd를 그 inode에 붙든 채
+ * basename만 다룬다 — 쓰기 도중 상위 경로가 심볼릭 링크로 바뀌어 rename과 디렉터리
+ * fsync가 다른 곳을 가리키는 것을 막는다.
  */
 export function writeArtifact(path: string, output: string): void {
-  const tmp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  const realDir = realpathSync(dirname(path));
+  const fileName = basename(path);
+  const tmp = `.${fileName}.${randomUUID()}.tmp`;
+  const cwd = process.cwd();
+  process.chdir(realDir);
   try {
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
     try {
@@ -24,12 +30,12 @@ export function writeArtifact(path: string, output: string): void {
     } finally {
       closeSync(fd);
     }
-    const dest = lstatSync(path, { throwIfNoEntry: false });
+    const dest = lstatSync(fileName, { throwIfNoEntry: false });
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
-    renameSync(tmp, path);
+    renameSync(tmp, fileName);
     try {
-      // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다.
-      const dirFd = openSync(dirname(path), constants.O_RDONLY);
+      // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다 — 같은 inode를 가리키는 '.'을 연다.
+      const dirFd = openSync('.', constants.O_RDONLY);
       try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
     } catch (error) {
       if (!UNSUPPORTED_DIR_FSYNC.has((error as NodeJS.ErrnoException)?.code ?? '')) throw error;
@@ -37,5 +43,7 @@ export function writeArtifact(path: string, output: string): void {
   } catch (error) {
     rmSync(tmp, { force: true });
     throw error;
+  } finally {
+    process.chdir(cwd);
   }
 }

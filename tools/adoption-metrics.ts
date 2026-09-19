@@ -101,11 +101,15 @@ if (isMain()) {
         // 측정 출력이 덮어쓰는 것을 막는다. 보호 경로의 하위에 쓰는 것도 거부한다 —
         // 거기에 디렉터리를 만들면 저널이 sidecar를 생성할 수 없게 된다.
         const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
-        const targetCanonical = canonical(target);
+        // 합성된 미존재 경로 조각은 원래 철자를 유지하므로, 대소문자 비구분 파일시스템의
+        // 다른 철자 별칭을 잡기 위해 정규화·대소문자를 접은 형태로 비교한다 — 대소문자
+        // 구분 시스템에서는 다른 파일을 넓게 거부할 뿐 조용한 우회는 허용하지 않는다.
+        const fold = (p: string): string => p.normalize('NFC').toLowerCase();
+        const targetFolded = fold(canonical(target));
         const targetInode = inodeOf(target);
         const collides = inputs.some((input) => {
-          const base = canonical(input);
-          return targetCanonical === base || targetCanonical.startsWith(`${base}${sep}`)
+          const base = fold(canonical(input));
+          return targetFolded === base || targetFolded.startsWith(`${base}${sep}`)
             || (targetInode !== undefined && inodeOf(input) === targetInode);
         });
         if (collides) throw new Error('invalid option');
