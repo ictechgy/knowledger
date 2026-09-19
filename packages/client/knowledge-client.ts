@@ -191,13 +191,14 @@ function validateSharedCheckpoint(raw: unknown, manifest: any): void {
   }
 }
 
-/** A refreshed fence may get new run IDs; the knowledge and policy binding must stay fixed. */
+/** A refreshed manifest keeps the same run ID; the knowledge and policy binding must stay fixed. */
 export function validateRefreshedManifest(previousValue:unknown,nextValue:unknown):any {
   const previous=object(previousValue);const reference=object(previous.provided_revisions?.[0]);
   const selection=validateSelection({document_ids:['doc-manifest-validation'],context_id:previous.context_id,scope_id:previous.scope_id,usage_scope:previous.usage_scope});
   const digest=assertDigest(reference.revision_digest),agreement=assertId(reference.agreement_id);
   validateManifest(previous,selection,digest,agreement);
   const next=validateManifest(nextValue,selection,digest,agreement);
+  if(previous.run_id!==next.run_id)invalid();
   for(const field of ['policy_id','policy_version','membership_epoch','model_egress_policy_version','retrieval_profile_id'])if(previous[field]!==next[field])invalid();
   const before=previous.checkpoint,after=next.checkpoint;
   if(after.channel_id!==before.channel_id||after.block_number<before.block_number||(after.block_number===before.block_number&&after.transaction_index<=before.transaction_index))invalid();

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
-import { KnowledgerService } from '../../apps/api/service.ts';
+import { KnowledgerService, ModelEgressTimeoutError } from '../../apps/api/service.ts';
 import { demoFixtures, actorIdentity, PERSONAS, demoDefinition } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 import { guardedGeneration } from '../../packages/client/guarded-generation.ts';
@@ -169,6 +169,15 @@ test('invalid egress policy versions are rejected at construction', async t => {
   }
 });
 
+test('invalid egress hook shapes and timeouts are rejected at construction', async t => {
+  for (const modelEgress of [{ timeout_ms: 0 }, { timeout_ms: -1 }, { timeout_ms: 1.5 }, { timeout_ms: Number.NaN }, { allows: 'yes' }, { onError: 'log' }]) {
+    const ledger = new LocalLedger(':memory:', 'kcl-demo');
+    const vault = new PrivateStore(':memory:');
+    assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { modelEgress: modelEgress as any }), TypeError);
+    ledger.close(); vault.close();
+  }
+});
+
 test('a throwing egress hook reports the error to the diagnostic callback', async t => {
   const errors: unknown[] = [];
   const cause = new Error('policy store down');
@@ -185,13 +194,22 @@ test('a hanging egress hook times out as policy unavailability', async t => {
   assert.equal(resolved.status, 'withheld');
   assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
   assert.equal(errors.length, 1);
+  assert.ok(errors[0] instanceof ModelEgressTimeoutError);
 });
 
 test('an asynchronous false egress verdict is denied at resolve and revalidate', async t => {
-  const f = await fixture(t, { allows: async () => false });
+  let verdict: unknown = false;
+  const f = await fixture(t, { allows: async () => verdict });
+  const denied = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(denied.status, 'withheld');
+  assert.equal(denied.reason, 'EGRESS_POLICY_DENIED');
+  verdict = true;
   const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
-  assert.equal(resolved.status, 'withheld');
-  assert.equal(resolved.reason, 'EGRESS_POLICY_DENIED');
+  assert.equal(resolved.status, 'provided');
+  verdict = false;
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'EGRESS_POLICY_DENIED');
 });
 
 test('a truthy non-boolean egress verdict is denied at revalidation too', async t => {
@@ -222,9 +240,45 @@ test('a missing binding field in the stored run record is treated as tampering',
   const runId = resolved.manifest.run_id;
   const run = f.vault.get('run', runId, actor);
   delete run.manifest.policy_id;
-  (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
+  // 공개 API는 run 기록 갱신을 허용하지 않으므로 변조 시뮬레이션은 저장소 내부에 직접 닿는다 —
+  // 영향 행 수를 단언해 스키마 드리프트 시 이 테스트가 무력화되지 않고 실패하게 한다.
+  const info = (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
     .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
+  assert.equal(info.changes, 1);
   const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
   assert.equal(result.status, 'withheld');
   assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('a throwing diagnostic callback does not change the fail-closed verdict', async t => {
+  const f = await fixture(t, { allows: () => { throw new Error('policy store down'); }, onError: () => { throw new Error('sink broken'); } });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+});
+
+test('a hanging egress hook times out at revalidation too', async t => {
+  let hang = false;
+  const errors: unknown[] = [];
+  const f = await fixture(t, { timeout_ms: 5, allows: () => hang ? new Promise(() => {}) : true, onError: (error: unknown) => errors.push(error) });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  hang = true;
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'EGRESS_POLICY_UNAVAILABLE');
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0] instanceof ModelEgressTimeoutError);
+});
+
+test('a denied resolve does not persist a run record', async t => {
+  const f = await fixture(t, { allows: () => false });
+  const denied = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-blocked' });
+  assert.equal(denied.status, 'withheld');
+  const runs = (f.vault as any).db.prepare("SELECT COUNT(*) AS c FROM private_records WHERE kind = 'run'").get();
+  assert.equal(runs.c, 0);
+  const allowed = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-allowed' });
+  assert.equal(allowed.status, 'withheld');
+  const still = (f.vault as any).db.prepare("SELECT COUNT(*) AS c FROM private_records WHERE kind = 'run'").get();
+  assert.equal(still.c, 0);
 });
