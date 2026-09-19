@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import { decodeMarkdownImport, MAX_MARKDOWN_BYTES } from '../import/markdown.ts';
 import { MAX_SOURCE_BYTES, SourceInputError, sourcePath, validateSourceManifest } from './source-contract.ts';
 import type { MarkdownSourceSnapshot } from './filesystem-markdown.ts';
@@ -160,9 +160,15 @@ function blobObject(root: string, commit: string, path: string, idLength: number
   // Git 트리는 같은 이름의 항목을 중복으로 담을 수 있다 — 첫 레코드를 고르면 다른
   // 소비자가 해석하는 blob과 어긋날 수 있으므로 정확히 하나의 일치만 받는다.
   const pattern = new RegExp(`^(\\d{6}) (\\w+) ([a-f0-9]{${idLength}})\\t(.+)$`, 'u');
-  const entries = output.toString('utf8').split('\0').filter(Boolean);
+  const text = output.toString('utf8');
+  if (!text) return undefined;
+  // -z 출력은 레코드마다 NUL로 끝난다 — 종결자가 없거나 중간에 빈 레코드가 있으면
+  // 응답이 잘린 것이므로 거부한다.
+  if (!text.endsWith('\0')) invalid('원본 Git 응답이 올바르지 않습니다.');
+  const entries = text.slice(0, -1).split('\0');
   const matches: RegExpExecArray[] = [];
   for (const entry of entries) {
+    if (!entry) invalid('원본 Git 응답이 올바르지 않습니다.');
     const match = pattern.exec(entry);
     if (!match) invalid('원본 Git 응답이 올바르지 않습니다.');
     if (match[4] === path) matches.push(match);
@@ -189,7 +195,7 @@ export async function readGitSource(input: { root: string; ref: string; manifest
   const root = resolve(input?.root ?? '');
   let rootStat: any;
   try { rootStat = lstatSync(root); } catch { invalid(); }
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || root.split(sep).at(-1)?.startsWith('.')) invalid();
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) invalid();
   const manifest = validateSourceManifest(input?.manifest);
   const idLength = objectIdLength(root);
   const commit = resolveCommit(root, input.ref, idLength);

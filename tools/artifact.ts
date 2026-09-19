@@ -180,12 +180,15 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     }
   } catch (error) {
     failure = error;
-    // 정리는 우리가 만든 inode를 나타내는 이름만 지운다 — 이름이 다른 객체로
-    // 대체됐으면 경합자의 파일을 지우지 않고 그대로 둔다. 정리 실패는 원 오류를
-    // 가리지 않는다.
+    // 정리는 우리가 만든 inode를 나타내는 이름만 지운다 — 임시 이름은 rename 후 비어
+    // 있을 수 있고 대상 이름은 우리 inode로 게시됐다가 대체됐을 수 있다. 이름이 다른
+    // 객체로 대체됐으면 경합자의 파일을 지우지 않고 그대로 둔다. 정리 실패는 원
+    // 오류를 가리지 않는다.
     try {
-      const leftover = lstatSync(tmp, { throwIfNoEntry: false });
-      if (leftover && tmpStat && leftover.dev === tmpStat.dev && leftover.ino === tmpStat.ino) rmSync(tmp, { force: true });
+      for (const name of [tmp, fileName]) {
+        const leftover = lstatSync(name, { throwIfNoEntry: false });
+        if (leftover && tmpStat && leftover.isFile() && leftover.dev === tmpStat.dev && leftover.ino === tmpStat.ino) rmSync(name, { force: true });
+      }
     } catch { /* 복귀와 원 오류를 우선한다 */ }
   }
   // 원래 inode로 복귀했는지 확인한다 — 대체된 디렉터리로의 복귀나 조용한 실패를 표면화한다.

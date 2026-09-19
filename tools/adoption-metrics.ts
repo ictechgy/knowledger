@@ -93,7 +93,8 @@ if (isMain()) {
         for (let n = 1; n > 0; total += n) n = readSync(observationsFd, buffer, total, buffer.length - total, null);
         if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
         observationsBytes = buffer.subarray(0, total);
-        observations = JSON.parse(observationsBytes.toString('utf8'));
+        // 치명적 디코딩 — 잘못된 UTF-8을 U+FFFD로 고쳐 읽지 않는다.
+        observations = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observationsBytes));
       } finally {
         closeSync(observationsFd);
       }
