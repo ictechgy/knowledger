@@ -363,7 +363,8 @@ export async function createApp(options: AppOptions) {
     },
     async close() {
       readiness.close();
-      if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      // keep-alive 소켓이 계속 재사용되면 close()가 유휴 대기로 멈출 수 있다 — 진행 중 요청만 끝나면 닫히도록 유휴 연결을 먼저 거둔다.
+      if (server.listening) await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); });
       try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } }
     },
   };
