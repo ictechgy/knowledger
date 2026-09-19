@@ -53,11 +53,9 @@ function identifier(value: unknown): string {
   return value;
 }
 
-/** 모델 어댑터 식별자 형식 — resolve·revalidate·클라이언트가 같은 규칙을 공유한다. */
-const MODEL_ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/;
 /** 지정된 경우에만 어댑터 식별자 형식을 검증한다 — undefined는 어댑터 미지정 요청이다. */
 function assertModelAdapterId(value: unknown): asserts value is string | undefined {
-  if (value !== undefined && (typeof value !== 'string' || !MODEL_ADAPTER_ID.test(value))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
+  if (value !== undefined && (typeof value !== 'string' || !domain.MODEL_ADAPTER_ID.test(value))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
 }
 
 /** 모델 egress 정책 훅 입력 — 어댑터 식별자, 현재 manifest 스냅샷 사본, 요청 actor 사본. */
@@ -69,7 +67,14 @@ export type ModelEgressAllows = (input: ModelEgressCheck) => boolean | Promise<b
  * resolve·revalidate 시점의 현재 전송 권한을 재확인한다. allows 미설정 시
  * 어댑터 요청은 허가 근거가 없어 거부되고, 훅 예외는 장애로 구분해 fail-closed된다.
  */
-export interface ModelEgressPolicy { policy_version?: number; allows?: ModelEgressAllows }
+export interface ModelEgressPolicy {
+  policy_version?: number;
+  allows?: ModelEgressAllows;
+  /** allows 호출 상한(ms, 기본 10000) — 초과 시 정책 불가로 fail-closed된다. */
+  timeout_ms?: number;
+  /** allows 예외·타임아웃을 받는 진단 콜백 — 판정을 바꾸지 않고 장애 가시성만 제공한다. */
+  onError?: (error: unknown) => void;
+}
 
 /** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KnowledgerService {
@@ -94,6 +99,10 @@ export class KnowledgerService {
   private readonly egressVersion: number;
   /** 어댑터별 전송 허용 훅 — 엄격한 true만 허용하고 미설정·예외는 거부·불가로 fail-closed된다. */
   private readonly egressAllows: ModelEgressAllows | undefined;
+  /** egress 훅 호출 상한(ms) — 정책 저장소 지연이 resolve/revalidate를 무기한 붙잡지 않게 한다. */
+  private readonly egressTimeoutMs: number;
+  /** egress 훅 예외·타임아웃을 받는 진단 콜백 — 판정을 바꾸지 않고 장애 가시성만 제공한다. */
+  private readonly egressOnError: ((error: unknown) => void) | undefined;
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
@@ -116,6 +125,10 @@ export class KnowledgerService {
     if (!Number.isSafeInteger(version) || version < 1) throw new TypeError('Model egress policy version must be a positive integer');
     this.egressVersion = version;
     this.egressAllows = options.modelEgress?.allows;
+    const timeoutMs = options.modelEgress?.timeout_ms ?? 10_000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('Model egress timeout must be a positive integer of milliseconds');
+    this.egressTimeoutMs = timeoutMs;
+    this.egressOnError = options.modelEgress?.onError;
   }
 
   /**
@@ -126,8 +139,19 @@ export class KnowledgerService {
    */
   private async checkEgress(actor: Actor, adapterId: string, manifest: any): Promise<'allowed' | 'denied' | 'unavailable'> {
     if (!this.egressAllows) return 'denied';
-    try { return await this.egressAllows({ adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) }) === true ? 'allowed' : 'denied'; }
-    catch { return 'unavailable'; }
+    const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) };
+    try {
+      // 훅의 응답 지연이 resolve/revalidate를 무기한 붙잡지 않게 호출 상한을 둔다.
+      const verdict = await Promise.race([
+        Promise.resolve(this.egressAllows(input)),
+        new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('model egress policy timeout')), this.egressTimeoutMs); timer.unref(); }),
+      ]);
+      return verdict === true ? 'allowed' : 'denied';
+    } catch (error) {
+      // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
+      try { this.egressOnError?.(error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
+      return 'unavailable';
+    }
   }
 
   /** checkEgress 결과를 withheld 사유 코드로 변환한다 — 정책 장애와 정책 거부를 구분한다. */
@@ -1144,7 +1168,16 @@ export class KnowledgerService {
     }
   }
 
-  async resolve(actor: Actor, input: any, internal?: { run_id?: string }) {
+  async resolve(actor: Actor, input: any) {
+    return this.resolveRun(actor, input);
+  }
+
+  /**
+   * resolve의 내부 구현 — existingRunId를 넘기면 새 run을 발급하지 않고 그 run의
+   * manifest만 갱신한다(revalidate 전용). 외부 호출자가 임의 run_id로 manifest를
+   * 만들지 못하게 public 경계에는 노출하지 않는다.
+   */
+  private async resolveRun(actor: Actor, input: any, existingRunId?: string) {
     const started = performance.now();
     await this.refresh();
     this.actor(actor); onlyFields(input, ['document_ids', 'context_id', 'scope_id', 'usage_scope', 'query', 'model_adapter_id']);
@@ -1169,7 +1202,7 @@ export class KnowledgerService {
     if (!resolved.eligible || !resolved.revision || !resolved.agreement) return { status: 'withheld', reason: resolved.reason ?? 'NO_ACTIVE_AGREEMENT', documents: [], checkpoint: at };
     const { revision, agreement } = resolved;
     domain.validateRevision(revision);
-    const runId = internal?.run_id ?? newId('run');
+    const runId = existingRunId ?? newId('run');
     const approvalDecisions = await domain.validateAgreementApprovals(async key => this.ledger.read(key, at), agreement);
     const finalConfig = this.config();
     const finalEpoch = this.ledger.read(domain.keyFor.eligibilityEpoch());
@@ -1191,7 +1224,7 @@ export class KnowledgerService {
     }
     // 발급 run에 요청 어댑터를 결속한다 — revalidate는 같은 어댑터의 현재 전송 권한을 다시 확인해야 한다.
     // 내부 재검증 호출은 원래 run의 manifest만 새로 만들 뿐 run 기록을 다시 발급하지 않는다.
-    if (!internal?.run_id) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id });
+    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id });
     return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
@@ -1204,7 +1237,7 @@ export class KnowledgerService {
     const run = this.vault.get('run', runIdStr, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
     if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
-    const result = await this.resolve(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, { run_id: runIdStr });
+    const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const old = run.manifest.provided_revisions[0];
     const fresh = result.manifest!.provided_revisions[0];
@@ -1214,7 +1247,8 @@ export class KnowledgerService {
     // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
     const freshManifest: any = result.manifest;
     for (const field of ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id']) {
-      if (run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+      // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
+      if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 거부한다 — egress 확인을 우회할 수 없다.
     if (input.model_adapter_id !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: result.checkpoint };

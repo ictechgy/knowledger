@@ -203,6 +203,9 @@ export class DomainError extends Error {
   }
 }
 
+/** Model adapter identifier contract shared by the server egress gate and the knowledge client. */
+export const MODEL_ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/u;
+
 export const KEY_PREFIXES = Object.freeze({
   config: "kcl:v1:config",
   revision: "kcl:v1:revision",

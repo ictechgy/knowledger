@@ -201,3 +201,10 @@ HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은
 run 기록 변조에 대한 심층 방어다(재시작은 boot_id 검사가 먼저 차단한다).
 `guardedGeneration`은 `adapterId`를 resolve와 두
 revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정책 게이트가 같은 어댑터를 가리킨다.
+게이트의 보호 범위는 **선언된 어댑터로의 전송**이다 — `model_adapter_id` 없이 resolve하면 어댑터
+결속 없는 manifest가 발급되며, 그 출력을 어디로 보내든 서버가 알 수 없다. 미선언 경로는 위협
+모델 밖이므로(제공된 본문의 자체 유출은 게이트가 통제할 수 없다), 모든 resolve를 어댑터 선언으로
+강제하려는 배포는 자체 게이트웨이에서 요청 수준 정책을 둬야 한다.
+현재 manifest 계약에는 어댑터 식별자가 없어 manifest만으로는 발급 대상 어댑터를 감사할 수
+없다 — 결속은 vault run 기록에만 있다. 후속 계약 버전에서 manifest에 `model_adapter_id`를
+포함해 `validateRefreshedManifest` 비교 대상에 넣는 것을 검토한다.

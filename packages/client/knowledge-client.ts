@@ -1,4 +1,4 @@
-import { digestPayload, validateRevision, canonicalize } from '../domain/index.ts';
+import { digestPayload, validateRevision, canonicalize, MODEL_ADAPTER_ID } from '../domain/index.ts';
 import { parseStrictJson } from '../fabric/canonical.ts';
 
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/u;
@@ -82,9 +82,8 @@ function isLoopback(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
-const ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/u;
 function assertAdapterId(value: unknown): string {
-  if (typeof value !== 'string' || !ADAPTER_ID.test(value)) invalid();
+  if (typeof value !== 'string' || !MODEL_ADAPTER_ID.test(value)) invalid();
   return value;
 }
 
