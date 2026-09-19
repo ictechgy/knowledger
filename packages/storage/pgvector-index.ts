@@ -128,22 +128,24 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
       // 참조는 첫 await 이후의 콜백에서만 일어나므로 할당 전 사용은 없다.
       let opening!: Promise<any>;
       opening = (async () => {
-        const pg = await this.loadPg();
-        const client = new pg.Client(this.connection);
-        // 유휴 연결 손실이 unhandled 'error'로 프로세스를 죽이지 않게 한다 —
-        // 자신의 연결만 비우고(지연 error가 새 연결을 버리지 않게) 소켓을 정리해 다음 호출이 재연결한다.
-        client.on('error', () => {
-          if (this.opening === opening) this.opening = undefined;
-          void client.end().catch(() => { /* 이미 죽은 클라이언트 — 정리 실패는 무시해도 안전하다 */ });
-        });
+        let client: any;
         try {
+          const pg = await this.loadPg();
+          client = new pg.Client(this.connection);
+          // 유휴 연결 손실이 unhandled 'error'로 프로세스를 죽이지 않게 한다 —
+          // 자신의 연결만 비우고(지연 error가 새 연결을 버리지 않게) 소켓을 정리해 다음 호출이 재연결한다.
+          client.on('error', () => {
+            if (this.opening === opening) this.opening = undefined;
+            void client.end().catch(() => { /* 이미 죽은 클라이언트 — 정리 실패는 무시해도 안전하다 */ });
+          });
           await client.connect();
           return client;
         } catch (error) {
-          // 거부된 연결 시도는 남기지 않는다 — 만든 클라이언트는 누수하지 않게
-          // 닫고 Promise는 비워 이후 호출이 재시도할 수 있어야 한다.
+          // 로더·생성·연결 어디서 실패해도 거부된 Promise는 남기지 않는다 —
+          // 고착되면 close() 전까지 모든 호출이 같은 오류를 반복한다.
+          // 만든 클라이언트는 누수하지 않게 닫고 이후 호출이 재시도하게 둔다.
           if (this.opening === opening) this.opening = undefined;
-          void client.end().catch(() => { /* 연결이 열리지 못한 정리 실패는 무시해도 안전하다 */ });
+          void client?.end?.()?.catch(() => { /* 열리지 못한 연결의 정리 실패는 무시해도 안전하다 */ });
           throw error;
         }
       })();

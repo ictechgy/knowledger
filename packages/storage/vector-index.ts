@@ -14,6 +14,12 @@ export interface VectorCandidateQuery {
   readonly limit: number;
 }
 
+/**
+ * 색인이 제안한 후보 행 — 서비스는 revision_digest와 score만 소비한다.
+ * document_id·slot 필드는 색인 측 태그일 뿐 신뢰되지 않는다 — 범위 필터는
+ * 검증된 개정본의 slot과 대조되므로 어댑터는 태그를 정확하게 채워야 하지만
+ * 소비자는 태그를 자격 근거로 쓰지 않는다.
+ */
 export interface VectorCandidate {
   readonly document_id: string;
   readonly revision_digest: string;
