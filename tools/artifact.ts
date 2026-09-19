@@ -1,4 +1,4 @@
-import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
@@ -108,17 +108,24 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     const pinned = statSync('.');
     if (pinned.dev !== expected.dev || pinned.ino !== expected.ino) throw new Error('--out directory changed during open');
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    let tmpStat: Stats;
     try {
       // 생성 모드는 umask가 비트를 지울 수 있으므로 명시적으로 되돌린다 — 0600 보장은 계약이다.
       fchmodSync(fd, 0o600);
       writeFileSync(fd, `${output}\n`);
       fsyncSync(fd);
+      // 만든 inode의 신원을 닫기 전에 확보한다 — 닫힌 뒤 이름이 다른 객체로 바뀌어도 판별한다.
+      tmpStat = fstatSync(fd);
     } finally {
       closeSync(fd);
     }
+    // 닫힌 뒤 임시 이름이 다른 객체로 대체됐을 수 있다 — 만든 inode와 같은지 확인한다.
+    const tmpCheck = lstatSync(tmp, { throwIfNoEntry: false });
+    if (!tmpCheck || !tmpCheck.isFile() || tmpCheck.dev !== tmpStat.dev || tmpCheck.ino !== tmpStat.ino || tmpCheck.nlink !== 1) {
+      throw new Error('--out temporary file was replaced');
+    }
     // 대상 파일시스템의 자식 조회가 대소문자를 접는지 임시 파일로 조사한다 — 다른 철자가
     // 같은 inode로 풀리면 접는 파일시스템이다(부모 디렉터리 조회가 아닌 실제 쓰기 위치).
-    const tmpStat = statSync(tmp);
     const tmpAlt = lstatSync(swapCase(tmp), { throwIfNoEntry: false });
     const fold = tmpAlt && tmpAlt.dev === tmpStat.dev && tmpAlt.ino === tmpStat.ino
       ? (p: string) => p.normalize('NFC').toLowerCase()
@@ -130,6 +137,9 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
       assertNotProtected(join(realpathSync('.'), fileName), dest ? `${dest.dev}:${dest.ino}` : undefined, guard.protectedPaths, fold);
     }
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
+    // 게시 직전 고정 디렉터리를 다시 확인한다 — 하나의 syscall 간격의 잔여 창만 남는다.
+    const repin = statSync('.');
+    if (repin.dev !== expected.dev || repin.ino !== expected.ino) throw new Error('--out directory changed during write');
     renameSync(tmp, fileName);
     try {
       // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다 — 같은 inode를 가리키는 '.'을 연다.
@@ -150,6 +160,8 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     const now = statSync('.');
     restored = now.dev === cwdStat.dev && now.ino === cwdStat.ino;
   } catch { /* 복귀 확인 불가 */ }
+  // 복귀 실패를 먼저 던진다 — cwd는 프로세스 전역이므로 오염된 상태로 계속 도는 것보다
+  // 원 쓰기 오류를 cause로 싣고 복귀 실패를 우선 보고한다.
+  if (!restored) throw new Error('작업 디렉터리 복귀에 실패했습니다.', { cause: failure });
   if (failure) throw failure;
-  if (!restored) throw new Error('작업 디렉터리 복귀에 실패했습니다.');
 }
