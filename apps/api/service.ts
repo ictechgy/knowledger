@@ -77,6 +77,9 @@ export class KnowledgerService {
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
+    // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
+    // 후보 집합을 고정하므로 비결정적 임베더는 페이지마다 순위가 흔들려
+    // 색인이 바뀌지 않아도 INVALID_CURSOR를 유발할 수 있다.
     if ((options.embedQuery === undefined) !== (options.embedRevision === undefined)) throw new TypeError('embedQuery and embedRevision must be configured together');
     if (options.vectorIndex && !options.embedQuery) throw new TypeError('An external vector index requires an explicit embedQuery matching the indexed embeddings');
     this.definition = definition;
@@ -915,10 +918,14 @@ export class KnowledgerService {
    * 외부 색인 모드에서는 상위 VECTOR_CANDIDATE_LIMIT개만 후보가 되고, 커서는
    * 첫 페이지의 순위 목록 해시에 묶인다 — 페이지 사이 색인이 바뀌면 조용한
    * 중복·누락 대신 INVALID_CURSOR로 처음부터 다시 받게 한다.
+   * derived-scan은 요청마다 검증 개정본을 전수 순회한다 — 개정본 수가
+   * EMBEDDING_CACHE_LIMIT를 넘는 배포는 외부 임베더 호출이 요청당 N회가 되므로
+   * 외부 색인을 설정해야 한다.
    */
   async vectorSearch(actor: Actor, input: any) {
     onlyFields(input, ['query', 'document_ids', 'context_id', 'scope_id', 'usage_scope', 'limit', 'cursor']);
-    if (typeof input.query !== 'string' || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하여야 합니다.');
+    // 공백만 있는 검색어는 영벡터 임베딩과 무의미한 전수 스캔을 만들므로 거부한다.
+    if (typeof input.query !== 'string' || input.query.trim().length < 1 || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하의 내용이어야 합니다.');
     // 빈 문자열 범위는 모드마다 다르게 해석되므로 한 번의 정규화 대신 거부한다.
     for (const field of ['context_id', 'scope_id', 'usage_scope']) if (input[field] !== undefined && (typeof input[field] !== 'string' || input[field].length < 1 || input[field].length > 100)) throw new ApiError('INVALID_INPUT', '올바른 검색 범위가 필요합니다.');
     if (input.document_ids !== undefined && (!Array.isArray(input.document_ids) || input.document_ids.length > 50 || input.document_ids.some((id: unknown) => typeof id !== 'string' || !ID.test(id)))) throw new ApiError('INVALID_INPUT', '올바른 문서 참조 목록이 필요합니다.');
@@ -1021,9 +1028,12 @@ export class KnowledgerService {
       candidates = await this.vectorIndex!.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: VECTOR_CANDIDATE_LIMIT });
     } catch (error) { throw this.indexError(error); }
     if (!Array.isArray(candidates)) throw this.indexError(new TypeError('Vector index returned a non-array result'));
-    return candidates.slice(0, VECTOR_CANDIDATE_LIMIT).filter(candidate =>
+    // 형식 파괴 행을 먼저 버린 뒤 상한을 적용한다 — 잘못된 행이 유효 후보의
+    // 예산을 잡아먹어 상한 뒤쪽의 유효 후보가 빠지는 일을 막는다.
+    return candidates.filter(candidate =>
       candidate !== null && typeof candidate === 'object' && typeof candidate.revision_digest === 'string'
-      && DIGEST.test(candidate.revision_digest) && Number.isFinite(candidate.score));
+      && DIGEST.test(candidate.revision_digest) && Number.isFinite(candidate.score))
+      .slice(0, VECTOR_CANDIDATE_LIMIT);
   }
 
   /**
