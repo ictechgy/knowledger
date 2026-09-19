@@ -27,7 +27,8 @@ async function compose(page,title,body,{revise=false}={}){
 }
 async function publish(page,title,body,options){await compose(page,title,body,options);await expect(page.locator('#document-title')).toHaveText(title);}
 async function switchActor(page,org){await page.locator('#persona-select').selectOption(JSON.stringify({org_id:org,actor_id:'maintainer'}));await expect(page.locator('#footer-actor')).toContainText(org);}
-async function approve(page){await page.getByRole('textbox',{name:'이번 결정의 근거'}).fill('Browser test human review');await page.getByRole('button',{name:'승인',exact:true}).click();await expect(page.locator('#review-inbox-count')).toHaveText('0');}
+// 주기적 개요 재렌더가 fill과 click 사이에 끼어들어 rationale이 지워지면 제출이 조용히 무시된다 — 성공할 때까지 재시도한다.
+async function approve(page){await expect(async()=>{if((await page.locator('#review-inbox-count').innerText())==='0')return;await page.getByRole('textbox',{name:'이번 결정의 근거'}).fill('Browser test human review');await page.getByRole('button',{name:'승인',exact:true}).click();await expect(page.locator('#review-inbox-count')).toHaveText('0',{timeout:2000});}).toPass({timeout:20000});}
 
 test('two-organization publication, private isolation, approvals, provided context and withdrawal',async({page,workspace})=>{
   const errors=[];page.on('pageerror',error=>errors.push(error.message));await open(page,workspace);
