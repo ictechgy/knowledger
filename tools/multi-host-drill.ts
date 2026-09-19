@@ -212,7 +212,7 @@ export async function runMultiHostDrill(rootDir: string): Promise<MultiHostDrill
     // exit code 0 with no signal is the only acceptable graceful termination.
     if (b.child.exitCode !== null || b.child.signalCode !== null) throw new Error('peer domain died with its neighbour');
     const bExit = onceExit(b.child);
-    b.child.kill('SIGTERM');
+    if (!b.child.kill('SIGTERM')) throw new Error('SIGTERM delivery to peer domain failed');
     await bExit;
     if (b.child.exitCode !== 0 || b.child.signalCode !== null) throw new Error(`peer domain did not stop gracefully (exit=${b.child.exitCode} signal=${b.child.signalCode}): ${b.stderrTail().slice(-200)}`);
     const peerState = await readRecoveredState(hostB, 'peer domain after neighbour kill');
