@@ -140,14 +140,23 @@ test('an invalid first activation record does not burn the agreement timing slot
   const proposal = { record_type: 'AgreementProposal', proposal_id: 'p-1', created_at: '2026-09-16T00:10:00Z' };
   const early = { agreement_id: 'ag-1', proposal_id: 'p-1', status: 'active', activated_at: '2026-09-16T00:05:00Z', revision_digest: 'r1' };
   const valid = { agreement_id: 'ag-1', proposal_id: 'p-1', status: 'active', activated_at: '2026-09-16T00:20:00Z', revision_digest: 'r1' };
+  // activated_at이 없는 첫 기록도 지어낸 0초 표본으로 슬롯을 소모하지 않는다.
+  const missing = { agreement_id: 'ag-2', proposal_id: 'p-1', status: 'active', revision_digest: 'r1' };
+  const valid2 = { agreement_id: 'ag-2', proposal_id: 'p-1', status: 'active', activated_at: '2026-09-16T00:30:00Z', revision_digest: 'r1' };
+  // 읽은 범위에 제안이 없는 활성화는 표본을 만들지 않는다.
+  const orphan = { agreement_id: 'ag-3', proposal_id: 'p-9', status: 'active', activated_at: '2026-09-16T00:40:00Z', revision_digest: 'r1' };
   const events: any[] = [
     { timestamp: '2026-09-16T00:10:00Z', writes: [['kcl:v1:proposal:p-1', proposal]] },
     { timestamp: '2026-09-16T00:05:00Z', writes: [['kcl:v1:agreement:ag-1', early]] },
     { timestamp: '2026-09-16T00:20:00Z', writes: [['kcl:v1:agreement:ag-1', valid]] },
+    { timestamp: '2026-09-16T00:25:00Z', writes: [['kcl:v1:agreement:ag-2', missing]] },
+    { timestamp: '2026-09-16T00:30:00Z', writes: [['kcl:v1:agreement:ag-2', valid2]] },
+    { timestamp: '2026-09-16T00:40:00Z', writes: [['kcl:v1:agreement:ag-3', orphan]] },
   ];
   const measurement = measureAdoption({ events, log });
-  assert.equal(measurement.derived.time_to_agreement.count, 1);
+  assert.equal(measurement.derived.time_to_agreement.count, 2);
   assert.equal(measurement.derived.time_to_agreement.samples[0].seconds, 600);
+  assert.equal(measurement.derived.time_to_agreement.samples[1].seconds, 1200);
 });
 
 test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {

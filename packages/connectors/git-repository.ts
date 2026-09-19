@@ -64,21 +64,23 @@ function objectIdLength(root: string): number {
 }
 
 /**
- * 후보와 바이트 단위로 정확히 일치하는 ref의 대상 오브젝트 ID를 한 번의 열거로
- * 스냅샷한다. rev-parse 검증은 대소문자 비구분 파일시스템에서 다른 철자의 느슨한
- * ref를 집을 수 있고 커밋이 아닌 대상의 태그는 실패로 떨어지므로, 존재 여부는 열거
- * 결과와의 정확한 비교로 판정한다. 단일 프로세스 스냅샷이므로 후보별 개별 조회처럼
- * 서로 다른 시점의 상태가 섞이지 않는다. 이어서 오브젝트 ID로 해석하면 이름 철자의
- * 재조회가 일어나지 않아 다른 철자의 느슨한 ref 덮어쓰기에도 흔들리지 않는다.
+ * 후보와 바이트 단위로 정확히 일치하는 ref의 대상 오브젝트 ID를 스냅샷한다.
+ * for-each-ref의 패턴은 슬래시 경계 접두 매칭이므로 후손 ref까지 나열한다 — 후보별
+ * --count=1 조회로 출력을 한 줄로 묶어 후손 ref가 아무리 많아도 고정 버퍼를 넘기지
+ * 않게 하고, 반환된 이름이 후보와 정확히 같을 때만 받아 후손을 존재로 오인하지 않는다.
+ * rev-parse 검증은 대소문자 비구분 파일시스템에서 다른 철자의 느슨한 ref를 집을 수
+ * 있고 커밋이 아닌 대상의 태그는 실패로 떨어지므로, 존재 여부는 열거 결과와의
+ * 정확한 비교로 판정한다. 이어서 오브젝트 ID로 해석하면 이름 철자의 재조회가
+ * 일어나지 않아 다른 철자의 느슨한 ref 덮어쓰기에도 흔들리지 않는다.
  */
 function refSnapshot(root: string, candidates: string[]): Map<string, string> {
   const objects = new Map<string, string>();
-  const output = git(root, ['for-each-ref', '--format=%(refname) %(objectname)', ...candidates], 16 * 1024 * 1024).toString('utf8');
-  for (const line of output.split('\n')) {
+  for (const candidate of candidates) {
+    const line = git(root, ['for-each-ref', '--format=%(refname) %(objectname)', '--count=1', candidate], 64 * 1024).toString('utf8').trim();
     const splitAt = line.lastIndexOf(' ');
     if (splitAt < 0) continue;
     const [name, object] = [line.slice(0, splitAt), line.slice(splitAt + 1)];
-    if (candidates.includes(name) && COMMIT_PATTERN.test(object)) objects.set(name, object);
+    if (name === candidate && COMMIT_PATTERN.test(object)) objects.set(name, object);
   }
   return objects;
 }
