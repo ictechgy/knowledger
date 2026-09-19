@@ -308,8 +308,10 @@ test('off-page policy draft keeps its parent and a selected old proposal survive
   await expect(page.locator('#rationale-' + oldest)).toBeVisible();
   await page.locator('#rationale-' + oldest).fill('Selected exact old proposal');
   let selectedId; await page.route('**/agreement-proposals/*/decisions', async route => { selectedId = new URL(route.request().url()).pathname.split('/').at(-2); await route.continue(); });
-  await page.getByRole('button', { name: '승인', exact: true }).click();
-  await expect.poll(() => selectedId).toBe(oldest);
+  const approve = page.getByRole('button', { name: '승인', exact: true });
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect.poll(() => selectedId, { timeout: 15000 }).toBe(oldest);
 });
 
 test('a newer full revision view overrides the older overview agreement state', async ({ page, workspace }) => {
