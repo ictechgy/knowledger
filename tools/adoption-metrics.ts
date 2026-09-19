@@ -75,7 +75,7 @@ if (isMain()) {
       if (!values.has('--observations') || (!values.has('--data') && !values.has('--ledger')) || (values.has('--data') && values.has('--ledger'))) throw new Error('invalid option');
       const ledgerPath = resolve(values.get('--ledger') ?? join(values.get('--data')!, 'shared-ledger.sqlite'));
       // 오타 경로가 새 빈 저널을 만들어 조용히 0건 측정을 내지 못하게 기존 정규 파일만 연다.
-      const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false });
+      const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false, bigint: true });
       if (!ledgerStat?.isFile() || ledgerStat.isSymbolicLink()) throw new Error('invalid option');
       const observationsPath = resolve(values.get('--observations')!);
       // 관찰 입력은 디스크립터로 열어 정규 파일·크기를 검증한다 — FIFO는 열기가 막히고
@@ -108,7 +108,7 @@ if (isMain()) {
       // 옮겨져 대상 위치에 놓여도 확정된 inode로 비교한다. 존재하는 sidecar가 비정규
       // 파일이면 SQLite의 경로 해석을 신뢰할 수 없어 거부한다.
       const pin = (p: string) => {
-        const stat = lstatSync(p, { throwIfNoEntry: false });
+        const stat = lstatSync(p, { throwIfNoEntry: false, bigint: true });
         if (stat && !stat.isFile()) throw new Error('invalid option');
         return { path: p, inode: stat ? `${stat.dev}:${stat.ino}` : undefined };
       };
@@ -125,7 +125,7 @@ if (isMain()) {
       // 새로 생긴 sidecar는 출력 검증 시점의 재조회가 보호 비교에 쓴다.
       for (const input of inputs) {
         if (input.inode === undefined) continue;
-        const post = lstatSync(input.path, { throwIfNoEntry: false });
+        const post = lstatSync(input.path, { throwIfNoEntry: false, bigint: true });
         if (!post || `${post.dev}:${post.ino}` !== input.inode) throw new Error('invalid option');
       }
       const output = JSON.stringify(result, null, 2);
