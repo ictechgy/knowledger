@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
 
-import { assertOptionalCloseBound, closeHttpServer, DEFAULT_CLOSE_DEADLINE_MS } from '../http/graceful-close.ts';
+import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../http/graceful-close.ts';
 
 const MAX_FORM_BYTES = 16 * 1024;
 const CSRF_COOKIE = 'knowledger_development_interaction_csrf';

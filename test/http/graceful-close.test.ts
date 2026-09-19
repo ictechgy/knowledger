@@ -188,12 +188,12 @@ test('closeHttpServer treats a close callback inside the abandon window as a lat
     closeCallback?.(new Error('late cb boom'));
     // 창 안에 도착한 close 오류는 마감 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
     await assert.rejects(() => closePromise, /late cb boom/);
-    // 지연된 settle이 isSettled를 재검사하므로 강제 해제 진단은 중복되지 않고 오류는 늦은 도착으로도 남는다.
+    // 늦은 도착은 도착 시점에 진단되고 강제 해제 진단은 한 번만 찍힌다 — 순서는 settle 경주와 무관하게 둘 다 남는다.
     await sleep(150);
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 2, 'the forced release and the late close error each report once');
     assert.equal(messages.filter(m => /강제 해제/.test(m)).length, 1, 'the forced diagnostic is not duplicated');
-    assert.match(messages[1], /late cb boom/, 'the late close error is reported instead of swallowed');
+    assert.ok(messages.some(m => /late cb boom/.test(m)), 'the late close error is reported instead of swallowed');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
@@ -218,7 +218,7 @@ test('closeHttpServer reports a successful close callback that arrives after aba
     // 오류 없는 늦은 도착도 진단으로 남아 소켓 추적 유실과 단순 지연을 구분할 수 있다.
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 3, 'forced release, abandon, and the late callback each report once');
-    assert.match(messages[2], /늦게 도착/, 'a successful late callback is still diagnosed');
+    assert.ok(messages.some(m => /늦게 도착/.test(m)), 'a successful late callback is still diagnosed');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);

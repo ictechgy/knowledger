@@ -75,3 +75,27 @@ test('app.close still tears down HTTP and stores when readiness teardown fails',
     await new Promise<void>(resolve => { app.server.close(() => resolve()); });
   }
 });
+
+test('app.close forwards shutdownDeadlineMs and labels diagnostics as api', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-label-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const app = await createDemoApp({ dataDir: directory, shutdownDeadlineMs: 60, seed: false });
+  await app.listen(0);
+  const originalClose = app.server.close.bind(app.server);
+  let closeCallback: ((error?: Error) => void) | undefined;
+  try {
+    // close 콜백을 가로채 abandon 경로를 탄다 — 60ms 마감의 강제 해제와 'api' 레이블이 진단에 도달해야 한다.
+    app.server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return app.server; }) as Server['close'];
+    const started = Date.now();
+    await app.close();
+    // 마감 60 + 기본 정착 250 + 진단 예산 100 — 기본값(5000)이 전달되지 않았다면 이 상한 안에 끝날 수 없다.
+    assert.ok(Date.now() - started < 2_000, 'the 60ms deadline must reach closeHttpServer');
+    const messages = diagnostic.mock.calls.map(call => String(call.arguments[0])).filter(m => /HTTP 종료/.test(m));
+    assert.ok(messages.some(m => /\[api\]/.test(m) && /강제 해제/.test(m)), 'the api label reaches the forced-release diagnostic');
+    assert.ok(messages.some(m => /\[api\]/.test(m) && /마감까지/.test(m)), 'the api label reaches the abandon diagnostic');
+  } finally {
+    app.server.close = originalClose;
+    await new Promise<void>(resolve => { app.server.close(() => resolve()); });
+  }
+});

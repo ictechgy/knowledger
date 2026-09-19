@@ -19,7 +19,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
-import { assertOptionalCloseBound, closeHttpServer, DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
+import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -368,11 +368,23 @@ export async function createApp(options: AppOptions) {
     },
     async close() {
       // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
-      // readiness 해제를 중첩 finally로 감싼다 — 그 실패도 HTTP 종료를 건너뛰게 하지 않고, HTTP 종료 실패도 저장소 해제를 건너뛰게 하지 않는다.
-      try {
-        try { readiness.close(); } finally { await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
-      }
-      finally { try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } } }
+      // 각 단계를 독립 실행해 한 단계의 실패가 다음 단계를 건너뛰게 하지 않고, 오류를 모아 한꺼번에 보고한다 — 중첩 finally의 오류 덮어쓰기를 없앤다.
+      const errors: unknown[] = [];
+      const attempt = async (step: () => unknown) => {
+        try {
+          await step();
+        } catch (error) {
+          errors.push(error);
+        }
+      };
+      await attempt(() => readiness.close());
+      await attempt(() => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
+      await attempt(() => options.vectorIndex?.close?.());
+      await attempt(() => ledger.close());
+      await attempt(() => vault.close());
+      await attempt(() => authentication?.close());
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, `app.close failed in ${errors.length} teardown stages`);
     },
   };
 }

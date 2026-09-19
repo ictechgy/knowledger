@@ -63,6 +63,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
   return new Promise<CloseWaitResult>((resolve, reject) => {
     let isSettled = false;
     let isForced = false;
+    let hasAbandoned = false;
     let connections = UNKNOWN_CONNECTION_COUNT;
     let pendingCount: Promise<void> | undefined;
     let closeError: Error | null = null;
@@ -102,16 +103,17 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     forceTimer = setTimeout(() => { try { release(); } catch (error) { finish(() => reject(error)); } }, deadlineMs);
     // forceTimer가 어떤 이유로든 못 돈 최악(타이머 순서 역전)에도 강제 해제는 시도한 뒤 마감한다 — 폴백 해제는 개수 포착을 기다려 UNKNOWN 남발을 피한다.
     abandonTimer = setTimeout(() => {
+      // 마감 발화를 먼저 기록한다 — 이후 도착하는 close 콜백은 settle 경주 없이 '늦은 도착'으로 확정된다.
+      hasAbandoned = true;
       try {
         // 해제가 마감에 일어났든 지금 폴백으로 일어나든 포착이 진행 중이다 — 포착 대기와 잔여 조회가 하나의
         // 진단 예산(REMAINING_LOOKUP_MS)을 나눠 두 대기가 직렬로 쌓여 총 상한을 넘기는 일이 없게 한다.
+        // 단조 시계를 쓴다 — 벽시계가 뒤로 가도 예산 상한이 깨지지 않는다.
         const counting = pendingCount ?? release();
-        // 이 창에 도착한 close 콜백은 절대 마감을 넘긴 '늦은' 도착이다 — 포착 대기가 끝나면 이 finish가 먼저
-        // settle해 'abandoned'로 결정하고, 늦게 도착한 콜백은 isSettled 분기가 늦은 도착으로 다룬다.
-        const budgetEnd = Date.now() + REMAINING_LOOKUP_MS;
-        void boundedWait(counting, Math.max(0, budgetEnd - Date.now()))
+        const budgetEnd = performance.now() + REMAINING_LOOKUP_MS;
+        void boundedWait(counting, Math.max(0, budgetEnd - performance.now()))
           // 다른 경로가 먼저 settle했으면 닫힌 서버에 잔여 조회를 다시 걸지 않는다.
-          .then(() => isSettled ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - Date.now())))
+          .then(() => isSettled ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
           .then(
             remaining => finish(() => {
               // 마감 창 안에 도착한 close 오류는 '마감' 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
@@ -132,7 +134,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
       server.close(error => {
         // 콜백 도착 자체는 settle 순서와 무관하게 기록한다 — abandon settle이 창 안 도착한 close 오류를 우선 거절한다.
         closeError = error ?? null;
-        if (isSettled) {
+        // 마감이 이미 발화했다면 settle 경주를 걸지 않는다 — 늦은 도착으로 확정해 순서를 결정론적으로 만든다.
+        if (isSettled || hasAbandoned) {
           reportLateClose(error);
           return;
         }
