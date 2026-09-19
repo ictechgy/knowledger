@@ -19,6 +19,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
+import { closeHttpServer } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -363,12 +364,8 @@ export async function createApp(options: AppOptions) {
     },
     async close() {
       readiness.close();
-      // keep-alive 소켓이 계속 재사용되거나 진행 중 요청이 끝나지 않으면 close()가 멈출 수 있다 — 유휴 연결은 즉시 거두고, 잔여 연결은 마감 후 강제 해제한다.
-      if (server.listening) await new Promise<void>((resolve, reject) => {
-        const forceTimer = setTimeout(() => server.closeAllConnections(), 5_000);
-        server.close(error => { clearTimeout(forceTimer); error ? reject(error) : resolve(); });
-        server.closeIdleConnections();
-      });
+      // keep-alive 소켓 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 둔다.
+      await closeHttpServer(server);
       try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } }
     },
   };

@@ -121,6 +121,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record marks the log torn so later signing fails closed until the file is
   repaired.
 
+### Fixed
+
+- HTTP shutdown now sweeps idle keep-alive connections immediately, still
+  waits for in-flight requests to finish, and force-releases any remaining
+  sockets after a five-second deadline — reported on stderr when forced — so
+  a stuck request or a polling client can no longer hang `server.close()`.
+  The API server and the development OIDC issuer share the same
+  `closeHttpServer` implementation (`packages/http`).
+
 ## [0.2.0] — 2026-09-18
 
 ### Added

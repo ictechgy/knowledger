@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { closeHttpServer } from '../http/graceful-close.ts';
 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
@@ -426,12 +427,8 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
     async close() {
       provider.removeAllListeners();
       csrfByInteraction.clear();
-      // keep-alive 소켓이 재사용되거나 진행 중 요청이 끝나지 않으면 close()가 멈춘다 — 유휴 연결은 즉시 거두고 잔여 연결은 마감 후 강제 해제한다.
-      await new Promise<void>((resolve, reject) => {
-        const forceTimer = setTimeout(() => server.closeAllConnections(), 5_000);
-        server.close((error) => { clearTimeout(forceTimer); error ? reject(error) : resolve(); });
-        server.closeIdleConnections();
-      });
+      // keep-alive 소켓 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 둔다.
+      await closeHttpServer(server);
     },
     setAccountEnabled(subject, enabled) {
       const account = accountFor(accounts, subject);
