@@ -64,7 +64,7 @@ export interface ModelEgressCheck { adapter_id: string; manifest: Record<string,
 export type ModelEgressAllows = (input: ModelEgressCheck) => boolean | Promise<boolean>;
 /** egress 정책 훅 호출 상한 초과 오류 — onError 소비자가 정책 예외와 타임아웃을 구분할 수 있다. */
 export class ModelEgressTimeoutError extends Error {
-  constructor() { super('model egress policy timeout'); this.name = 'ModelEgressTimeoutError'; }
+  constructor(cause?: unknown) { super('model egress policy timeout', cause === undefined ? undefined : { cause }); this.name = 'ModelEgressTimeoutError'; }
 }
 /**
  * modelEgress 옵션 — policy_version은 manifest에 결속되고(기본 1), allows가
@@ -78,6 +78,8 @@ export interface ModelEgressPolicy {
   timeout_ms?: number;
   /** allows 예외·타임아웃을 받는 진단 콜백 — 판정을 바꾸지 않고 장애 가시성만 제공한다. */
   onError?: (error: unknown) => void;
+  /** true면 어댑터 미지정 resolve를 EGRESS_ADAPTER_REQUIRED로 거부한다 — 선언 강제 배포용 옵션(기본 false). */
+  require_adapter?: boolean;
 }
 
 /** API orchestration over verified application-ledger reads and actor-private storage. */
@@ -107,6 +109,10 @@ export class KnowledgerService {
   private readonly egressTimeoutMs: number;
   /** egress 훅 예외·타임아웃을 받는 진단 콜백 — 미설정 시 표준 오류 출력으로 대체되고 판정을 바꾸지 않는다. */
   private readonly egressOnError: (error: unknown) => void;
+  /** 어댑터 미지정 resolve 거부 여부 — 선언 강제 배포용 옵션(기본 false). */
+  private readonly egressRequireAdapter: boolean;
+  /** run 기록 무결성 도장의 boot 비밀키 — 재시작 시 boot_id 검사가 기록을 폐기하므로 지속 보관이 필요 없다. */
+  private readonly runIntegrityKey = randomBytes(32);
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
@@ -138,6 +144,7 @@ export class KnowledgerService {
     if (onError !== undefined && typeof onError !== 'function') throw new TypeError('Model egress onError must be a function');
     // onError 미설정 배포도 정책 장애를 인지할 수 있게 기본 진단은 표준 오류로 남긴다 — 명시적 onError는 이를 대체한다.
     this.egressOnError = onError ?? ((error: unknown) => { console.error('model egress policy check failed:', error); });
+    this.egressRequireAdapter = options.modelEgress?.require_adapter === true;
   }
 
   /**
@@ -148,22 +155,33 @@ export class KnowledgerService {
    */
   private async checkEgress(actor: Actor, adapterId: string, manifest: Record<string, unknown>): Promise<'allowed' | 'denied' | 'unavailable'> {
     if (!this.egressAllows) return 'denied';
-    const signal = AbortSignal.timeout(this.egressTimeoutMs);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.egressTimeoutMs);
+    timer.unref();
     try {
       // 사본 생성 실패(비직렬화 값)도 훅 예외와 같이 정책 불가로 fail-closed한다.
-      const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor), signal };
+      const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor), signal: controller.signal };
       // 훅은 분리 호출해 this로 서비스 인스턴스가 새지 않게 하고, 호출 상한 신호로 정책 쪽 외부 작업도 중단할 수 있게 한다.
       const allows = this.egressAllows;
       const verdict = await Promise.race([
         Promise.resolve(allows.call(undefined, input)),
-        new Promise<never>((_, reject) => { signal.addEventListener('abort', () => reject(new ModelEgressTimeoutError()), { once: true }); }),
+        new Promise<never>((_, reject) => { controller.signal.addEventListener('abort', () => reject(new ModelEgressTimeoutError()), { once: true }); }),
       ]);
       return verdict === true ? 'allowed' : 'denied';
     } catch (error) {
+      // 상한 신호가 울린 뒤 신호를 존중한 훅의 AbortError가 경주를 이겨도 진단에는 타임아웃으로 보고한다.
+      const reported = controller.signal.aborted && !(error instanceof ModelEgressTimeoutError) ? new ModelEgressTimeoutError(error) : error;
       // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
-      try { this.egressOnError.call(undefined, error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
+      try { this.egressOnError.call(undefined, reported); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
       return 'unavailable';
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  /** run 기록 중 원장 닻이 없는 필드(run_id·slot·어댑터 결속)의 per-boot 무결성 도장 — boot 비밀키라 재시작 기록은 자연 폐기된다. */
+  private runIntegrity(runId: string, slot: unknown, adapterId: string | null): string {
+    return createHmac('sha256', this.runIntegrityKey).update(domain.canonicalize({ run_id: runId, slot, model_adapter_id: adapterId })).digest('hex');
   }
 
   /** checkEgress 결과를 withheld 사유 코드로 변환한다 — 정책 장애와 정책 거부를 구분한다. */
@@ -1235,11 +1253,15 @@ export class KnowledgerService {
     if (input.model_adapter_id !== undefined) {
       const egress = await this.checkEgress(actor, input.model_adapter_id, manifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), documents: [], checkpoint: at };
+    } else if (this.egressRequireAdapter && !existingRunId) {
+      // 선언 강제 배포 — 미지정 resolve는 허가 근거가 없어 거부한다. 내부 재검증 호출은 결속 어댑터를 바깥 revalidate가 확인한다.
+      return { status: 'withheld', reason: 'EGRESS_ADAPTER_REQUIRED', documents: [], checkpoint: at };
     }
     // 발급 run에 요청 어댑터를 결속한다 — revalidate는 같은 어댑터의 현재 전송 권한을 다시 확인해야 한다.
     // 미지정은 null 센티널로 저장한다 — 키가 아예 없는 기록은 변조와 구분할 수 없기 때문이다(JSON은 undefined 키를 버린다).
+    // integrity는 slot·어댑터처럼 원장 닻이 없는 결속 필드를 per-boot 도장으로 묶는다.
     // 내부 재검증 호출은 원래 run의 manifest만 새로 만들 뿐 run 기록을 다시 발급하지 않는다.
-    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id ?? null });
+    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id ?? null, integrity: this.runIntegrity(runId, slot, input.model_adapter_id ?? null) });
     return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
@@ -1254,10 +1276,17 @@ export class KnowledgerService {
     if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
     // 발급 시점부터 어댑터 키는 항상 존재한다(null 센티널) — 키 부재는 기록 변조다.
     if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+    // 재해석에 필요한 slot 필드가 깨진 기록은 변조다 — 형태 확인이 도장 계산(canonicalize)보다 먼저여야 비-JSON 값이 예외로 새지 않는다.
+    if (!run.slot || typeof run.slot !== 'object' || typeof run.slot.document_id !== 'string' || typeof run.slot.context_id !== 'string' || typeof run.slot.scope_id !== 'string' || typeof run.slot.usage_scope !== 'string') {
+      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+    }
+    // slot·어댑터 결속은 원장 닻이 없어 per-boot 도장으로 검증한다 — 어댑터를 null로 지운 기록도 무결성 불일치로 잡힌다.
+    const expectedIntegrity = this.runIntegrity(runIdStr, run.slot, run.model_adapter_id);
+    if (typeof run.integrity !== 'string' || run.integrity.length !== expectedIntegrity.length || !timingSafeEqual(Buffer.from(run.integrity), Buffer.from(expectedIntegrity))) {
+      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+    }
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
     if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
-    // 재해석에 필요한 slot 형태가 깨진 기록은 변조다 — 필드 접근 전에 형태를 확인해 500 대신 fail-closed withheld로 돌린다.
-    if (!run.slot || typeof run.slot !== 'object') return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     return this.verifyRunBinding(actor, runIdStr, run, result);

@@ -67,10 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EGRESS_ADAPTER_MISMATCH` and distinguishing a throwing or timed-out policy
   hook as `EGRESS_POLICY_UNAVAILABLE` (`timeout_ms`, reported through the
   `onError` diagnostic). The policy, membership-epoch, egress-version and
-  retrieval-profile bindings are compared server-side instead of relying on
-  client validation alone. `guardedGeneration` now forwards its `adapterId`
-  through `resolve` and both `revalidate` calls so the server policy gate
-  covers generate and release. Deployment notes: callers that pass
+  retrieval-profile bindings plus approval decisions are compared server-side
+  instead of relying on client validation alone, and the adapter/slot binding
+  is sealed with a per-boot HMAC integrity stamp so vault tampering that
+  rewrites or deletes the bound adapter is detected as `KNOWLEDGE_CHANGED`.
+  `modelEgress.require_adapter` opts a deployment into rejecting adapter-less
+  resolves with `EGRESS_ADAPTER_REQUIRED`. `guardedGeneration` now forwards
+  its `adapterId` through `resolve` and both `revalidate` calls so the server
+  policy gate covers generate and release. Deployment notes: callers that pass
   `model_adapter_id` without a configured `allows` hook now fail closed
   (`EGRESS_POLICY_DENIED`) — configure `modelEgress.allows` where adapter
   egress is intended; revalidation refreshes the same run instead of minting

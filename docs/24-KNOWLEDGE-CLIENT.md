@@ -49,7 +49,7 @@ ACK, chaincode event, HTTP 200만으로 제공 상태를 만들지 않는다. �
 
 `revalidate(runId)`는 서버에 현재 상태를 요청하고 반환된 strict manifest 구조를 확인한다 — 같은 run의 manifest가 새 manifest ID·checkpoint로 갱신된다. `guardedGeneration`은 `validateRefreshedManifest`로 이전 manifest와 비교한다. policy, revision digest, agreement, approval decisions, membership·egress binding은 바뀌면 실패한다. 결과가 `withheld`이면 caller는 기존 output을 계속 사용해서는 안 된다.
 
-`resolve`와 `revalidate`는 `modelAdapterId` 옵션으로 모델 어댑터 식별자를 서버에 전달할 수 있다. 서버는 `createApp`/`KnowledgerService`의 `modelEgress` 옵션에 설정된 정책으로 현재 전송 권한을 확인한다 — `policy_version`은 manifest의 `model_egress_policy_version`에 실린다. `allows`가 `false`나 true가 아닌 값을 반환하거나 훅 미설정이면 `EGRESS_POLICY_DENIED`, 훅 예외·타임아웃이면 `EGRESS_POLICY_UNAVAILABLE`로 withheld하고, run에 결속된 어댑터와 다른 어댑터·미지정 재검증은 `EGRESS_ADAPTER_MISMATCH`로 거부된다. `guardedGeneration`은 `adapterId`를 두 호출에 자동으로 실어 generation·release 직전에 서버 측 egress 정책도 재확인한다. 검색 권한이 외부 모델 전송 권한을 함축하지 않는다.
+`resolve`와 `revalidate`는 `modelAdapterId` 옵션으로 모델 어댑터 식별자를 서버에 전달할 수 있다. 서버는 `createApp`/`KnowledgerService`의 `modelEgress` 옵션에 설정된 정책으로 현재 전송 권한을 확인한다 — `policy_version`은 manifest의 `model_egress_policy_version`에 실린다. `allows`가 `false`나 true가 아닌 값을 반환하거나 훅 미설정이면 `EGRESS_POLICY_DENIED`, 훅 예외·타임아웃이면 `EGRESS_POLICY_UNAVAILABLE`로 withheld하고, run에 결속된 어댑터와 다른 어댑터·미지정 재검증은 `EGRESS_ADAPTER_MISMATCH`로 거부된다. `modelEgress.require_adapter`가 켜진 배포는 어댑터 미지정 resolve를 `EGRESS_ADAPTER_REQUIRED`로 거부한다. `guardedGeneration`은 `adapterId`를 두 호출에 자동으로 실어 generation·release 직전에 서버 측 egress 정책도 재확인한다. 검색 권한이 외부 모델 전송 권한을 함축하지 않는다.
 
 ## Guarded generation
 

@@ -356,3 +356,52 @@ test('malformed stored run shapes are withheld as tampering instead of throwing'
     assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
   }
 });
+
+test('rewriting a bound adapter to the null sentinel is detected by the integrity seal', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  tamperStoredRun(f.vault, runId, run => { run.model_adapter_id = null; });
+  const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('a forged or missing integrity seal is detected at revalidation', async t => {
+  for (const mutate of [
+    (run: any) => { run.integrity = 'x'.repeat(64); },
+    (run: any) => { delete run.integrity; },
+    (run: any) => { run.slot.document_id = 'doc-forged'; },
+  ]) {
+    const f = await fixture(t, { allows: () => true });
+    const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+    assert.equal(resolved.status, 'provided');
+    const runId = resolved.manifest.run_id;
+    tamperStoredRun(f.vault, runId, mutate);
+    const result = await f.service.revalidate(actor, runId, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+    assert.equal(result.status, 'withheld');
+    assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+  }
+});
+
+test('a signal-honoring hook still reports the timeout as a timeout to diagnostics', async t => {
+  const errors: unknown[] = [];
+  const f = await fixture(t, { timeout_ms: 5, allows: ({ signal }: any) => new Promise((_, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted by gate')), { once: true }); }), onError: (error: unknown) => errors.push(error) });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0] instanceof ModelEgressTimeoutError);
+});
+
+test('require_adapter deployments reject adapter-less resolves but accept declared ones', async t => {
+  const f = await fixture(t, { require_adapter: true, allows: () => true });
+  const missing = await f.service.resolve(actor, selection);
+  assert.equal(missing.status, 'withheld');
+  assert.equal(missing.reason, 'EGRESS_ADAPTER_REQUIRED');
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'valid');
+});

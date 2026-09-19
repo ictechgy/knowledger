@@ -127,7 +127,7 @@ test('client validates the real demo resolve and revalidate manifest lifecycle w
   assert.equal(denied.reason, 'EGRESS_POLICY_DENIED');
   const bound = await client.resolve(selection, { allowDevelopment: true, modelAdapterId: 'demo-adapter' });
   assert.equal(bound.status, 'provided');
-  if (bound.status !== 'provided') return;
+  if (bound.status !== 'provided') assert.fail('bound resolve was withheld — modelEgress wiring missing');
   const mismatch = await client.revalidate(bound.manifest.run_id);
   assert.equal(mismatch.status, 'withheld');
   assert.equal(mismatch.reason, 'EGRESS_ADAPTER_MISMATCH');
