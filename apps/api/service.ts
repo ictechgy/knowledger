@@ -27,7 +27,7 @@ const stableId = (prefix: string, actor: Actor, commandId: string) => `${prefix}
 const sameSlot = (a: any, b: any) => ['channel_id', 'document_id', 'context_id', 'scope_id', 'usage_scope'].every(field => a[field] === b[field]);
 const slotKey = (payload: any) => JSON.stringify(slotFields(payload));
 interface PageInput { limit?: number; cursor?: string }
-interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string; set?: string }
+interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string; candidateSetHash?: string }
 interface OverviewInput extends PageInput { proposal_limit?: number; proposal_cursor?: string }
 interface BrowseRequestContext {
   checkpoint: Checkpoint;
@@ -259,7 +259,7 @@ export class KnowledgerService {
     const binding = createHash('sha256').update(domain.canonicalize([actor.org_id, actor.actor_id, actor.kind, kind, filter])).digest('hex');
     let checkpoint = at ?? this.ledger.checkpoint()!;
     let offset = 0;
-    let set: string | undefined;
+    let candidateSetHash: string | undefined;
     if (input.cursor !== undefined) {
       try {
         if (typeof input.cursor !== 'string' || input.cursor.length > 2048 || !/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(input.cursor)) throw new Error('format');
@@ -268,19 +268,19 @@ export class KnowledgerService {
         if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) throw new Error('signature');
         const cursor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
         if (cursor.version !== 1 || cursor.binding !== binding || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new Error('binding');
-        if (cursor.set !== undefined && typeof cursor.set !== 'string') throw new Error('binding');
+        if (cursor.candidateSetHash !== undefined && typeof cursor.candidateSetHash !== 'string') throw new Error('binding');
         this.ledger.assertCheckpoint(cursor.checkpoint);
         if (at && domain.canonicalize(cursor.checkpoint) !== domain.canonicalize(at)) throw new Error('snapshot');
-        checkpoint = cursor.checkpoint; offset = cursor.offset; set = cursor.set;
+        checkpoint = cursor.checkpoint; offset = cursor.offset; candidateSetHash = cursor.candidateSetHash;
       } catch { throw new ApiError('INVALID_CURSOR', '목록 조건이나 계정이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.'); }
     }
-    return { limit, offset, checkpoint, binding, set };
+    return { limit, offset, checkpoint, binding, candidateSetHash };
   }
 
-  private nextCursor(page: PageContext, total: number, set?: string): string | null {
+  private nextCursor(page: PageContext, total: number, candidateSetHash?: string): string | null {
     const offset = page.offset + page.limit;
     if (offset >= total) return null;
-    const encoded = Buffer.from(JSON.stringify({ version: 1, binding: page.binding, checkpoint: page.checkpoint, offset, set })).toString('base64url');
+    const encoded = Buffer.from(JSON.stringify({ version: 1, binding: page.binding, checkpoint: page.checkpoint, offset, candidateSetHash })).toString('base64url');
     return `${encoded}.${createHmac('sha256', this.cursorKey).update(encoded).digest('hex')}`;
   }
 
@@ -954,7 +954,7 @@ export class KnowledgerService {
     // 커서는 첫 페이지의 순위 목록 해시에 묶인다 — 외부 색인이 가변 저장소이므로
     // 페이지 사이에 색인이 바뀌면 조용한 중복·누락 대신 커서를 무효로 돌린다.
     const setHash = createHash('sha256').update(ranked.map(item => item.digest).join(',')).digest('hex');
-    if (input.cursor !== undefined && page.set !== undefined && page.set !== setHash) throw new ApiError('INVALID_CURSOR', '후보 색인이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.');
+    if (input.cursor !== undefined && page.candidateSetHash !== undefined && page.candidateSetHash !== setHash) throw new ApiError('INVALID_CURSOR', '후보 색인이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.');
 
     const selected = ranked.slice(page.offset, page.offset + page.limit);
     const refs = selected.map(item => this.revisionRef(item.digest, context));
@@ -1042,6 +1042,8 @@ export class KnowledgerService {
    * 새 행을 모두 계산한 뒤 replaceAll로 한 번에 교체해 재구축 도중이나 실패 시에도
    * 빈·부분 색인이 읽기 경로에 노출되지 않는다.
    * 전수 스캔·전체 교체를 유발하므로 배포 운영자(bootstrap actor)만 호출할 수 있다.
+   * 진행 중인 재구축에 합류한 호출자는 그 실행의 스캔 체크포인트를 돌려받는다 —
+   * 자신의 refresh 이후 헤드가 아니라 실제로 색인을 채운 스냅샷이다.
    */
   async rebuildVectorIndex(actor: Actor, input: any = {}) {
     onlyFields(input, []);
