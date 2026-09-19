@@ -81,6 +81,31 @@ test('git connector rejects symlink entries, non-repositories and unsafe refs', 
   }
 });
 
+test('git connector ignores replace objects and inherited GIT_* variables', { skip: !gitAvailable }, async t => {
+  const item = fixture();
+  t.after(() => rmSync(item.root, { recursive: true, force: true }));
+  // refs/replace/* 치환이 커밋 고정을 우회하지 못한다 — 고정 커밋의 원본 내용만 읽는다.
+  const second = execFileSync('git', ['-C', item.repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['-C', item.repo, 'replace', second, item.head], { stdio: 'ignore' });
+  const replaced = await readGitSource({ root: item.repo, ref: second, manifest: item.manifest });
+  assert.equal(replaced.commit, second);
+  assert.equal(replaced.files[0].content_base64, Buffer.from('# 가이드 v2\n', 'utf8').toString('base64'));
+  // 주입된 GIT_DIR/GIT_WORK_TREE가 검증된 root 밖의 저장소로 읽기를 돌리지 못한다.
+  const foreign = join(item.root, 'foreign');
+  mkdirSync(foreign);
+  execFileSync('git', ['-C', foreign, 'init', '-q'], { stdio: 'ignore' });
+  const previous = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  process.env.GIT_DIR = join(foreign, '.git');
+  process.env.GIT_WORK_TREE = foreign;
+  t.after(() => {
+    if (previous.GIT_DIR === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = previous.GIT_DIR;
+    if (previous.GIT_WORK_TREE === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = previous.GIT_WORK_TREE;
+  });
+  const isolated = await readGitSource({ root: item.repo, ref: item.head, manifest: item.manifest });
+  assert.equal(isolated.commit, item.head);
+  assert.equal(isolated.files[0].content_base64, item.content.toString('base64'));
+});
+
 test('git connector enforces markdown decoding and manifest validation', { skip: !gitAvailable }, async t => {
   const item = fixture();
   t.after(() => rmSync(item.root, { recursive: true, force: true }));

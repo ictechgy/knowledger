@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +9,7 @@ import { KnowledgerService } from '../apps/api/service.ts';
 import { actorIdentity, CHANNEL_ID, PERSONAS, demoDefinition } from '../examples/order-workflow/config.ts';
 import { seedDemo } from '../examples/order-workflow/application.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot, RuntimeSnapshotError } from '../packages/storage/runtime-snapshot.ts';
+import { writeArtifact } from './artifact.ts';
 
 /**
  * Repeatable backup/restore rehearsal for CI. It exercises the real snapshot
@@ -171,19 +172,6 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
       snapshot_files: backup.files.map(({ name, sha256 }) => ({ name, sha256 })),
     },
   };
-}
-
-/** 증거 아티팩트를 쓴다 — 심볼릭 링크는 O_NOFOLLOW, FIFO는 O_NONBLOCK으로 거부하고, 열린 디스크립터가 일반 파일인지 확인한 뒤 항상 0600으로 쓴다. */
-function writeArtifact(path: string, output: string): void {
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-  try {
-    if (!fstatSync(fd).isFile()) throw new Error('--out must be a regular file');
-    ftruncateSync(fd, 0);
-    fchmodSync(fd, 0o600);
-    writeFileSync(fd, `${output}\n`);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function isMain(): boolean { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href; }

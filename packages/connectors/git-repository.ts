@@ -22,9 +22,24 @@ function invalid(message = '원본 Git 저장소를 읽을 수 없습니다.'): 
   throw new SourceInputError(message);
 }
 
+/**
+ * Git 하위 프로세스 환경 — 저장소 선택·행동을 바꾸는 GIT_* 변수(GIT_DIR, GIT_WORK_TREE,
+ * GIT_OBJECT_DIRECTORY, GIT_CONFIG_* 등)를 상속에서 제거하고, promisor 원격의 lazy fetch와
+ * refs/replace/* 치환 오브젝트를 끈다. 고정 커밋의 로컬 오브젝트만 읽기 위한 계약이다.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('GIT_')) env[key] = value;
+  }
+  env.GIT_NO_LAZY_FETCH = '1';
+  env.GIT_NO_REPLACE_OBJECTS = '1';
+  return env;
+}
+
 function git(root: string, args: string[], maxBuffer: number): Buffer {
   try {
-    return execFileSync('git', ['-C', root, ...args], { maxBuffer, stdio: ['ignore', 'pipe', 'ignore'] });
+    return execFileSync('git', ['-C', root, ...args], { maxBuffer, env: gitEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {
     invalid();
   }

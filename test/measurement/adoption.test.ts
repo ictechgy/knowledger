@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -8,6 +9,7 @@ import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { KnowledgerService } from '../../apps/api/service.ts';
 import { measureAdoption, validateObservationLog } from '../../packages/measurement/adoption.ts';
 import { readPilotMeasurement } from '../../tools/adoption-metrics.ts';
+import { writeArtifact } from '../../tools/artifact.ts';
 import { demoDefinition } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 
@@ -98,4 +100,49 @@ test('empty journal yields a measurement with no derived samples', () => {
   assert.equal(measurement.derived.time_to_agreement.median_seconds, undefined);
   assert.equal(measurement.derived.reuse_rate.ratio, undefined);
   assert.equal(measurement.observed.review_questions, 2);
+});
+
+test('observation times must be strict RFC 3339 timestamps', () => {
+  const observation = (at: string) => ({ ...log, observations: [{ kind: 'review_question', subject: 's', at }] });
+  for (const at of ['March 5, 2026', '2026-03-05', '2026-03-05T25:00:00Z', '2026-03-05T12:61:00Z', '2026-02-30T00:00:00Z', '2026-03-05T12:00:00+25:00', '2026-03-05 12:00:00Z']) {
+    assert.throws(() => validateObservationLog(observation(at)), undefined, at);
+  }
+  for (const at of ['2026-03-05T12:00:00Z', '2026-03-05T12:00:00.500Z', '2026-03-05T21:00:00+09:00', '2024-02-29T00:00:00Z']) {
+    assert.equal(validateObservationLog(observation(at)).observations[0].at, at);
+  }
+});
+
+test('measurement deduplicates immutable records and counts status transitions only', () => {
+  const decision = { contract_type: 'ApprovalDecision', decision: 'approve' };
+  const withdrawn = { agreement_id: 'ag-1', status: 'withdrawn' };
+  const events: any[] = [
+    // 같은 이벤트 안의 중복 쓰기와 이벤트 간 재기록 모두 한 번만 센다.
+    { timestamp: '2026-09-16T00:00:00Z', writes: [['kcl:v1:decision:d-1', decision], ['kcl:v1:decision:d-1', decision]] },
+    { timestamp: '2026-09-16T00:01:00Z', writes: [['kcl:v1:decision:d-1', decision], ['kcl:v1:decision:d-2', { contract_type: 'ApprovalDecision', decision: 'object' }]] },
+    // 철회 상태의 재기록은 새 전이가 아니다 — suspended→withdrawn은 별도 전이로 센다.
+    { timestamp: '2026-09-16T00:02:00Z', writes: [['kcl:v1:agreement:ag-1', { agreement_id: 'ag-1', status: 'suspended' }], ['kcl:v1:agreement:ag-1', { agreement_id: 'ag-1', status: 'suspended' }]] },
+    { timestamp: '2026-09-16T00:03:00Z', writes: [['kcl:v1:agreement:ag-1', withdrawn]] },
+    { timestamp: '2026-09-16T00:04:00Z', writes: [['kcl:v1:agreement:ag-1', withdrawn]] },
+  ];
+  const measurement = measureAdoption({ events, log });
+  assert.equal(measurement.derived.review_effort.decisions, 2);
+  assert.equal(measurement.derived.review_effort.approvals, 1);
+  assert.equal(measurement.derived.review_effort.objections, 1);
+  assert.equal(measurement.derived.review_effort.withdrawals, 2);
+});
+
+test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-artifact-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const target = join(root, 'out.json');
+  writeFileSync(target, 'old', { mode: 0o644 });
+  writeArtifact(target, '{"a":1}');
+  assert.equal(statSync(target).mode & 0o777, 0o600);
+  assert.equal(statSync(target).size, '{"a":1}\n'.length);
+  const linked = join(root, 'linked.json');
+  symlinkSync(target, linked);
+  assert.throws(() => writeArtifact(linked, 'x'));
+  const fifo = join(root, 'fifo');
+  execFileSync('mkfifo', [fifo]);
+  assert.throws(() => writeArtifact(fifo, 'x'));
 });

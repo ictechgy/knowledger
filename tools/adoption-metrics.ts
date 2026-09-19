@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
+import { writeArtifact } from './artifact.ts';
 import { measureAdoption, validateObservationLog } from '../packages/measurement/adoption.ts';
 import type { AdoptionMeasurement } from '../packages/measurement/adoption.ts';
 import type { LedgerEvent } from '../packages/storage/local-ledger.ts';
@@ -59,7 +60,7 @@ if (isMain()) {
       if (out) {
         const target = resolve(out);
         mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-        writeFileSync(target, `${output}\n`, { mode: 0o600 });
+        writeArtifact(target, output);
       }
       process.stdout.write(`${output}\n`);
     }
