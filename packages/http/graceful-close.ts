@@ -20,6 +20,11 @@ export function assertCloseBound(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be a finite number >= 0`);
 }
 
+/** 선택적 종료 상한을 기동 시점에 검증한다 — 미설정은 기본값 사용으로 통과시키고, 잘못된 값은 close() 전에 실패하게 한다. */
+export function assertOptionalCloseBound(value: number | undefined, name: string): void {
+  if (value !== undefined) assertCloseBound(value, name);
+}
+
 /**
  * close가 deadlineMs + settleMs를 넘기지 않게 감시한다 — deadlineMs까지는 진행 중 요청이
  * 끝나길 기다리고, 그 뒤에는 잔여 연결을 강제 해제하며, 추적이 끊긴 소켓으로 close 콜백이
@@ -63,6 +68,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
           if (error) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${error.message}`);
           return;
         }
+        // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
+        if (error && forced) console.error(`[${label}] HTTP 종료가 마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(connections)}`);
         finish(() => error ? reject(error) : resolve(forced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
       });
       server.closeIdleConnections();

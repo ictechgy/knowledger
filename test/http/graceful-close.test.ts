@@ -4,7 +4,11 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { closeHttpServer } from '../../packages/http/graceful-close.ts';
+import { createApp } from '../../apps/api/server.ts';
 
 /** 포트 0으로 듣는 서버를 띄워 주소를 돌려준다 — 매 테스트가 독립 포트를 쓰게 한다. */
 async function listeningServer(handler: RequestListener): Promise<{ server: Server; port: number }> {
@@ -19,6 +23,11 @@ async function listeningServer(handler: RequestListener): Promise<{ server: Serv
 async function waitForClose(socket: Socket): Promise<void> {
   if (socket.destroyed) return;
   await Promise.race([once(socket, 'close'), sleep(2_000, undefined, { ref: false })]);
+}
+
+/** 우리 종료 진단만 골라낸다 — 같은 stderr를 쓰는 Node 경고(실험 기능 경고 등)가 모킹에 섞이지 않게 한다. */
+function httpDiagnostics(diagnostic: { mock: { calls: { arguments: unknown[] }[] } }): unknown[][] {
+  return diagnostic.mock.calls.map(call => call.arguments).filter(args => /HTTP 종료/.test(String(args[0])));
 }
 
 /** 서버를 실제로 닫아 정리한다 — close를 스텁한 테스트가 프로세스에 열린 서버를 남기지 않게 한다. */
@@ -52,7 +61,7 @@ test('closeHttpServer reaps an idle keep-alive socket without waiting for the de
     const started = Date.now();
     await closeHttpServer(server, { deadlineMs: 10_000 });
     assert.ok(Date.now() - started < 3_000, 'idle keep-alive sockets must not stall close');
-    assert.equal(diagnostic.mock.callCount(), 0, 'a clean close must not emit the forced diagnostic');
+    assert.equal(httpDiagnostics(diagnostic).length, 0, 'a clean close must not emit the forced diagnostic');
   } finally {
     socket.destroy();
   }
@@ -75,7 +84,7 @@ test('closeHttpServer lets a request finishing mid-close complete without forcin
     await closePromise;
     assert.ok(Date.now() - started < 2_000, 'the request completes and its now-idle socket is re-swept');
     assert.ok(body.includes('ok'), 'the in-flight response is fully delivered');
-    assert.equal(diagnostic.mock.callCount(), 0, 'no forced release happens inside the deadline');
+    assert.equal(httpDiagnostics(diagnostic).length, 0, 'no forced release happens inside the deadline');
   } finally {
     socket.destroy();
   }
@@ -95,8 +104,8 @@ test('closeHttpServer force-releases a request that never finishes after the dea
     assert.ok(elapsed < 3_000, 'stuck requests are force-released after the deadline');
     await waitForClose(socket);
     assert.equal(socket.destroyed, true, 'forced close destroys the held socket');
-    assert.equal(diagnostic.mock.callCount(), 1, 'forced release reports a diagnostic');
-    const message = String(diagnostic.mock.calls[0].arguments[0]);
+    assert.equal(httpDiagnostics(diagnostic).length, 1, 'forced release reports a diagnostic');
+    const message = String(httpDiagnostics(diagnostic)[0][0]);
     assert.match(message, /test-server/, 'the diagnostic carries the server label');
     assert.match(message, /강제 해제/, 'the diagnostic names the forced-release reason');
     assert.match(message, /연결 [1-9]\d*개/, 'the diagnostic counts the sockets held at release');
@@ -121,15 +130,15 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= 120, 'the abandon timer still lets the deadline elapse');
     assert.ok(elapsed < 2_000, 'a missing close callback cannot hang shutdown');
-    assert.equal(diagnostic.mock.callCount(), 1, 'the abandon reports a diagnostic');
-    const message = String(diagnostic.mock.calls[0].arguments[0]);
+    assert.equal(httpDiagnostics(diagnostic).length, 1, 'the abandon reports a diagnostic');
+    const message = String(httpDiagnostics(diagnostic)[0][0]);
     assert.match(message, /abandon-test/, 'the diagnostic carries the server label');
     assert.match(message, /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
-    assert.match(message, /미해제 연결 \d+개/, 'the diagnostic carries the remaining connection count');
+    assert.match(message, /미해제 연결 0개/, 'the swept socket leaves exactly zero remaining connections');
     // 마감 뒤 도착한 close 오류는 settled promise가 버리지 않고 진단으로 남긴다.
     closeCallback?.(new Error('late boom'));
-    assert.equal(diagnostic.mock.callCount(), 2, 'a late close error is still reported');
-    assert.match(String(diagnostic.mock.calls[1].arguments[0]), /abandon-test/, 'the late error carries the server label');
+    assert.equal(httpDiagnostics(diagnostic).length, 2, 'a late close error is still reported');
+    assert.match(String(httpDiagnostics(diagnostic)[1][0]), /abandon-test/, 'the late error carries the server label');
   } finally {
     socket.destroy();
     await releaseServer(server, originalClose);
@@ -146,8 +155,8 @@ test('closeHttpServer degrades a connection-count lookup failure to an unknown c
     server.close = (() => server) as Server['close'];
     server.getConnections = ((callback: (error: Error | null, count: number) => void) => { callback(new Error('count boom'), 0); }) as Server['getConnections'];
     await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'count-test' });
-    assert.equal(diagnostic.mock.callCount(), 1);
-    assert.match(String(diagnostic.mock.calls[0].arguments[0]), /알 수 없음/, 'a lookup failure must not masquerade as a count');
+    assert.equal(httpDiagnostics(diagnostic).length, 1);
+    assert.match(String(httpDiagnostics(diagnostic)[0][0]), /알 수 없음/, 'a lookup failure must not masquerade as a count');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
@@ -163,6 +172,13 @@ test('closeHttpServer propagates a server.close error instead of hanging', async
   } finally {
     await releaseServer(server, originalClose);
   }
+});
+
+test('createApp rejects an invalid shutdown deadline at startup instead of half-closing', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-bound-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: -1 }), RangeError);
+  await assert.rejects(() => createApp({ dataDir: directory, shutdownDeadlineMs: Number.NaN }), RangeError);
 });
 
 test('closeHttpServer propagates a synchronous server.close throw without lingering timers', async () => {
