@@ -65,6 +65,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let isForced = false;
     let connections = UNKNOWN_CONNECTION_COUNT;
     let pendingCount: Promise<void> | undefined;
+    let closeError: Error | null = null;
     let forceTimer: NodeJS.Timeout;
     let abandonTimer: NodeJS.Timeout;
     // 모든 settle 경로가 거치는 단일 출구 — 중복 settle을 막고 두 타이머를 반드시 해제한다.
@@ -77,10 +78,11 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     };
     // 개수 포착 promise를 주어진 상한으로 기다린다 — 늦거나 오지 않으면 그냥 넘겨 대기가 마감을 넘기지 않게 한다.
     // 돌려주는 promise가 거절될 수 있으므로 소비 측이 거절 경로까지 귀결시켜야 한다.
-    // 상한 타이머는 unref다 — 경주에서 진 쪽이 남아도 프로세스를 붙잡지 않고 경주 종료 시 스스로 해제된다.
+    // 상한 타이머는 의도적으로 ref다 — abandon 상황(서버 핸들 소실)에서 진단 창 도중 프로세스가
+    // 종료되면 진단 출력과 호출자 측 finally 자원 해제가 건너뛰어진다. 경주 종료 시 .finally가 해제한다.
     const boundedWait = (pending: Promise<void>, timeoutMs: number): Promise<void> => {
       let boundTimer: NodeJS.Timeout | undefined;
-      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); boundTimer.unref(); })])
+      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); })])
         .finally(() => clearTimeout(boundTimer));
     };
     // settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다.
@@ -111,7 +113,15 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
           // 다른 경로가 먼저 settle했으면 닫힌 서버에 잔여 조회를 다시 걸지 않는다.
           .then(() => isSettled ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - Date.now())))
           .then(
-            remaining => finish(() => resolve({ outcome: 'abandoned', connections, remaining })),
+            remaining => finish(() => {
+              // 마감 창 안에 도착한 close 오류는 '마감' 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
+              if (closeError) {
+                reportForcedRelease(label, connections);
+                reject(closeError);
+                return;
+              }
+              resolve({ outcome: 'abandoned', connections, remaining });
+            }),
             lookupError => finish(() => reject(lookupError)),
           );
       } catch (error) {
@@ -120,6 +130,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     }, deadlineMs + settleMs);
     try {
       server.close(error => {
+        // 콜백 도착 자체는 settle 순서와 무관하게 기록한다 — abandon settle이 창 안 도착한 close 오류를 우선 거절한다.
+        closeError = error ?? null;
         if (isSettled) {
           reportLateClose(error);
           return;
@@ -169,7 +181,7 @@ function connectionCountBounded(server: Server, timeoutMs: number): Promise<numb
   let lookupTimer: NodeJS.Timeout | undefined;
   return Promise.race([
     connectionCount(server),
-    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); lookupTimer.unref(); }),
+    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); }),
   ]).finally(() => clearTimeout(lookupTimer));
 }
 
