@@ -154,13 +154,22 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
   return commit;
 }
 
-/** ls-tree 한 줄에서 blob 모드·오브젝트 id를 얻는다. 일반 파일이 아니면 거부한다. */
+/** ls-tree 레코드에서 blob 모드·오브젝트 id를 얻는다. 일반 파일이 아니면 거부한다. */
 function blobObject(root: string, commit: string, path: string, idLength: number): string | undefined {
   const output = git(root, ['ls-tree', '-z', commit, '--', path], 64 * 1024);
-  const entry = output.toString('utf8').split('\0').find(Boolean);
-  if (!entry) return undefined;
-  const match = new RegExp(`^(\\d{6}) (\\w+) ([a-f0-9]{${idLength}})\\t(.+)$`, 'u').exec(entry);
-  if (!match || match[4] !== path) invalid('원본 Git 응답이 올바르지 않습니다.');
+  // Git 트리는 같은 이름의 항목을 중복으로 담을 수 있다 — 첫 레코드를 고르면 다른
+  // 소비자가 해석하는 blob과 어긋날 수 있으므로 정확히 하나의 일치만 받는다.
+  const pattern = new RegExp(`^(\\d{6}) (\\w+) ([a-f0-9]{${idLength}})\\t(.+)$`, 'u');
+  const entries = output.toString('utf8').split('\0').filter(Boolean);
+  const matches: RegExpExecArray[] = [];
+  for (const entry of entries) {
+    const match = pattern.exec(entry);
+    if (!match) invalid('원본 Git 응답이 올바르지 않습니다.');
+    if (match[4] === path) matches.push(match);
+  }
+  if (matches.length === 0) return undefined;
+  if (matches.length > 1) invalid('원본 Git 응답이 올바르지 않습니다.');
+  const [match] = matches;
   if (match[1] !== REGULAR_BLOB || match[2] !== 'blob') invalid('원본 경로는 일반 파일이어야 합니다.');
   return match[3];
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync, type Stats } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,10 +25,12 @@ const USAGE = 'Usage: node tools/adoption-metrics.ts --observations PATH (--data
 
 /**
  * 저널 파일을 읽기 전용으로 열어 채널·해시 체인을 검증한 뒤 전체 이벤트를 페이지네이션한다.
- * 읽기 전용 열기라 저널 파일이나 WAL sidecar를 만들지 않고, 스키마가 없거나 채널이 다른
- * 파일은 verifyJournalDb가 거부한다 — 빈·잘못된 파일이 0건 측정으로 통과하지 않는다.
+ * 스키마가 없거나 채널이 다른 파일은 verifyJournalDb가 거부한다 — 빈·잘못된 파일이 0건
+ * 측정으로 통과하지 않는다. 읽기 전용이라도 SQLite는 WAL 인덱스(-shm)를 만들거나 갱신할
+ * 수 있다 — 저널 내용의 변경은 아니며, 읽는 동안 입력이 바뀌지 않는 정지된 저장소라는
+ * 계약의 일부다.
  */
-export function readPilotMeasurement(input: { path: string; channelId: string; observations: unknown }): AdoptionMeasurement {
+export function readPilotMeasurement(input: { path: string; channelId: string; observations: unknown; evidence?: AdoptionMeasurement['evidence'] }): AdoptionMeasurement {
   const log = validateObservationLog(input?.observations);
   const db = new DatabaseSync(input?.path, { readOnly: true });
   try {
@@ -49,7 +52,7 @@ export function readPilotMeasurement(input: { path: string; channelId: string; o
       db.exec('ROLLBACK');
       throw error;
     }
-    return measureAdoption({ events, log });
+    return measureAdoption({ events, log, channel_id: input?.channelId, evidence: input?.evidence });
   } finally {
     db.close();
   }
@@ -80,6 +83,7 @@ if (isMain()) {
       const observationsFd = openSync(observationsPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       let observationsStat: Stats;
       let observations: unknown;
+      let observationsBytes: Buffer;
       try {
         observationsStat = fstatSync(observationsFd);
         if (!observationsStat.isFile()) throw new Error('invalid option');
@@ -88,7 +92,8 @@ if (isMain()) {
         let total = 0;
         for (let n = 1; n > 0; total += n) n = readSync(observationsFd, buffer, total, buffer.length - total, null);
         if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
-        observations = JSON.parse(buffer.toString('utf8', 0, total));
+        observationsBytes = buffer.subarray(0, total);
+        observations = JSON.parse(observationsBytes.toString('utf8'));
       } finally {
         closeSync(observationsFd);
       }
@@ -106,7 +111,10 @@ if (isMain()) {
         pin(ledgerPath), pin(`${ledgerPath}-wal`), pin(`${ledgerPath}-shm`), pin(`${ledgerPath}-journal`),
         { path: observationsPath, inode: `${observationsStat.dev}:${observationsStat.ino}` },
       ];
-      const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations });
+      // 측정 아티팩트에 읽은 관찰 입력의 신원을 싣는다 — 같은 건수의 다른 로그는
+      // 다른 다이제스트로 구별된다.
+      const evidence = { observations_sha256: createHash('sha256').update(observationsBytes).digest('hex'), observations_bytes: observationsBytes.byteLength };
+      const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations, evidence });
       // 고정한 신원을 가진 모든 입력이 읽기 후에도 같은 대상인지 확인한다 — 읽는 동안
       // 바뀌거나 지워진 입력은 고정 신원이 실제 읽은 내용을 대표하지 못한다. 읽기 중
       // 새로 생긴 sidecar는 출력 검증 시점의 재조회가 보호 비교에 쓴다.

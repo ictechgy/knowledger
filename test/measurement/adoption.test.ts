@@ -99,11 +99,13 @@ test('readPilotMeasurement reads a verified journal without mutating it', async 
 });
 
 test('empty journal yields a measurement with no derived samples', () => {
-  const measurement = measureAdoption({ events: [], log });
+  const measurement = measureAdoption({ events: [], log, channel_id: 'kcl-demo' });
   assert.equal(measurement.derived.time_to_agreement.count, 0);
   assert.equal(measurement.derived.time_to_agreement.median_seconds, undefined);
   assert.equal(measurement.derived.reuse_rate.ratio, undefined);
   assert.equal(measurement.observed.review_questions, 2);
+  // 이벤트가 없어도 채널 신원은 남는다 — 다른 채널의 빈 측정과 구별된다.
+  assert.equal(measurement.window.channel_id, 'kcl-demo');
 });
 
 test('observation times must be strict RFC 3339 timestamps', () => {
@@ -111,7 +113,7 @@ test('observation times must be strict RFC 3339 timestamps', () => {
   for (const at of ['March 5, 2026', '2026-03-05', '2026-03-05T25:00:00Z', '2026-03-05T12:61:00Z', '2026-02-30T00:00:00Z', '2026-03-05T12:00:00+25:00', '2026-03-05 12:00:00Z']) {
     assert.throws(() => validateObservationLog(observation(at)), undefined, at);
   }
-  for (const at of ['2026-03-05T12:00:00Z', '2026-03-05T12:00:00.500Z', '2026-03-05T21:00:00+09:00', '2024-02-29T00:00:00Z', '2026-03-05t12:00:00z']) {
+  for (const at of ['2026-03-05T12:00:00Z', '2026-03-05T12:00:00.500Z', '2026-03-05T21:00:00+09:00', '2024-02-29T00:00:00Z', '2026-03-05t12:00:00z', '0000-02-29T00:00:00Z']) {
     assert.equal(validateObservationLog(observation(at)).observations[0].at, at);
   }
 });

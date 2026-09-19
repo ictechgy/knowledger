@@ -116,18 +116,20 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
   const expected = statSync(realDir);
   process.chdir(realDir);
   let failure: unknown;
+  // 만든 임시 inode의 신원 — catch의 정리가 이 inode를 나타내는 이름만 지우게 한다.
+  let tmpStat: Stats | undefined;
   try {
     const pinned = statSync('.');
     if (pinned.dev !== expected.dev || pinned.ino !== expected.ino) throw new Error('--out directory changed during open');
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    let tmpStat: Stats;
     try {
+      // 만든 inode의 신원을 열린 디스크립터에서 바로 확보한다 — 이후 이름이 다른
+      // 객체로 바뀌어도 우리 것만 판별·정리한다.
+      tmpStat = fstatSync(fd);
       // 생성 모드는 umask가 비트를 지울 수 있으므로 명시적으로 되돌린다 — 0600 보장은 계약이다.
       fchmodSync(fd, 0o600);
       writeFileSync(fd, `${output}\n`);
       fsyncSync(fd);
-      // 만든 inode의 신원을 닫기 전에 확보한다 — 닫힌 뒤 이름이 다른 객체로 바뀌어도 판별한다.
-      tmpStat = fstatSync(fd);
     } finally {
       closeSync(fd);
     }
@@ -178,8 +180,13 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     }
   } catch (error) {
     failure = error;
-    // 정리 실패는 원 오류를 가리지 않는다 — 임시 파일만 남을 수 있다.
-    try { rmSync(tmp, { force: true }); } catch { /* 복귀와 원 오류를 우선한다 */ }
+    // 정리는 우리가 만든 inode를 나타내는 이름만 지운다 — 이름이 다른 객체로
+    // 대체됐으면 경합자의 파일을 지우지 않고 그대로 둔다. 정리 실패는 원 오류를
+    // 가리지 않는다.
+    try {
+      const leftover = lstatSync(tmp, { throwIfNoEntry: false });
+      if (leftover && tmpStat && leftover.dev === tmpStat.dev && leftover.ino === tmpStat.ino) rmSync(tmp, { force: true });
+    } catch { /* 복귀와 원 오류를 우선한다 */ }
   }
   // 원래 inode로 복귀했는지 확인한다 — 대체된 디렉터리로의 복귀나 조용한 실패를 표면화한다.
   try { process.chdir(cwd); } catch { try { process.chdir(realpathSync(cwd)); } catch { /* 복귀 시도 계속 */ } }

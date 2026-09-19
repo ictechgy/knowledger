@@ -34,11 +34,13 @@ export interface AdoptionMeasurement {
   schema_version: 1;
   pilot: { pilot_id: string; concept: string; workflow: string };
   // window는 집계한 저널 범위를 식별한다 — 채널·시퀀스 경계·검증된 팁 해시로 어떤
-  // 저널 상태를 측정했는지 아티팩트가 스스로 증명한다.
+  // 저널 상태를 측정했는지 아티팩트가 스스로 증명한다. 빈 저널도 channel_id는 남긴다.
   window: {
     event_count: number; first_event_at?: string; last_event_at?: string;
     channel_id?: string; first_sequence?: number; last_sequence?: number; tip_hash?: string;
   };
+  // evidence는 집계에 쓴 관찰 입력의 신원이다 — 같은 건수라도 다른 로그면 구별된다.
+  evidence?: { observations_sha256?: string; observations_bytes?: number };
   derived: {
     time_to_agreement: { count: number; median_seconds?: number; samples: AgreementTiming[] };
     review_effort: {
@@ -73,8 +75,10 @@ function isoTime(value: unknown): string {
   const match = ISO_PATTERN.exec(value);
   if (!match) throw new AdoptionInputError();
   const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
-  // Date.UTC(year, month, 0)은 해당 월의 마지막 날을 가리킨다 — 2월 30일 같은 롤오버를 거부한다.
-  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  // 월 길이는 그레고리 규칙으로 직접 계산한다 — Date.UTC는 0~99년을 1900년대로
+  // 리매핑해 0000년 같은 연도의 윤년 판정을 잘못한다.
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const lastDay = month === 2 ? (leap ? 29 : 28) : [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
   const fieldsValid = month >= 1 && month <= 12 && day >= 1 && day <= lastDay && hour <= 23 && minute <= 59 && second <= 59;
   const offsetValid = match[7].length === 1 || (Number(match[9]) <= 23 && Number(match[10]) <= 59);
   if (!fieldsValid || !offsetValid || Number.isNaN(Date.parse(value))) throw new AdoptionInputError();
@@ -120,7 +124,7 @@ function median(sorted: number[]): number | undefined {
  * 집계한다 — 파일럿 전용 채널이나 기간이 제한된 저널을 준비하는 것이 계약이며,
  * 결과의 window 필드가 실제 집계 범위를 보고한다.
  */
-export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObservationLog }): AdoptionMeasurement {
+export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObservationLog; channel_id?: string; evidence?: AdoptionMeasurement['evidence'] }): AdoptionMeasurement {
   const log = validateObservationLog(input?.log);
   const events = input?.events;
   if (!Array.isArray(events)) throw new AdoptionInputError();
@@ -187,20 +191,23 @@ export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObserv
     else if (observation.kind === 'review_question') observed.review_questions += 1;
     else observed.disclosure_burden_notes += 1;
   }
+  // 채널은 이벤트 유무와 무관하게 남긴다 — 빈 측정도 어떤 채널의 것인지 구별된다.
+  const channelId = input.channel_id ?? events[0]?.checkpoint?.channel_id;
   return {
     schema_version: ADOPTION_MEASUREMENT_SCHEMA,
     pilot: { pilot_id: log.pilot_id, concept: log.concept, workflow: log.workflow },
     window: {
       event_count: events.length,
+      ...(channelId !== undefined ? { channel_id: channelId } : {}),
       ...(events.length ? {
         first_event_at: events[0].timestamp, last_event_at: events[events.length - 1].timestamp,
-        // 검증된 저널 범위의 신원 — 채널·시퀀스 경계와 말단 블록 해시를 그대로 보고한다.
-        channel_id: events[0].checkpoint?.channel_id,
+        // 검증된 저널 범위의 신원 — 시퀀스 경계와 말단 블록 해시를 그대로 보고한다.
         first_sequence: events[0].checkpoint?.block_number,
         last_sequence: events[events.length - 1].checkpoint?.block_number,
         tip_hash: events[events.length - 1].checkpoint?.block_hash,
       } : {}),
     },
+    ...(input.evidence ? { evidence: input.evidence } : {}),
     derived: {
       time_to_agreement: { count: timings.length, median_seconds: median(sortedSeconds), samples: timings },
       review_effort: { proposals: proposals.size, decisions, approvals, objections, retractions, withdrawals, revisions_published: revisions },
