@@ -68,6 +68,8 @@ test('assertOptionalCloseBound validates bounds and an explicit settleMs argumen
   // 명시적 settleMs 인자도 검증된다 — value 미설정이어도 잘못된 settleMs는 통과하지 않는다.
   assert.throws(() => assertOptionalCloseBound(undefined, 'shutdownDeadlineMs', -5), RangeError);
   assert.throws(() => assertOptionalCloseBound(10, 'shutdownDeadlineMs', MAX_TIMEOUT_MS), RangeError);
+  // value 미설정이면 기본 마감으로 합산을 검증한다 — 기본값 + 큰 settleMs가 넘치면 close()가 거절할 조합이다.
+  assert.throws(() => assertOptionalCloseBound(undefined, 'shutdownDeadlineMs', MAX_TIMEOUT_MS - 1_000), RangeError);
   assertOptionalCloseBound(undefined, 'shutdownDeadlineMs', DEFAULT_SETTLE_MS);
 });
 
@@ -319,6 +321,33 @@ test('closeHttpServer waits for the count capture when the close callback arrive
   } finally {
     server.getConnections = originalGetConnections;
     socket.destroy();
+    await releaseServer(server, originalClose);
+  }
+});
+
+test('closeHttpServer reports forced when a pre-deadline close callback loses the shared-budget race', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server } = await listeningServer((_req, res) => res.end());
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  try {
+    let closeCallback: ((error?: Error) => void) | undefined;
+    // 마감 직전에 도착한 콜백의 유한 대기(100ms)가 abandon의 공유 예산에 지는 경합을 재현한다 —
+    // performance.now를 진행되는 값으로 고정해 abandon의 대기를 50ms로 줄이면 abandon이 먼저 귀결한다.
+    let clock = 0;
+    t.mock.method(performance, 'now', () => 1000 + (clock++) * 50);
+    server.getConnections = (() => {
+      // 개수 포착은 끝내 응답하지 않는다 — 양쪽 대기가 모두 포착을 기다리게 해 경합을 만든다.
+      queueMicrotask(() => closeCallback?.());
+    }) as Server['getConnections'];
+    server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
+    await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'race-test' });
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 1, 'a pre-deadline callback settles as forced, not abandoned');
+    assert.match(messages[0], /강제 해제/, 'the forced release is still reported');
+    assert.doesNotMatch(messages[0], /도착하지 않아/, 'the abandon reason must not be reported for a callback that arrived before the deadline fired');
+  } finally {
+    server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
   }
 });

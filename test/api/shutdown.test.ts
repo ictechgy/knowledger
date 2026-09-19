@@ -55,6 +55,23 @@ test('app.close still runs resource teardown when the HTTP close rejects', async
   assert.equal(indexClosed, true, 'vectorIndex.close must still run when the HTTP close rejects');
 });
 
+test('app.close rethrows a frozen error even when the stage name cannot be attached', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-frozen-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const app = await createDemoApp({ dataDir: directory, seed: false });
+  await app.listen(0);
+  // 동결된 오류는 단계 이름을 달 수 없다 — 부착 실패가 원오류를 대체하지 않고 그대로 다시 던져져야 한다.
+  const originalClose = app.server.close.bind(app.server);
+  app.server.close = ((callback: (error?: Error) => void) => { callback(Object.freeze(new Error('frozen close boom'))); return app.server; }) as Server['close'];
+  t.after(async () => {
+    app.server.close = originalClose;
+    await new Promise<void>(resolve => { app.server.close(() => resolve()); });
+  });
+  const failure = await app.close().then(() => assert.fail('app.close must reject when the HTTP close rejects'), (error: unknown) => error);
+  assert.ok(failure instanceof Error && /frozen close boom/.test(failure.message), 'the frozen original error is rethrown, not replaced by a TypeError');
+  assert.equal((failure as TeardownStageError).stage, undefined, 'a non-extensible error cannot carry the stage name');
+});
+
 test('app.close still tears down HTTP and stores when readiness teardown fails', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-readiness-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

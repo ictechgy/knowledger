@@ -46,7 +46,11 @@ export function assertCloseBound(value: number, name: string): void {
 export function assertOptionalCloseBound(value: number | undefined, name: string, settleMs: number = DEFAULT_SETTLE_MS): void {
   // 명시적으로 넘긴 정착 상한도 검증한다 — value가 undefined라고 잘못된 settleMs를 통과시키지 않는다.
   assertCloseBound(settleMs, 'settleMs');
-  if (value === undefined) return;
+  if (value === undefined) {
+    // 마감 미설정은 기본값으로 간다 — 기본 마감과 주어진 정착 상한의 합도 close()가 받아들일 범위여야 한다.
+    assertCloseBound(DEFAULT_CLOSE_DEADLINE_MS + settleMs, `${name} + settleMs`);
+    return;
+  }
   assertCloseBound(value, name);
   assertCloseBound(value + settleMs, `${name} + settleMs`);
 }
@@ -109,6 +113,9 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     abandonTimer = setTimeout(() => {
       // 마감 발화를 먼저 기록한다 — 이후 도착하는 close 콜백은 settle 경주 없이 '늦은 도착'으로 확정된다.
       hasAbandoned = true;
+      // 폴백 해제 전 강제 해제 타이머를 정리한다 — 방어 대상인 역전 상황(마감이 먼저 발화)에서
+      // 진단 창 도중 forceTimer가 발화해 release()가 두 번 도는 것을 막는다.
+      clearTimeout(forceTimer);
       try {
         // 해제가 마감에 일어났든 지금 폴백으로 일어나든 포착이 진행 중이다 — 포착 대기와 잔여 조회가 하나의
         // 진단 예산(REMAINING_LOOKUP_MS)을 나눠 두 대기가 직렬로 쌓여 총 상한을 넘기는 일이 없게 한다.
@@ -116,9 +123,9 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         const counting = pendingCount ?? release();
         const budgetEnd = performance.now() + REMAINING_LOOKUP_MS;
         void boundedWait(counting, Math.max(0, budgetEnd - performance.now()))
-          // 다른 경로가 먼저 settle했거나 close 오류가 이미 도착했으면 잔여 조회를 건너뛴다 —
-          // 닫힌 서버에 조회를 다시 걸지 않고, 오류 전파가 조회 예산만큼 늦어지지도 않게 한다.
-          .then(() => (isSettled || closeError) ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
+          // 다른 경로가 먼저 settle했거나 close 오류·마감 전 콜백이 이미 도착했으면 잔여 조회를 건너뛴다 —
+          // 'forced' 귀결에서는 조회 결과를 버리므로 닫힌 서버에 조회를 걸지도, 귀결을 늦추지도 않게 한다.
+          .then(() => (isSettled || closeError || hasCloseArrived) ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
           .then(
             remaining => finish(() => {
               // 마감 창 안에 도착한 close 오류는 '마감' 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
@@ -165,16 +172,13 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         // abandon 귀결이 'abandoned'로 오보고하지 않고 'forced'로 정직하게 끝나게 한다.
         hasCloseArrived = true;
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
+        // 이 클로저는 던지는 경로가 없다 — 진단은 best-effort로 삼키고 settle 예외는 finish가 잡는다.
         const settleClose = () => {
-          try {
-            // 포착 대기 사이 abandon이 먼저 마감했을 수 있다 — 콜백은 마감 전에 도착했으므로 늦은 도착이
-            // 아니고, 오류는 closeError로 이미 귀결에 반영됐다. 다시 진단하면 이중 보고가 된다.
-            if (isSettled) return;
-            if (error && isForced) reportForcedRelease(label, connections);
-            finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
-          } catch (settleError) {
-            finish(() => reject(settleError));
-          }
+          // 포착 대기 사이 abandon이 먼저 마감했을 수 있다 — 콜백은 마감 전에 도착했으므로 늦은 도착이
+          // 아니고, 오류는 closeError로 이미 귀결에 반영됐다. 다시 진단하면 이중 보고가 된다.
+          if (isSettled) return;
+          if (error && isForced) reportForcedRelease(label, connections);
+          finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
         };
         // close 콜백이 개수 포착보다 먼저 도착할 수 있다 — 진단이 항상 '알 수 없음'이 되지 않게 유한하게 기다린다.
         if (isForced && pendingCount) {
