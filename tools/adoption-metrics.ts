@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
-import { writeArtifact } from './artifact.ts';
+import { assertWritableTarget, writeArtifact } from './artifact.ts';
 import { measureAdoption, validateObservationLog } from '../packages/measurement/adoption.ts';
 import type { AdoptionMeasurement } from '../packages/measurement/adoption.ts';
 import type { LedgerEvent } from '../packages/storage/local-ledger.ts';
@@ -84,6 +84,9 @@ if (isMain()) {
         // 그 하위 경로도 보호 대상이다. 충돌 검증은 writeArtifact의 inode 고정 디렉터리
         // 안에서 수행돼 검증과 쓰기가 같은 디렉터리를 본다.
         const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
+        // 아무것도 만들지 않는 선검사로 충돌을 먼저 거부한다 — 거부된 출력이 보호 경로
+        // 위에 디렉터리를 남기지 않는다. writeArtifact는 고정 안에서 다시 검증한다.
+        assertWritableTarget(target, inputs);
         mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
         writeArtifact(target, output, { protectedPaths: inputs });
       }

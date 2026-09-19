@@ -15,11 +15,12 @@ export interface ArtifactGuard {
  * realpath가 없는 경로 조각은 가장 가까운 기존 조상의 정규 경로 위에 얹어 해석한다.
  * ENOENT·ENOTDIR 외의 실패(권한·링크 루프·I/O)는 추측 경로가 아니라 닫힌 실패로 올린다.
  */
-function canonicalPath(p: string): string {
+function canonicalPath(p: string): { canonical: string; ancestor: string } {
   const missing: string[] = [];
   for (let current = resolve(p);;) {
     try {
-      return join(realpathSync(current), ...missing.reverse());
+      const real = realpathSync(current);
+      return { canonical: join(real, ...missing.reverse()), ancestor: real };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
@@ -59,11 +60,22 @@ function foldsCase(dir: string): boolean {
 function assertNotProtected(targetCanonical: string, targetInode: string | undefined, protectedPaths: string[], fold: (p: string) => string): void {
   const targetFolded = fold(targetCanonical);
   for (const input of protectedPaths) {
-    const base = fold(canonicalPath(input));
+    const base = fold(canonicalPath(input).canonical);
     if (targetFolded === base || targetFolded.startsWith(`${base}${sep}`)) throw new Error('--out must not overwrite its inputs');
     const inputInode = inodeOf(input);
     if (targetInode !== undefined && inputInode !== undefined && inputInode === targetInode) throw new Error('--out must not overwrite its inputs');
   }
+}
+
+/**
+ * 대상이 보호 경로와 충돌하는지 아무것도 만들지 않고 먼저 검사한다 — 디렉터리 생성보다
+ * 먼저 호출해 거부된 출력이 보호 경로 위에 디렉터리를 남기지 않게 한다. 이 검사와
+ * writeArtifact의 고정 안 재검증이 함께 네임스페이스 경합을 덮는다.
+ */
+export function assertWritableTarget(path: string, protectedPaths: string[]): void {
+  const { canonical, ancestor } = canonicalPath(path);
+  const fold = foldsCase(ancestor) ? (p: string) => p.normalize('NFC').toLowerCase() : (p: string) => p;
+  assertNotProtected(canonical, inodeOf(canonical), protectedPaths, fold);
 }
 
 /**
@@ -82,11 +94,13 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
   const fileName = basename(path);
   const tmp = `.${fileName}.${randomUUID()}.tmp`;
   const cwd = process.cwd();
+  const cwdStat = statSync(cwd);
+  // realpath와 chdir 사이의 네임스페이스 변경은 고정된 inode와의 비교로 잡는다 — 하나의
+  // syscall 간격만 남는 잔여 창은 이식 가능한 수단으로는 더 좁힐 수 없다.
+  const expected = statSync(realDir);
   process.chdir(realDir);
+  let failure: unknown;
   try {
-    // realpath와 chdir 사이에 네임스페이스가 바뀌었으면 고정된 inode가 검증 대상과
-    // 다르다 — 같은 inode인지 확인한 뒤에만 검증·쓰기를 진행한다.
-    const expected = statSync(realDir);
     const pinned = statSync('.');
     if (pinned.dev !== expected.dev || pinned.ino !== expected.ino) throw new Error('--out directory changed during open');
     const dest = lstatSync(fileName, { throwIfNoEntry: false });
@@ -113,14 +127,16 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
       if (!UNSUPPORTED_DIR_FSYNC.has((error as NodeJS.ErrnoException)?.code ?? '')) throw error;
     }
   } catch (error) {
+    failure = error;
     rmSync(tmp, { force: true });
-    throw error;
-  } finally {
-    try {
-      process.chdir(cwd);
-    } catch {
-      // 원래 cwd가 외부에서 제거·교체됐을 수 있다 — 정규 경로로 복귀를 시도한다.
-      try { process.chdir(realpathSync(cwd)); } catch { /* 복귀 불가 — 호출자 오류를 그대로 전한다 */ }
-    }
   }
+  // 원래 inode로 복귀했는지 확인한다 — 대체된 디렉터리로의 복귀나 조용한 실패를 표면화한다.
+  try { process.chdir(cwd); } catch { try { process.chdir(realpathSync(cwd)); } catch { /* 복귀 시도 계속 */ } }
+  let restored = false;
+  try {
+    const now = statSync('.');
+    restored = now.dev === cwdStat.dev && now.ino === cwdStat.ino;
+  } catch { /* 복귀 확인 불가 */ }
+  if (failure) throw failure;
+  if (!restored) throw new Error('작업 디렉터리 복귀에 실패했습니다.');
 }

@@ -85,7 +85,9 @@ function refSnapshot(root: string, candidates: string[]): Map<string, string> {
 
 /**
  * 해석 중 후보 ref가 바뀌지 않았는지 스냅샷을 다시 찍어 확인한다 — 어느 한 시점의
- * 상태도 대표하지 못하는 결과를 받아들이지 않고 닫힌 실패로 둔다.
+ * 상태도 대표하지 못하는 결과를 받아들이지 않고 닫힌 실패로 둔다. Git에는 ref 읽기
+ * 트랜잭션이 없어 이 재검증은 대부분의 경합을 탐지할 뿐 ABA까지 막지 못한다 — ref가
+ * 동시에 바뀌지 않는 정지된 저장소를 호출자가 준비하는 것이 계약이다.
  */
 function revalidate(root: string, candidates: string[], before: Map<string, string>): void {
   const after = refSnapshot(root, candidates);

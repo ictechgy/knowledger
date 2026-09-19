@@ -69,6 +69,7 @@ npm run kb:sync -- \
 - allowlist 각 경로는 `ls-tree`로 확인해 일반 blob(`100644`)만 읽는다. symlink·gitlink·디렉터리는 거부하고, 없는 경로는 `missing_paths`가 된다.
 - 파일 크기·UTF-8·제어문자·전체 크기 한도와 SHA-256 다이제스트 계약은 filesystem connector와 같다.
 - snapshot은 고정된 `commit`을 함께 반환한다. sha1·sha256 오브젝트 형식 저장소를 모두 지원한다. Git 이력 검증(서명 커밋·보호 브랜치)은 이 커넥터 밖의 절차다 — 커넥터는 allowlist 내용의 결정적 읽기만 보장한다.
+- ref 해석은 정지된 저장소를 전제한다 — ref가 해석 중 바뀌면 스냅샷 재검증이 거부하지만, Git에 ref 읽기 트랜잭션이 없어 동시 변경 자체는 호출자가 막아야 한다. 이름이 결정되면 읽기는 불변 오브젝트 ID로 진행된다.
 
 ## 동기화 순서
 

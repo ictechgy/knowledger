@@ -204,9 +204,15 @@ test('adoption-metrics rejects --out colliding with its inputs', async t => {
   assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', `${dbPath}-wal`], { stdio: 'ignore', cwd }));
   assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', join(`${dbPath}-wal`, 'out.json')], { stdio: 'ignore', cwd }));
   assert.notEqual(lstatSync(`${dbPath}-wal`, { throwIfNoEntry: false })?.isDirectory(), true);
-  // 다른 철자의 sidecar 별칭과 그 하위 경로도 거부한다 — 대소문자 비구분 파일시스템의 우회다.
-  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', `${dbPath}-WAL`], { stdio: 'ignore', cwd }));
-  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', join(`${dbPath}-WaL`, 'out.json')], { stdio: 'ignore', cwd }));
+  // 다른 철자의 sidecar 별칭은 대소문자 비구분 파일시스템에서만 같은 파일로 풀린다 —
+  // 대소문자 구분 시스템에서는 실제로 다른 경로이므로 허용되는 것이 올바르다.
+  const probe = join(root, 'CaseProbe');
+  writeFileSync(probe, '');
+  const foldsCase = lstatSync(probe.toLowerCase(), { throwIfNoEntry: false })?.ino === lstatSync(probe).ino;
+  if (foldsCase) {
+    assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', `${dbPath}-WAL`], { stdio: 'ignore', cwd }));
+    assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', join(`${dbPath}-WaL`, 'out.json')], { stdio: 'ignore', cwd }));
+  }
   // 정상 경로는 성공한다.
   const good = join(root, 'measurement.json');
   execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', good], { stdio: 'ignore', cwd });
