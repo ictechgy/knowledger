@@ -78,9 +78,13 @@ export interface ModelEgressPolicy {
   timeout_ms?: number;
   /** allows 예외·타임아웃을 받는 진단 콜백 — 판정을 바꾸지 않고 장애 가시성만 제공한다. */
   onError?: (error: unknown) => void;
-  /** true면 어댑터 미지정 resolve를 EGRESS_ADAPTER_REQUIRED로 거부한다 — 선언 강제 배포용 옵션(기본 false). */
+  /** true면 어댑터 미지정 resolve를 EGRESS_ADAPTER_REQUIRED로 거부한다 — 선언 강제 배포용 옵션(기본 false).
+   * allows 미설정과 함께면 모든 resolve가 거부되는 완전 폐쇄 구성이 된다 — 의도된 잠금 배포에서만 쓴다. */
   require_adapter?: boolean;
 }
+
+/** vault run 기록의 재검증 대조 필드 — 저장 기록은 신뢰할 수 없는 입력으로 다루므로 읽는 필드만 선언한다. */
+interface StoredRunRecord { boot_id?: string; slot?: any; manifest?: any; model_adapter_id?: string | null; integrity?: string }
 
 /** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KnowledgerService {
@@ -157,7 +161,6 @@ export class KnowledgerService {
     if (!this.egressAllows) return 'denied';
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.egressTimeoutMs);
-    timer.unref();
     try {
       // 사본 생성 실패(비직렬화 값)도 훅 예외와 같이 정책 불가로 fail-closed한다.
       const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor), signal: controller.signal };
@@ -1271,57 +1274,54 @@ export class KnowledgerService {
     if (input.action !== 'use-context') throw new ApiError('UNSUPPORTED_ACTION', 'v0.1에서는 지식 사용 여부만 재검증할 수 있습니다.');
     assertModelAdapterId(input.model_adapter_id);
     const runIdStr = identifier(runId);
-    const run = this.vault.get('run', runIdStr, actor);
+    const run: StoredRunRecord | undefined = this.vault.get('run', runIdStr, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
+    if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN', checkpoint: run.manifest?.checkpoint };
     // 발급 시점부터 어댑터 키는 항상 존재한다(null 센티널) — 키 부재는 기록 변조다.
-    if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+    if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
     // 재해석에 필요한 slot 필드가 깨진 기록은 변조다 — 형태 확인이 도장 계산(canonicalize)보다 먼저여야 비-JSON 값이 예외로 새지 않는다.
     if (!run.slot || typeof run.slot !== 'object' || typeof run.slot.document_id !== 'string' || typeof run.slot.context_id !== 'string' || typeof run.slot.scope_id !== 'string' || typeof run.slot.usage_scope !== 'string') {
-      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
     }
     // slot·어댑터 결속은 원장 닻이 없어 per-boot 도장으로 검증한다 — 어댑터를 null로 지운 기록도 무결성 불일치로 잡힌다.
+    // hex 형태를 먼저 확인해 멀티바이트 문자열이 timingSafeEqual의 RangeError로 새지 않게 한다.
     const expectedIntegrity = this.runIntegrity(runIdStr, run.slot, run.model_adapter_id);
-    if (typeof run.integrity !== 'string' || run.integrity.length !== expectedIntegrity.length || !timingSafeEqual(Buffer.from(run.integrity), Buffer.from(expectedIntegrity))) {
-      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
+    if (typeof run.integrity !== 'string' || !/^[0-9a-f]{64}$/.test(run.integrity) || !timingSafeEqual(Buffer.from(run.integrity), Buffer.from(expectedIntegrity))) {
+      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: run.manifest?.checkpoint };
     }
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
-    if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
+    if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: run.manifest?.checkpoint };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
-    return this.verifyRunBinding(actor, runIdStr, run, result);
-  }
-
-  /**
-   * 재검증 manifest를 저장 run 기록과 대조하고 결속 어댑터의 현재 전송 권한을 재확인한다.
-   * 저장 기록의 형태 이상·필드 부재·값 불일치는 모두 변조로 보아 fail-closed withheld다.
-   */
-  private async verifyRunBinding(actor: Actor, runId: string, run: any, result: any) {
-    const stored = run.manifest;
-    const storedRevision = Array.isArray(stored?.provided_revisions) ? stored.provided_revisions[0] : undefined;
-    const freshManifest: Record<string, unknown> = result.manifest;
-    const fresh = (freshManifest.provided_revisions as any[])[0];
-    if (!stored || typeof stored !== 'object' || !storedRevision || typeof storedRevision !== 'object'
-      || storedRevision.revision_digest !== fresh.revision_digest || storedRevision.agreement_id !== fresh.agreement_id) {
-      return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
-    }
-    // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
-    // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나 run 기록 변조를 의미한다.
-    for (const field of domain.MANIFEST_BINDING_FIELDS) {
-      // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
-      if (stored[field] === undefined || stored[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
-    }
-    // 승인 결정 결속도 서버에서 대조한다 — 배열이 아니거나 식별자 없는 원소는 변조된 기록이다.
-    const sorted = (manifest: any) => [...manifest.approval_decisions].sort((a: any, b: any) => a.decision_id.localeCompare(b.decision_id));
-    const storedDecisions = Array.isArray(stored.approval_decisions) && stored.approval_decisions.every((item: any) => typeof item?.decision_id === 'string') ? sorted(stored) : undefined;
-    if (!storedDecisions || domain.canonicalize(storedDecisions) !== domain.canonicalize(sorted(freshManifest))) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+    const freshManifest: Record<string, unknown> = result.manifest!;
+    if (this.storedManifestMismatch(run, freshManifest)) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     if (run.model_adapter_id !== null) {
       const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
     }
     // 발급 manifest는 감사 기준점으로 유지하고 최신 재검증 manifest는 별도 필드에 보존한다.
-    this.vault.replace('run', runId, actor, { ...run, last_refreshed_manifest: result.manifest });
+    this.vault.replace('run', runIdStr, actor, { ...run, last_refreshed_manifest: result.manifest });
     return { status: 'valid', checkpoint: result.checkpoint, refreshed_manifest: result.manifest };
+  }
+
+  /**
+   * 저장 run 기록의 manifest를 재검증 manifest와 대조한다 — 결속 필드의 형태 이상·부재·
+   * 불일치는 모두 변조로 보아 true를 돌린다. 저장 기록은 신뢰할 수 없는 입력으로 다룬다.
+   */
+  private storedManifestMismatch(run: StoredRunRecord, freshManifest: Record<string, unknown>): boolean {
+    const stored = run.manifest;
+    const storedRevision = Array.isArray(stored?.provided_revisions) ? stored.provided_revisions[0] : undefined;
+    const fresh = (freshManifest.provided_revisions as any[])[0];
+    if (!stored || typeof stored !== 'object' || !storedRevision || typeof storedRevision !== 'object'
+      || storedRevision.revision_digest !== fresh.revision_digest || storedRevision.agreement_id !== fresh.agreement_id) return true;
+    // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
+    for (const field of domain.MANIFEST_BINDING_FIELDS) {
+      if (stored[field] === undefined || stored[field] !== freshManifest[field]) return true;
+    }
+    // 승인 결정 결속도 서버에서 대조한다 — 배열이 아니거나 식별자 없는 원소는 변조된 기록이다.
+    const sorted = (manifest: any) => [...manifest.approval_decisions].sort((a: any, b: any) => a.decision_id.localeCompare(b.decision_id));
+    const storedDecisions = Array.isArray(stored.approval_decisions) && stored.approval_decisions.every((item: any) => typeof item?.decision_id === 'string') ? sorted(stored) : undefined;
+    return !storedDecisions || domain.canonicalize(storedDecisions) !== domain.canonicalize(sorted(freshManifest));
   }
 }
 
