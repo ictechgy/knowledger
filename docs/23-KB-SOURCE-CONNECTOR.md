@@ -64,7 +64,7 @@ npm run kb:sync -- \
   --git-ref release-2026-09
 ```
 
-- `--git-ref`는 브랜치·태그·커밋 SHA를 받아 `rev-parse --verify`로 커밋에 고정한다. `--`, `@{`, `..` 같은 리비전 문법과 옵션 형태는 거부한다.
+- `--git-ref`는 로컬 브랜치·태그 이름, `refs/heads/…`·`refs/tags/…` 완전한 이름, 전체 커밋 ID를 받아 `rev-parse --verify`로 커밋에 고정한다. DWIM 순서를 쓰지 않는다 — 짧은 이름은 `refs/heads/`·`refs/tags/` 후보가 정확히 하나일 때만 받고, 두 곳에 같은 이름이 있으면 모호함으로 거부한다. `--`, `@{`, `..` 같은 리비전 문법과 옵션 형태, 약식 커밋 ID, `HEAD` 같은 작업 트리 종속 pseudoref, `refs/heads`·`refs/tags` 밖의 ref는 거부한다. `--root`는 저장소의 worktree top이어야 하며 내부 하위 디렉터리는 받지 않는다.
 - Git 하위 프로세스는 격리된 환경에서 실행된다 — 저장소 선택·행동을 바꾸는 `GIT_*` 환경 변수를 상속하지 않고, `GIT_NO_LAZY_FETCH=1`로 promisor 원격의 lazy fetch를, `GIT_NO_REPLACE_OBJECTS=1`로 `refs/replace/*` 치환을 끈다. 읽은 내용은 반환된 커밋에 묶인다.
 - allowlist 각 경로는 `ls-tree`로 확인해 일반 blob(`100644`)만 읽는다. symlink·gitlink·디렉터리는 거부하고, 없는 경로는 `missing_paths`가 된다.
 - 파일 크기·UTF-8·제어문자·전체 크기 한도와 SHA-256 다이제스트 계약은 filesystem connector와 같다.

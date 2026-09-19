@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -77,7 +77,7 @@ test('measurement derives agreement timings, review effort and reuse from the jo
   assert.equal(measurement.observed.disclosure_burden_notes, 1);
 });
 
-test('readPilotMeasurement reads a ledger database from a stopped runtime directory', async t => {
+test('readPilotMeasurement reads a verified journal without mutating it', async t => {
   const root = mkdtempSync(join(tmpdir(), 'knowledger-adoption-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'shared-ledger.sqlite');
@@ -88,10 +88,14 @@ test('readPilotMeasurement reads a ledger database from a stopped runtime direct
   await seedDemo(service);
   setup.close();
   vault.close();
-  const reopened = new LocalLedger(path, 'kcl-demo');
-  t.after(() => reopened.close());
-  const measurement = readPilotMeasurement({ ledger: reopened, observations: log });
+  const measurement = readPilotMeasurement({ path, channelId: 'kcl-demo', observations: log });
   assert.ok(measurement.derived.time_to_agreement.count >= 1);
+  // 잘못된 채널·빈 파일·미존재 파일은 검증 없이 0건 측정으로 통과하지 않는다.
+  assert.throws(() => readPilotMeasurement({ path, channelId: 'other-channel', observations: log }));
+  const empty = join(root, 'empty.sqlite');
+  writeFileSync(empty, '');
+  assert.throws(() => readPilotMeasurement({ path: empty, channelId: 'kcl-demo', observations: log }));
+  assert.throws(() => readPilotMeasurement({ path: join(root, 'missing.sqlite'), channelId: 'kcl-demo', observations: log }));
 });
 
 test('empty journal yields a measurement with no derived samples', () => {
@@ -107,7 +111,7 @@ test('observation times must be strict RFC 3339 timestamps', () => {
   for (const at of ['March 5, 2026', '2026-03-05', '2026-03-05T25:00:00Z', '2026-03-05T12:61:00Z', '2026-02-30T00:00:00Z', '2026-03-05T12:00:00+25:00', '2026-03-05 12:00:00Z']) {
     assert.throws(() => validateObservationLog(observation(at)), undefined, at);
   }
-  for (const at of ['2026-03-05T12:00:00Z', '2026-03-05T12:00:00.500Z', '2026-03-05T21:00:00+09:00', '2024-02-29T00:00:00Z']) {
+  for (const at of ['2026-03-05T12:00:00Z', '2026-03-05T12:00:00.500Z', '2026-03-05T21:00:00+09:00', '2024-02-29T00:00:00Z', '2026-03-05t12:00:00z']) {
     assert.equal(validateObservationLog(observation(at)).observations[0].at, at);
   }
 });
@@ -145,6 +149,11 @@ test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
   const fifo = join(root, 'fifo');
   execFileSync('mkfifo', [fifo]);
   assert.throws(() => writeArtifact(fifo, 'x'));
+  // 하드링크된 파일은 같은 inode를 덮어쓰므로 거부한다.
+  const hardlinked = join(root, 'hardlinked.json');
+  linkSync(target, hardlinked);
+  assert.throws(() => writeArtifact(hardlinked, 'x'));
+  assert.throws(() => writeArtifact(target, 'x'));
 });
 
 test('adoption-metrics rejects a missing --ledger path without creating a file', t => {

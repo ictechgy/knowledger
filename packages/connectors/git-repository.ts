@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { lstatSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { decodeMarkdownImport, MAX_MARKDOWN_BYTES } from '../import/markdown.ts';
 import { MAX_SOURCE_BYTES, SourceInputError, sourcePath, validateSourceManifest } from './source-contract.ts';
@@ -53,13 +53,46 @@ function objectIdLength(root: string): number {
   invalid();
 }
 
+/** `name^{commit}`를 검증해 커밋 ID를 돌려준다 — 없거나 해석할 수 없으면 undefined. */
+function tryVerify(root: string, name: string): string | undefined {
+  try {
+    const commit = git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${name}^{commit}`], 1024).toString('utf8').trim();
+    return COMMIT_PATTERN.test(commit) ? commit : undefined;
+  } catch (error) {
+    if (error instanceof SourceInputError) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * ref를 고정 커밋으로 해석한다. DWIM 순서에 의존하지 않는다 — 전체 오브젝트 ID이거나
+ * refs/heads·refs/tags 아래 이름만 허용하고, 짧은 이름은 두 후보가 정확히 하나로
+ * 수렴할 때만 받는다. HEAD 같은 작업 트리 종속 pseudoref는 받지 않는다.
+ */
 function resolveCommit(root: string, ref: string, idLength: number): string {
   if (typeof ref !== 'string' || !REF_PATTERN.test(ref) || ref.includes('..') || ref.includes('@{') || ref.endsWith('/')
     || ref.split('/').some(part => part.startsWith('.') || part.endsWith('.lock'))) invalid('올바른 Git ref가 필요합니다.');
   const inside = git(root, ['rev-parse', '--is-inside-work-tree'], 1024).toString('utf8').trim();
   if (inside !== 'true') invalid();
-  const commit = git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], 1024).toString('utf8').trim();
-  if (commit.length !== idLength || !COMMIT_PATTERN.test(commit)) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+  // 하위 디렉터리는 부모 저장소를 발견해 통과하므로 root 자체가 worktree top이어야 한다.
+  const top = git(root, ['rev-parse', '--show-toplevel'], 4096).toString('utf8').trim();
+  if (!top || realpathSync(top) !== realpathSync(root)) invalid();
+  let commit: string | undefined;
+  if (ref.length === idLength && COMMIT_PATTERN.test(ref)) {
+    commit = tryVerify(root, ref);
+    if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+  } else if (ref.startsWith('refs/')) {
+    if (!ref.startsWith('refs/heads/') && !ref.startsWith('refs/tags/')) invalid('올바른 Git ref가 필요합니다.');
+    commit = tryVerify(root, ref);
+    if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+  } else {
+    const head = tryVerify(root, `refs/heads/${ref}`);
+    const tag = tryVerify(root, `refs/tags/${ref}`);
+    if (head && tag) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
+    commit = head ?? tag;
+    if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+  }
+  if (commit.length !== idLength) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   return commit;
 }
 

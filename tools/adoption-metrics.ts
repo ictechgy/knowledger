@@ -2,7 +2,8 @@
 import { lstatSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { LocalLedger } from '../packages/storage/local-ledger.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
 import { writeArtifact } from './artifact.ts';
 import { measureAdoption, validateObservationLog } from '../packages/measurement/adoption.ts';
 import type { AdoptionMeasurement } from '../packages/measurement/adoption.ts';
@@ -20,25 +21,32 @@ import { CHANNEL_ID } from '../examples/order-workflow/config.ts';
 
 const USAGE = 'Usage: node tools/adoption-metrics.ts --observations PATH (--data DIR | --ledger PATH) [--channel ID] [--out PATH]';
 
-function allEvents(ledger: LocalLedger): LedgerEvent[] {
-  const events: LedgerEvent[] = [];
-  for (;;) {
-    const page = ledger.events(events.length ? events[events.length - 1].checkpoint.block_number : 0, 1000);
-    events.push(...page);
-    if (page.length < 1000) return events;
-  }
-}
-
-export function readPilotMeasurement(input: { ledger: LocalLedger; observations: unknown }): AdoptionMeasurement {
+/**
+ * 저널 파일을 읽기 전용으로 열어 채널·해시 체인을 검증한 뒤 전체 이벤트를 페이지네이션한다.
+ * 읽기 전용 열기라 저널 파일이나 WAL sidecar를 만들지 않고, 스키마가 없거나 채널이 다른
+ * 파일은 verifyJournalDb가 거부한다 — 빈·잘못된 파일이 0건 측정으로 통과하지 않는다.
+ */
+export function readPilotMeasurement(input: { path: string; channelId: string; observations: unknown }): AdoptionMeasurement {
   const log = validateObservationLog(input?.observations);
-  if (!input?.ledger || typeof input.ledger.events !== 'function') throw new Error('ledger required');
-  return measureAdoption({ events: allEvents(input.ledger), log });
+  const db = new DatabaseSync(input?.path, { readOnly: true });
+  try {
+    verifyJournalDb(db, input?.channelId);
+    const events: LedgerEvent[] = [];
+    const page = db.prepare('SELECT sequence, record_json FROM ledger_transactions WHERE sequence > ? ORDER BY sequence LIMIT 1000');
+    for (let after = 0;;) {
+      const rows = page.all(after) as any[];
+      for (const row of rows) events.push(JSON.parse(row.record_json));
+      if (rows.length < 1000) return measureAdoption({ events, log });
+      after = rows[rows.length - 1].sequence;
+    }
+  } finally {
+    db.close();
+  }
 }
 
 function isMain(): boolean { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href; }
 
 if (isMain()) {
-  let ledger: LocalLedger | undefined;
   try {
     const args = process.argv.slice(2);
     if (args.includes('--help')) { process.stdout.write(`${USAGE}\n`); process.exitCode = 0; }
@@ -56,8 +64,7 @@ if (isMain()) {
       const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false });
       if (!ledgerStat?.isFile() || ledgerStat.isSymbolicLink()) throw new Error('invalid option');
       const observations = JSON.parse(readFileSync(resolve(values.get('--observations')!), 'utf8'));
-      ledger = new LocalLedger(ledgerPath, values.get('--channel') ?? CHANNEL_ID);
-      const result = readPilotMeasurement({ ledger, observations });
+      const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations });
       const output = JSON.stringify(result, null, 2);
       const out = values.get('--out');
       if (out) {
@@ -70,7 +77,5 @@ if (isMain()) {
   } catch {
     process.stderr.write('adoption measurement failed: invalid input or unreadable ledger\n');
     process.exitCode = 1;
-  } finally {
-    ledger?.close();
   }
 }

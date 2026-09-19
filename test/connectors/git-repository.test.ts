@@ -50,7 +50,8 @@ test('git connector reads only allowlisted files at the pinned commit', { skip: 
   assert.equal(snapshot.files[0].byte_length, item.content.byteLength);
   assert.deepEqual(snapshot.missing_paths, ['docs/missing.md']);
   // 첫 커밋 고정이라 이후 작업 트리의 v2 내용이 섞이지 않는다.
-  const headRef = await readGitSource({ root: item.repo, ref: 'HEAD', manifest: item.manifest });
+  const branch = execFileSync('git', ['-C', item.repo, 'branch', '--show-current'], { encoding: 'utf8' }).trim();
+  const headRef = await readGitSource({ root: item.repo, ref: branch, manifest: item.manifest });
   assert.notEqual(headRef.commit, item.head);
   assert.equal(headRef.files[0].content_base64, Buffer.from('# 가이드 v2\n', 'utf8').toString('base64'));
 });
@@ -64,6 +65,26 @@ test('git connector resolves branch and tag refs to a pinned commit', { skip: !g
   assert.equal(tagged.commit, item.head);
   const branched = await readGitSource({ root: item.repo, ref: 'topic', manifest: item.manifest });
   assert.notEqual(branched.commit, item.head);
+  // heads/tags 완전한 이름도 받는다.
+  const qualified = await readGitSource({ root: item.repo, ref: 'refs/tags/release-1', manifest: item.manifest });
+  assert.equal(qualified.commit, item.head);
+});
+
+test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip: !gitAvailable }, async t => {
+  const item = fixture();
+  t.after(() => rmSync(item.root, { recursive: true, force: true }));
+  // heads와 tags에 같은 이름이 있으면 짧은 이름은 모호하다 — 명시하면 해석된다.
+  execFileSync('git', ['-C', item.repo, 'tag', 'dual', item.head], { stdio: 'ignore' });
+  execFileSync('git', ['-C', item.repo, 'branch', 'dual', item.head], { stdio: 'ignore' });
+  await assert.rejects(() => readGitSource({ root: item.repo, ref: 'dual', manifest: item.manifest }), /모호|ref/);
+  const explicit = await readGitSource({ root: item.repo, ref: 'refs/tags/dual', manifest: item.manifest });
+  assert.equal(explicit.commit, item.head);
+  // 작업 트리 종속 pseudoref와 약식·다른 네임스페이스 ref는 받지 않는다.
+  for (const ref of ['HEAD', 'ORIG_HEAD', item.head.slice(0, 12), 'refs/remotes/origin/main', 'refs/bisect/x']) {
+    await assert.rejects(() => readGitSource({ root: item.repo, ref, manifest: item.manifest }));
+  }
+  // 저장소 안의 일반 하위 디렉터리는 root로 받지 않는다 — worktree top만 허용한다.
+  await assert.rejects(() => readGitSource({ root: join(item.repo, 'docs'), ref: item.head, manifest: item.manifest }));
 });
 
 test('git connector rejects symlink entries, non-repositories and unsafe refs', { skip: !gitAvailable }, async t => {
@@ -122,7 +143,7 @@ test('git connector reads SHA-256 object-format repositories', { skip: !gitAvail
   const head = commit(repo, 'sha256');
   assert.equal(head.length, 64);
   const manifest: MarkdownSourceManifest = { version: 1, source_id: 'kb-source-001', files: [{ path: 'docs/guide.md', policy_id: 'policy-v1', policy_version: 1, title: '가이드' }] };
-  const snapshot = await readGitSource({ root: repo, ref: 'HEAD', manifest });
+  const snapshot = await readGitSource({ root: repo, ref: head, manifest });
   assert.equal(snapshot.commit, head);
   assert.equal(snapshot.files[0].content_base64, content.toString('base64'));
 });
