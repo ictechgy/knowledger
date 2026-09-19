@@ -10,6 +10,8 @@ import type { MarkdownSourceManifest } from './source-contract.ts';
 const COMMIT_PATTERN = /^[a-f0-9]+$/u;
 // ref 이름은 명령행 옵션·refspec·리비전 문법으로 해석될 수 없는 형태만 허용한다.
 const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u;
+// HEAD·ORIG_HEAD·MERGE_HEAD 같은 작업 트리 종속 pseudoref 철자는 짧은 이름으로 받지 않는다.
+const PSEUDOREF_PATTERN = /^[A-Z][A-Z0-9_]*HEAD$/u;
 const REGULAR_BLOB = '100644';
 
 /** 고정 커밋에서 읽은 source snapshot. files/missing_paths 계약은 filesystem connector와 같다. */
@@ -86,6 +88,8 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
     commit = tryVerify(root, ref);
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   } else {
+    // refs/heads/HEAD가 실제로 있어도 짧은 pseudoref 철자는 받지 않는다 — 명시할 때만 유효하다.
+    if (PSEUDOREF_PATTERN.test(ref)) invalid('올바른 Git ref가 필요합니다.');
     const head = tryVerify(root, `refs/heads/${ref}`);
     const tag = tryVerify(root, `refs/tags/${ref}`);
     if (head && tag) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');

@@ -83,6 +83,11 @@ test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip
   for (const ref of ['HEAD', 'ORIG_HEAD', item.head.slice(0, 12), 'refs/remotes/origin/main', 'refs/bisect/x']) {
     await assert.rejects(() => readGitSource({ root: item.repo, ref, manifest: item.manifest }));
   }
+  // refs/heads/<pseudoref 이름>이 실제로 있어도 짧은 철자는 거부한다 — 명시할 때만 해석된다.
+  execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/MERGE_HEAD', item.head], { stdio: 'ignore' });
+  await assert.rejects(() => readGitSource({ root: item.repo, ref: 'MERGE_HEAD', manifest: item.manifest }));
+  const qualifiedPseudo = await readGitSource({ root: item.repo, ref: 'refs/heads/MERGE_HEAD', manifest: item.manifest });
+  assert.equal(qualifiedPseudo.commit, item.head);
   // 저장소 안의 일반 하위 디렉터리는 root로 받지 않는다 — worktree top만 허용한다.
   await assert.rejects(() => readGitSource({ root: join(item.repo, 'docs'), ref: item.head, manifest: item.manifest }));
 });
