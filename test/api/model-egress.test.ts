@@ -179,7 +179,7 @@ test('invalid egress policy versions are rejected at construction', async t => {
 });
 
 test('invalid egress hook shapes and timeouts are rejected at construction', async t => {
-  for (const modelEgress of [{ timeout_ms: 0 }, { timeout_ms: -1 }, { timeout_ms: 1.5 }, { timeout_ms: Number.NaN }, { timeout_ms: 2_147_483_648 }, { allows: 'yes' }, { onError: 'log' }]) {
+  for (const modelEgress of [{ timeout_ms: 0 }, { timeout_ms: -1 }, { timeout_ms: 1.5 }, { timeout_ms: Number.NaN }, { timeout_ms: 2_147_483_648 }, { allows: 'yes' }, { onError: 'log' }, { require_adapter: 'yes' }, { require_adapter: 1 }]) {
     const ledger = new LocalLedger(':memory:', 'kcl-demo');
     const vault = new PrivateStore(':memory:');
     assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { modelEgress: modelEgress as any }), TypeError);
@@ -257,9 +257,19 @@ test('a missing binding field in the stored run record is treated as tampering',
 
 test('a throwing diagnostic callback does not change the fail-closed verdict', async t => {
   const f = await fixture(t, { allows: () => { throw new Error('policy store down'); }, onError: () => { throw new Error('sink broken'); } });
-  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
-  assert.equal(resolved.status, 'withheld');
-  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+  // 깨진 싱크의 실패는 기본 출력으로 한 번 더 보고된다.
+  const original = console.error;
+  const reported: unknown[] = [];
+  console.error = (...args: unknown[]) => { reported.push(args); };
+  try {
+    const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+    assert.equal(resolved.status, 'withheld');
+    assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+    assert.equal(reported.length, 1);
+    assert.match(String(reported[0][0]), /diagnostic callback failed/);
+  } finally {
+    console.error = original;
+  }
 });
 
 test('a hanging egress hook times out at revalidation too', async t => {
@@ -417,7 +427,22 @@ test('forged multibyte integrity value is treated as tampering instead of throwi
   const verdict = await f.service.revalidate(actor, runId, { action: 'use-context', model_adapter_id: 'adapter-chat' });
   assert.equal(verdict.status, 'withheld');
   assert.equal(verdict.reason, 'KNOWLEDGE_CHANGED');
-  assert.deepEqual(verdict.checkpoint, first.manifest.checkpoint);
+  // 변조 판정 경로는 미신뢰 기록의 checkpoint를 에코하지 않는다.
+  assert.equal(verdict.checkpoint, undefined);
+});
+
+test('a stored manifest rewritten to currently-valid values is still tampering', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const first = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  const second = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(first.status, 'provided');
+  assert.equal(second.status, 'provided');
+  // 발급 manifest를 결속이 일치하는 새 manifest로 통째 교체 — 대조 필드만으론 잡히지 않지만 도장이 막는다.
+  const replacement = f.vault.get('run', second.manifest.run_id, actor).manifest;
+  tamperStoredRun(f.vault, first.manifest.run_id, (run: any) => { run.manifest = replacement; });
+  const verdict = await f.service.revalidate(actor, first.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(verdict.status, 'withheld');
+  assert.equal(verdict.reason, 'KNOWLEDGE_CHANGED');
 });
 
 test('null adapter input is rejected as invalid input', async t => {

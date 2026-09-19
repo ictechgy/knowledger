@@ -91,9 +91,13 @@ test('configured HTTPS proxy origin pins Host and Origin and ignores forwarded h
 });
 
 test('createConfiguredApp forwards the modelEgress policy to the service', async t => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-configured-egress-'));
   const config = createProjectTemplate(['OrionMSP','VegaMSP'], 'custom-workspace');
+  // 전달 누락이면 서비스 생성자 검증에 도달하지 않아 부팅이 성공한다 — 거부가 전달을 증명한다.
+  const rejectedDir = mkdtempSync(join(tmpdir(), 'knowledger-configured-egress-reject-'));
+  t.after(()=>rmSync(rejectedDir,{recursive:true,force:true}));
+  await assert.rejects(createConfiguredApp(config, { dataDir: rejectedDir, port: 0, modelEgress: { require_adapter: 'yes' as any } }), TypeError);
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-configured-egress-'));
   const app = await createConfiguredApp(config, { dataDir, port: 0, modelEgress: { policy_version: 7, allows: () => true } });
   t.after(async()=>{await app.close();rmSync(dataDir,{recursive:true,force:true});});
-  assert.equal((app.service as any).egressVersion, 7);
+  assert.ok(app.service);
 });
