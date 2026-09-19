@@ -74,7 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model_adapter_id` without a configured `allows` hook now fail closed
   (`EGRESS_POLICY_DENIED`) — configure `modelEgress.allows` where adapter
   egress is intended; revalidation refreshes the same run instead of minting
-  a new run id, and the client requires the run id to match, so server and
+  a new run id, persists the latest refreshed manifest on the run record's
+  `last_refreshed_manifest` field for audit while the issuance manifest stays
+  the anchor, and the client requires the run id to match, so server and
   client should be deployed together.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and

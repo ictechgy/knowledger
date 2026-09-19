@@ -196,9 +196,11 @@ HTTP·cursor·SDK 계약과 strict resolver는 유지한다. 문자열 검색은
 `EGRESS_POLICY_UNAVAILABLE`로 구분해 withheld하고, allows 미설정 시 어댑터 요청은 허가 근거가
 없어 거부된다. resolve는 요청 어댑터를 run 기록에 결속하고 revalidate는 다른 어댑터·무어댑터
 재검증을 `EGRESS_ADAPTER_MISMATCH`로 거부해 egress 확인 우회를 막는다.
-`revalidate`는 policy·membership epoch·egress version·retrieval profile 결속 필드를 서버에서도
-대조해 클라이언트 검증만에 의존하지 않는다 — `egressVersion`은 한 boot 안에서 상수라 이 대조는
-run 기록 변조에 대한 심층 방어다(재시작은 boot_id 검사가 먼저 차단한다).
+`revalidate`는 policy·membership epoch·egress version·retrieval profile 결속 필드와
+approval decisions를 서버에서도 canonical 대조해 클라이언트 검증만에 의존하지 않는다 —
+`egressVersion`은 한 boot 안에서 상수라 이 대조는 run 기록 변조에 대한 심층 방어다
+(재시작은 boot_id 검사가 먼저 차단한다). 어댑터 미지정 run은 `model_adapter_id: null`
+센티널로 기록한다 — 키가 아예 없는 기록은 결속 해제가 아니라 변조(`KNOWLEDGE_CHANGED`)다.
 `guardedGeneration`은 `adapterId`를 resolve와 두
 revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정책 게이트가 같은 어댑터를 가리킨다.
 게이트의 보호 범위는 **선언된 어댑터로의 전송**이다 — `model_adapter_id` 없이 resolve하면 어댑터
