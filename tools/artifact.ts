@@ -1,16 +1,28 @@
-import { closeSync, constants, fchmodSync, fstatSync, ftruncateSync, openSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 
-/** 증거 아티팩트를 쓴다 — 심볼릭 링크는 O_NOFOLLOW, FIFO는 O_NONBLOCK, 하드링크된 파일은 nlink 검사로 거부하고, 열린 디스크립터가 일반 파일인지 확인한 뒤 항상 0600으로 쓴다. */
+/**
+ * 증거 아티팩트를 원자적으로 쓴다 — 같은 디렉터리의 임시 파일(0600, O_EXCL)에 전체
+ * 내용을 쓰고 fsync한 뒤 rename으로 교체하므로, 쓰기 실패·크래시가 기존 아티팩트의
+ * 부분 파일을 남기지 않는다. 목적지가 심볼릭 링크·비정규 파일·하드링크된 파일이면
+ * rename 전에 거부한다.
+ */
 export function writeArtifact(path: string, output: string): void {
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  const tmp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   try {
-    // 하드링크된 기존 파일은 같은 inode를 truncate·chmod해 다른 경로의 내용을 덮어쓴다 — 단독 링크만 허용한다.
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1) throw new Error('--out must be a regular file');
-    ftruncateSync(fd, 0);
-    fchmodSync(fd, 0o600);
-    writeFileSync(fd, `${output}\n`);
-  } finally {
-    closeSync(fd);
+    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    try {
+      writeFileSync(fd, `${output}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    const dest = lstatSync(path, { throwIfNoEntry: false });
+    if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
+    renameSync(tmp, path);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
   }
 }

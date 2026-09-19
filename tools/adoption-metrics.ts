@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { lstatSync, readFileSync, mkdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { lstatSync, readFileSync, realpathSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
@@ -80,6 +80,20 @@ if (isMain()) {
       if (out) {
         const target = resolve(out);
         mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+        // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크 포함)이면
+        // 측정 결과가 입력을 덮어쓴다 — 정규 경로와 inode 양쪽으로 충돌을 거부한다.
+        const canonical = (p: string): string => {
+          try { return realpathSync(p); } catch { return join(realpathSync(dirname(p)), basename(p)); }
+        };
+        const inodeOf = (p: string): string | undefined => {
+          const stat = lstatSync(p, { throwIfNoEntry: false });
+          return stat ? `${stat.dev}:${stat.ino}` : undefined;
+        };
+        const inputs = [ledgerPath, resolve(values.get('--observations')!)];
+        const targetInode = inodeOf(target);
+        if (inputs.some(input => canonical(input) === canonical(target)) || (targetInode && inputs.some(input => inodeOf(input) === targetInode))) {
+          throw new Error('invalid option');
+        }
         writeArtifact(target, output);
       }
       process.stdout.write(`${output}\n`);

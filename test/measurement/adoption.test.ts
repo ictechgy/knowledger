@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, linkSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -149,11 +149,15 @@ test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
   const fifo = join(root, 'fifo');
   execFileSync('mkfifo', [fifo]);
   assert.throws(() => writeArtifact(fifo, 'x'));
+  // 거부된 쓰기는 기존 아티팩트와 디렉터리를 그대로 둔다 — 임시 파일도 남지 않는다.
+  assert.throws(() => writeArtifact(fifo, 'x'));
+  assert.equal(readdirSync(root).filter(name => name.endsWith('.tmp')).length, 0);
   // 하드링크된 파일은 같은 inode를 덮어쓰므로 거부한다.
   const hardlinked = join(root, 'hardlinked.json');
   linkSync(target, hardlinked);
   assert.throws(() => writeArtifact(hardlinked, 'x'));
   assert.throws(() => writeArtifact(target, 'x'));
+  assert.equal(readFileSync(target, 'utf8'), '{"a":1}\n');
 });
 
 test('adoption-metrics rejects a missing --ledger path without creating a file', t => {
@@ -166,4 +170,31 @@ test('adoption-metrics rejects a missing --ledger path without creating a file',
     () => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', missing, '--observations', observations], { stdio: 'ignore', cwd: join(import.meta.dirname, '..', '..') }),
   );
   assert.equal(existsSync(missing), false);
+});
+
+test('adoption-metrics rejects --out colliding with its inputs', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-pilot-out-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dbPath = join(root, 'shared-ledger.sqlite');
+  const setup = new LocalLedger(dbPath, 'kcl-demo');
+  const vault = new PrivateStore(':memory:');
+  const service = new KnowledgerService(setup, vault, demoDefinition());
+  await service.initialize();
+  await seedDemo(service);
+  setup.close();
+  vault.close();
+  const observations = join(root, 'obs.json');
+  writeFileSync(observations, JSON.stringify(log));
+  const cwd = join(import.meta.dirname, '..', '..');
+  const digestBefore = statSync(dbPath).size;
+  // --out이 저널 자체를 가리키면 거부하고 저널이 보존된다.
+  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', dbPath], { stdio: 'ignore', cwd }));
+  assert.equal(statSync(dbPath).size, digestBefore);
+  // 관찰 입력 파일과의 충돌도 거부한다.
+  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', observations], { stdio: 'ignore', cwd }));
+  assert.ok(readFileSync(observations, 'utf8').includes('pilot-2026-order'));
+  // 정상 경로는 성공한다.
+  const good = join(root, 'measurement.json');
+  execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', good], { stdio: 'ignore', cwd });
+  assert.equal(JSON.parse(readFileSync(good, 'utf8')).schema_version, 1);
 });
