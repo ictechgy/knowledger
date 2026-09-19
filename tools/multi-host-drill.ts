@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { LocalLedger } from '../packages/storage/local-ledger.ts';
@@ -42,7 +42,7 @@ export interface MultiHostDrillResult {
 /** 워커가 준비 신호로 출력하는 계약 — readiness 플래그와 기준 체크포인트·저널·초안 다이제스트를 담는다. */
 interface WorkerReadiness { ready: true; draft_id: string; preview_id: string; command_id: string; checkpoint: { transaction_id?: string }; event_count: number; journal_digest: string; drafts_digest: string }
 
-interface ReadyWorker { child: ChildProcess; stderrTail: () => string; ready: WorkerReadiness; commits: string[]; counts: { begins: number }; stdoutDone: Promise<void> }
+interface ReadyWorker { child: ChildProcess; stderrTail: () => string; ready: WorkerReadiness; commits: string[]; counts: { begins: number; inflight: Set<number> }; stdoutDone: Promise<void> }
 
 /** 자식 프로세스의 종료를 한 번 기다린다 — 이미 종료됐으면 즉시 돌아온다. */
 function onceExit(child: ChildProcess): Promise<void> {
@@ -71,7 +71,8 @@ async function startWorker(workers: ChildProcess[], dataDir: string, extraArgs: 
   child.stderr!.setEncoding('utf8');
   child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-2048); });
   const commits: string[] = [];
-  const state = { begins: 0 };
+  // 태그별 in-flight 추적 — 실패·완료된 쓰기를 진행 중으로 세지 않게 한다.
+  const state = { begins: 0, inflight: new Set<number>() };
   let buffer = '';
   let settled = false;
   let readyResolve: (ready: WorkerReadiness) => void;
@@ -86,11 +87,12 @@ async function startWorker(workers: ChildProcess[], dataDir: string, extraArgs: 
       const line = buffer.slice(0, lineEnd);
       buffer = buffer.slice(lineEnd + 1);
       if (!line.trim()) continue;
-      let message: { ready?: boolean; begin?: unknown; commit?: unknown };
+      let message: { ready?: boolean; begin?: unknown; commit?: unknown; tag?: unknown; failed?: unknown };
       try { message = JSON.parse(line); } catch { if (!settled) { settled = true; readyReject(new Error('drill worker produced invalid readiness output')); } continue; }
       if (!settled) { settled = true; readyResolve(message as WorkerReadiness); continue; }
-      if (typeof message.commit === 'string') commits.push(message.commit);
-      else if (typeof message.begin === 'number') state.begins += 1;
+      if (typeof message.begin === 'number') { state.begins += 1; state.inflight.add(message.begin); }
+      else if (typeof message.commit === 'string') { commits.push(message.commit); if (typeof message.tag === 'number') state.inflight.delete(message.tag); }
+      else if (typeof message.failed === 'number') state.inflight.delete(message.failed);
     }
   });
   child.once('error', error => { if (!settled) { settled = true; readyReject(error); } });
@@ -126,16 +128,16 @@ function readAllEvents(ledger: LocalLedger): ReturnType<LocalLedger['events']> {
   }
 }
 
-/** 초안 다이제스트 전체를 페이지로 읽는다 — 첫 페이지만 비교하면 초안 손상을 놓친다. */
-async function readAllDraftDigests(service: KnowledgerService, actor: ReturnType<typeof actorIdentity>): Promise<string[]> {
-  const digests: string[] = [];
+/** 초안 전체를 페이지로 읽어 정렬된 레코드로 고정한다 — 다이제스트가 식별자와 내용을 함께 묶는다. */
+async function readAllDraftRecords(service: KnowledgerService, actor: ReturnType<typeof actorIdentity>): Promise<string[]> {
+  const records: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await service.listDrafts(actor, 50, cursor);
-    digests.push(...page.drafts.map(row => row.revision_digest));
+    records.push(...page.drafts.map(row => JSON.stringify(row)));
     cursor = page.next_cursor ?? undefined;
   } while (cursor);
-  return digests.sort();
+  return records.sort();
 }
 
 /** 데이터 디렉터리를 열어 복구된 상태를 판독한다 — 내용 다이제스트까지 비교해 손상을 놓치지 않는다. */
@@ -155,7 +157,7 @@ async function readRecoveredState(dataDir: string, label: string): Promise<Recov
       checkpoint_tx_id: checkpoint.transaction_id,
       event_count: journal.length,
       journal_digest: contentDigest(journal),
-      drafts_digest: contentDigest(await readAllDraftDigests(service, actor)),
+      drafts_digest: contentDigest(await readAllDraftRecords(service, actor)),
       transaction_ids: journal.map(event => event.checkpoint.transaction_id),
     };
   } finally {
@@ -180,11 +182,12 @@ export async function runMultiHostDrill(rootDir: string): Promise<MultiHostDrill
     const a = await startWorker(workers, hostA, ['--write-every', '25']);
     const b = await startWorker(workers, hostB);
 
-    // At least one loop commit must be acknowledged AND a write must be
+    // At least one loop commit must be acknowledged AND a tagged write must be
     // in-flight when the kill lands — an ack proves the workload was active,
-    // begins > commits proves a write was interrupted mid-operation.
+    // an open tag proves a write is genuinely mid-operation (failed writes emit
+    // a terminal line so they are never counted as in-flight).
     const commitDeadline = Date.now() + 15_000;
-    while (a.commits.length === 0 || a.counts.begins <= a.commits.length) {
+    while (a.commits.length === 0 || a.counts.inflight.size === 0) {
       if (a.child.exitCode !== null || a.child.signalCode !== null) throw new Error(`write-loop domain exited before an in-flight write: ${a.stderrTail().slice(-200)}`);
       if (Date.now() > commitDeadline) throw new Error('write-loop domain showed no in-flight write before kill');
       await new Promise(resolve => setTimeout(resolve, 5));
@@ -197,12 +200,12 @@ export async function runMultiHostDrill(rootDir: string): Promise<MultiHostDrill
     await aExit;
     if (a.child.signalCode !== 'SIGKILL') throw new Error(`write-loop domain did not die by SIGKILL (exit=${a.child.exitCode} signal=${a.child.signalCode})`);
 
-    // stdout는 exit 직후까지 라인을 전달할 수 있다 — 파이프를 비운 뒤에야
+    // stdout는 exit 직후까지 라인을 전달할 수 있다 — 파이프가 완전히 닫힌 뒤에야
     // 승인 목록을 동결해야 늦게 도착한 커밋도 복구 검증에 포함된다.
-    await Promise.race([a.stdoutDone, new Promise(resolve => setTimeout(resolve, 5_000))]);
+    await Promise.race([a.stdoutDone, new Promise((_, reject) => setTimeout(() => reject(new Error('drill worker stdout did not close after exit')), 5_000))]);
     const acknowledged = [...a.commits];
     const begun = a.counts.begins;
-    const inFlight = begun - acknowledged.length;
+    const inFlight = a.counts.inflight.size;
     if (inFlight < 1) throw new Error('no in-flight write was interrupted by SIGKILL');
 
     // Host B must be unaffected: still running, then a clean graceful stop —
@@ -290,11 +293,12 @@ export async function runMultiHostDrill(rootDir: string): Promise<MultiHostDrill
   return result!;
 }
 
-/** 증거 아티팩트를 쓴다 — 심볼릭 링크는 O_NOFOLLOW로 거부하고, 열린 디스크립터가 일반 파일인지 확인한 뒤 항상 0600으로 쓴다. */
+/** 증거 아티팩트를 쓴다 — 심볼릭 링크는 O_NOFOLLOW, FIFO는 O_NONBLOCK으로 거부하고, 열린 디스크립터가 일반 파일인지 확인한 뒤 항상 0600으로 쓴다. */
 function writeArtifact(path: string, output: string): void {
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   try {
     if (!fstatSync(fd).isFile()) throw new Error('--out must be a regular file');
+    ftruncateSync(fd, 0);
     fchmodSync(fd, 0o600);
     writeFileSync(fd, `${output}\n`);
   } finally {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -68,16 +68,16 @@ function readAllEvents(ledger: LocalLedger): ReturnType<LocalLedger['events']> {
   }
 }
 
-/** 초안 다이제스트 전체를 페이지로 읽는다 — 첫 페이지만 비교하면 초안 손상을 놓친다. */
-async function readAllDraftDigests(service: KnowledgerService, actor: ReturnType<typeof actorIdentity>): Promise<string[]> {
-  const digests: string[] = [];
+/** 초안 전체를 페이지로 읽어 정렬된 레코드로 고정한다 — 다이제스트가 식별자와 내용을 함께 묶는다. */
+async function readAllDraftRecords(service: KnowledgerService, actor: ReturnType<typeof actorIdentity>): Promise<string[]> {
+  const records: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await service.listDrafts(actor, 50, cursor);
-    digests.push(...page.drafts.map(row => row.revision_digest));
+    records.push(...page.drafts.map(row => JSON.stringify(row)));
     cursor = page.next_cursor ?? undefined;
   } while (cursor);
-  return digests.sort();
+  return records.sort();
 }
 
 export async function runBackupRehearsal(rootDir: string): Promise<BackupRehearsalResult> {
@@ -105,10 +105,11 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
     const published = await service.publish(actor(), { preview_id: (await service.preview(actor(), { draft_id: draft.draft_id })).preview_id, confirm_shared: true, command_id: 'backup-rehearsal-publish-001' });
     if (published.status !== 'committed') throw new Error('rehearsal fixture did not commit');
     checkpoint = published.checkpoint;
+    if (typeof checkpoint.transaction_id !== 'string') throw new Error('rehearsal fixture checkpoint has no transaction id');
     const journal = readAllEvents(ledger);
     journalDigest = contentDigest(journal);
     eventCount = journal.length;
-    draftsDigest = contentDigest(await readAllDraftDigests(service, actor()));
+    draftsDigest = contentDigest(await readAllDraftRecords(service, actor()));
   } finally {
     ledger.close();
     vault.close();
@@ -149,7 +150,7 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
     if (contentDigest(restoredJournal) !== journalDigest || restoredJournal.length !== eventCount) throw new Error('restored journal differs');
     const overview = await restored.overview(actor());
     if (!overview.documents.some((item: { payload: { document_id?: string } }) => item.payload.document_id === 'doc-backup-rehearsal-001')) throw new Error('restored document missing');
-    if (contentDigest(await readAllDraftDigests(restored, actor())) !== draftsDigest) throw new Error('restored private drafts differ');
+    if (contentDigest(await readAllDraftRecords(restored, actor())) !== draftsDigest) throw new Error('restored private drafts differ');
   } finally {
     restoredLedger.close();
     restoredVault.close();
@@ -164,7 +165,7 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
     },
     assessment: { rehearsal_pass: true, fabric_disaster_recovery_proven: false },
     details: {
-      checkpoint_transaction_id: checkpoint.transaction_id ?? null,
+      checkpoint_transaction_id: checkpoint.transaction_id,
       journal_events: eventCount,
       journal_digest: journalDigest,
       snapshot_files: backup.files.map(({ name, sha256 }) => ({ name, sha256 })),

@@ -43,16 +43,16 @@ function readAllEvents(): ReturnType<LocalLedger['events']> {
   }
 }
 
-/** 초안 다이제스트 전체를 페이지로 읽는다 — 첫 페이지만 비교하면 초안 손상을 놓친다. */
-async function readAllDraftDigests(): Promise<string[]> {
-  const digests: string[] = [];
+/** 초안 전체를 페이지로 읽어 정렬된 레코드로 고정한다 — 다이제스트가 식별자와 내용을 함께 묶는다. */
+async function readAllDraftRecords(): Promise<string[]> {
+  const records: string[] = [];
   let cursor: string | undefined;
   do {
     const page = await service.listDrafts(actor, 50, cursor);
-    digests.push(...page.drafts.map(row => row.revision_digest));
+    records.push(...page.drafts.map(row => JSON.stringify(row)));
     cursor = page.next_cursor ?? undefined;
   } while (cursor);
-  return digests.sort();
+  return records.sort();
 }
 
 const dataDir = dataPath();
@@ -82,7 +82,7 @@ try {
     ready: true, draft_id: draft.draft_id, preview_id: preview.preview_id, command_id: commandId,
     checkpoint: receipt.checkpoint, event_count: journal.length,
     journal_digest: contentDigest(journal),
-    drafts_digest: contentDigest(await readAllDraftDigests()),
+    drafts_digest: contentDigest(await readAllDraftRecords()),
   })}\n`);
   // 쓰기 루프가 켜지면 실제 커밋이 진행 중인 상태로 강제 종료될 수 있게 계속 발행한다.
   let loopBusy = false;
@@ -102,9 +102,11 @@ try {
       });
       const loopPreview = await service.preview(actor, { draft_id: loopDraft.draft_id });
       const loopReceipt = await service.publish(actor, { preview_id: loopPreview.preview_id, confirm_shared: true, command_id: `resilience-loop-publish-${tag}` });
-      // 확정된 커밋을 부모가 수집하게 한다 — 복구 검증이 추정이 아니라 승인된 트랜잭션 목록에 근거한다.
-      if (loopReceipt.status === 'committed') process.stdout.write(`${JSON.stringify({ commit: loopReceipt.checkpoint.transaction_id })}\n`);
+      // 쓰기는 항상 종료 신호를 남긴다 — 부모의 in-flight 계산이 실패한 쓰기를 진행 중으로 세지 않게 한다.
+      if (loopReceipt.status === 'committed') process.stdout.write(`${JSON.stringify({ commit: loopReceipt.checkpoint.transaction_id, tag })}\n`);
+      else process.stdout.write(`${JSON.stringify({ failed: tag })}\n`);
     })().catch((error: unknown) => {
+      process.stdout.write(`${JSON.stringify({ failed: tag })}\n`);
       process.stderr.write(`resilience loop write failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }).finally(() => { loopBusy = false; });
   }, writeEvery > 0 ? writeEvery : 1_000);
