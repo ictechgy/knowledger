@@ -19,7 +19,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
 import { actorIdentity } from '../../packages/config/types.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
 import { ReadinessMonitor } from './readiness.ts';
-import { closeHttpServer } from '../../packages/http/graceful-close.ts';
+import { assertCloseBound, closeHttpServer } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
@@ -75,6 +75,8 @@ export async function createApp(options: AppOptions) {
   const workspaceRoot = definition ? `/v1/workspaces/${encodeURIComponent(definition.workspace.id)}` : '';
   let publicOrigin: string | undefined;
   try {
+    // 잘못된 종료 상한은 close() 시점이 아니라 기동에서 실패하게 한다 — listening 서버만 남는 반쪽 종료를 막는다.
+    if (options.shutdownDeadlineMs !== undefined) assertCloseBound(options.shutdownDeadlineMs, 'shutdownDeadlineMs');
     if (options.organization && (options.ledger?.mode !== 'fabric-test-network' || !authentication)) throw new Error('Organization scope requires an authenticated Fabric runtime');
     if (options.binding) ensureConfigurationScope(options.dataDir, options.binding);
     else {

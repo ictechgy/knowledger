@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
 
-import { closeHttpServer } from '../http/graceful-close.ts';
+import { assertCloseBound, closeHttpServer } from '../http/graceful-close.ts';
 
 const MAX_FORM_BYTES = 16 * 1024;
 const CSRF_COOKIE = 'knowledger_development_interaction_csrf';
@@ -212,6 +212,8 @@ async function reservePort(requested: number): Promise<number> {
 export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOptions): Promise<DevelopmentIssuer> {
   assertPort(options.port);
   assertLoopbackRedirect(options.redirectUri);
+  // 잘못된 종료 상한은 close() 시점이 아니라 기동에서 실패하게 한다 — listening 서버만 남는 반쪽 종료를 막는다.
+  if (options.shutdownDeadlineMs !== undefined) assertCloseBound(options.shutdownDeadlineMs, 'shutdownDeadlineMs');
   const clientId = options.clientId ?? DEFAULT_CLIENT_ID;
   assertClientId(clientId);
   if (!Array.isArray(options.accounts) || options.accounts.length < 1 || options.accounts.length > 128

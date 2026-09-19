@@ -136,6 +136,24 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
   }
 });
 
+test('closeHttpServer degrades a connection-count lookup failure to an unknown count', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server } = await listeningServer((_req, res) => { res.end('ok'); });
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  try {
+    // close 콜백 미도착 + 연결 수 조회 실패 — 진단이 개수를 위장하지 않고 '알 수 없음'으로 내려야 한다.
+    server.close = (() => server) as Server['close'];
+    server.getConnections = ((callback: (error: Error | null, count: number) => void) => { callback(new Error('count boom'), 0); }) as Server['getConnections'];
+    await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'count-test' });
+    assert.equal(diagnostic.mock.callCount(), 1);
+    assert.match(String(diagnostic.mock.calls[0].arguments[0]), /알 수 없음/, 'a lookup failure must not masquerade as a count');
+  } finally {
+    server.getConnections = originalGetConnections;
+    await releaseServer(server, originalClose);
+  }
+});
+
 test('closeHttpServer propagates a server.close error instead of hanging', async () => {
   const { server } = await listeningServer((_req, res) => res.end());
   const originalClose = server.close.bind(server);

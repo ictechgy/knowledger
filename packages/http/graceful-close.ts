@@ -12,17 +12,11 @@ export interface CloseHttpServerOptions {
   label?: string;
 }
 
-/** 서버 종료 대기의 결과 — 정상 종료와 마감 강제 해제, close 콜백 미도착 마감을 구분해 진단에 싣는다. */
-type CloseOutcome = 'closed' | 'forced' | 'abandoned';
-
-/** 종료 대기가 돌려주는 결과 — 강제 해제 시점에 관측된 연결 수를 함께 실어 진단이 실제로 끊긴 수를 말하게 한다. */
-interface CloseWaitResult {
-  outcome: CloseOutcome;
-  connections: number;
-}
+/** 서버 종료 대기의 결과 — 정상 종료는 수를 싣지 않고, 강제 해제는 시점의 연결 수를, 콜백 미도착은 사유만 구분해 돌려준다. */
+type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned' };
 
 /** 마감·정착 상한은 0 이상의 유한 수여야 한다 — 음수 정착 상한은 마감이 강제 해제보다 먼저 발화하는 순서 역전을 만든다. */
-function assertCloseBound(value: number, name: string): void {
+export function assertCloseBound(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be a finite number >= 0`);
 }
 
@@ -37,18 +31,39 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let settled = false;
     let forced = false;
     let connections = -1;
-    const finish = (settle: () => void) => { if (settled) return; settled = true; clearTimeout(forceTimer); clearTimeout(abandonTimer); settle(); };
+    let forceTimer: NodeJS.Timeout;
+    let abandonTimer: NodeJS.Timeout;
+    // 모든 settle 경로가 거치는 단일 출구 — 중복 settle을 막고 두 타이머를 반드시 해제한다.
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceTimer);
+      clearTimeout(abandonTimer);
+      settle();
+    };
+    // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     const release = () => {
       forced = true;
       server.getConnections((error, count) => { connections = error ? -1 : count; });
       server.closeAllConnections();
     };
-    const forceTimer = setTimeout(() => { try { release(); } catch (error) { finish(() => reject(error)); } }, deadlineMs);
-    const abandonTimer = setTimeout(() => { try { if (!forced) release(); finish(() => resolve({ outcome: 'abandoned', connections })); } catch (error) { finish(() => reject(error)); } }, deadlineMs + settleMs);
+    forceTimer = setTimeout(() => { try { release(); } catch (error) { finish(() => reject(error)); } }, deadlineMs);
+    // forceTimer가 어떤 이유로든 못 돈 최악(타이머 순서 역전)에도 강제 해제는 시도한 뒤 마감한다.
+    abandonTimer = setTimeout(() => {
+      try {
+        if (!forced) release();
+        finish(() => resolve({ outcome: 'abandoned' }));
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    }, deadlineMs + settleMs);
     try {
       server.close(error => {
-        if (settled) { if (error) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${error.message}`); return; }
-        finish(() => error ? reject(error) : resolve({ outcome: forced ? 'forced' : 'closed', connections }));
+        if (settled) {
+          if (error) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${error.message}`);
+          return;
+        }
+        finish(() => error ? reject(error) : resolve(forced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
       });
       server.closeIdleConnections();
     } catch (error) {
@@ -57,18 +72,14 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
   });
 }
 
-/**
- * 강제 해제 뒤 잔여 연결 수를 관측한다 — 소켓 절단이 관측되는 즉시 돌아오되
- * 예산이 다하면 남은 수를 돌려 진단에 싣는다(관측 불가한 핸들러 내부 대기까지
- * 기다릴 수는 없으므로 best-effort다). 조회 오류는 -1로 돌려 진단으로 승격시킨다.
- */
-async function remainingConnections(server: Server, capMs: number): Promise<number> {
-  const until = Date.now() + capMs;
-  for (;;) {
-    const count = await new Promise<number>(resolve => server.getConnections((error, n) => resolve(error ? -1 : n)));
-    if (count <= 0 || Date.now() >= until) return count;
-    await new Promise(resolve => setTimeout(resolve, Math.min(10, Math.max(0, until - Date.now()))));
-  }
+/** 잔여 연결 수를 단회 읽는다 — 조회 오류는 -1로 강등해 진단이 끊긴 수를 위장하지 않게 한다(진단용 best-effort다). */
+async function remainingConnections(server: Server): Promise<number> {
+  return new Promise<number>(resolve => server.getConnections((error, count) => resolve(error ? -1 : count)));
+}
+
+/** 진단에 싣는 연결 수 표현 — 조회 실패(-1)를 개수로 위장하지 않게 '알 수 없음'으로 표시한다. */
+function describeConnections(count: number): string {
+  return count < 0 ? '알 수 없음' : `${count}개`;
 }
 
 /**
@@ -93,10 +104,9 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   }
   if (result.outcome === 'closed') return;
   if (result.outcome === 'forced') {
-    console.error(`[${label}] HTTP 종료가 마감을 넘겨 잔여 연결 ${Math.max(0, result.connections)}개를 강제 해제했다`);
+    console.error(`[${label}] HTTP 종료가 마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(result.connections)}`);
     return;
   }
-  // abandoned는 deadlineMs + settleMs 상한을 이미 소비했다 — 잔여 수는 진단용 단회 읽기만 한다.
-  const remaining = await remainingConnections(server, 0);
-  console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${remaining < 0 ? '알 수 없음' : `${remaining}개`}`);
+  const remaining = await remainingConnections(server);
+  console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(remaining)}`);
 }
