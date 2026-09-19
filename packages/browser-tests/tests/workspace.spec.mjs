@@ -304,9 +304,14 @@ test('off-page policy draft keeps its parent and a selected old proposal survive
   await page.locator('.review-inbox-item').nth(oldestIndex).click();
   await expect(page.locator('#document-title')).toHaveText('Off-page policy document');
   await expect(page.locator('#rationale-' + oldest)).toBeVisible();
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/overview') && response.status() === 200);
   await page.locator('#refresh-overview').click();
+  await refreshed; await expect(page.locator('#global-status')).toContainText('최신 상태를 읽었습니다');
   await expect(page.locator('#rationale-' + oldest)).toBeVisible();
   await page.locator('#rationale-' + oldest).fill('Selected exact old proposal');
+  await expect(page.locator('#rationale-' + oldest)).toHaveValue('Selected exact old proposal');
+  // 이후 개요 재조회를 차단해 지연 재렌더가 입력값을 비우지 않게 한다.
+  await page.route('**/overview**', route => route.abort());
   let selectedId; await page.route('**/agreement-proposals/*/decisions', async route => { selectedId = new URL(route.request().url()).pathname.split('/').at(-2); await route.continue(); });
   const approve = page.getByRole('button', { name: '승인', exact: true });
   await expect(approve).toBeEnabled();
