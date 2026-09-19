@@ -285,3 +285,53 @@ test('a denied resolve does not persist a run record and revalidation mints none
   assert.equal(result.status, 'valid');
   assert.equal(runCount(), 1);
 });
+
+test('deleting the adapter key from an adapter-bound run is tampering, not unbinding', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  tamperStoredRun(f.vault, runId, run => { delete run.model_adapter_id; });
+  const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('an unbound run stores the adapter sentinel so key absence is detectable', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, selection);
+  assert.equal(resolved.status, 'provided');
+  const run = f.vault.get('run', resolved.manifest.run_id, actor);
+  assert.equal(run.model_adapter_id, null);
+});
+
+test('the egress hook is invoked detached so the service instance cannot leak as this', async t => {
+  let receiver: unknown = 'unset';
+  const f = await fixture(t, { allows: function (this: any) { receiver = this; return true; } as any });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  assert.equal(receiver, undefined);
+});
+
+test('the latest refreshed manifest is persisted on the run record', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'valid');
+  const run = f.vault.get('run', resolved.manifest.run_id, actor);
+  assert.equal(run.manifest.manifest_id, resolved.manifest.manifest_id);
+  assert.equal(run.last_refreshed_manifest.manifest_id, result.refreshed_manifest.manifest_id);
+  assert.notEqual(run.last_refreshed_manifest.manifest_id, resolved.manifest.manifest_id);
+});
+
+test('a tampered stored approval decision binding is detected at revalidation', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, selection);
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  tamperStoredRun(f.vault, runId, run => { run.manifest.approval_decisions = run.manifest.approval_decisions.slice(1); });
+  const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});

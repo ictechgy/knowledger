@@ -58,8 +58,8 @@ function assertModelAdapterId(value: unknown): asserts value is string | undefin
   if (value !== undefined && (typeof value !== 'string' || !domain.MODEL_ADAPTER_ID.test(value))) throw new ApiError('INVALID_INPUT', '올바른 모델 어댑터 식별자가 필요합니다.');
 }
 
-/** 모델 egress 정책 훅 입력 — 어댑터 식별자, 현재 manifest 스냅샷 사본, 요청 actor 사본. */
-export interface ModelEgressCheck { adapter_id: string; manifest: Record<string, unknown>; actor: Actor }
+/** 모델 egress 정책 훅 입력 — 어댑터 식별자, 현재 manifest 스냅샷 사본, 요청 actor 사본, 호출 상한 신호. */
+export interface ModelEgressCheck { adapter_id: string; manifest: Record<string, unknown>; actor: Actor; signal: AbortSignal }
 /** 어댑터별 현재 모델 전송 허용 여부 — 엄격한 true만 허용으로 간주한다. */
 export type ModelEgressAllows = (input: ModelEgressCheck) => boolean | Promise<boolean>;
 /** egress 정책 훅 호출 상한 초과 오류 — onError 소비자가 정책 예외와 타임아웃을 구분할 수 있다. */
@@ -147,22 +147,21 @@ export class KnowledgerService {
    */
   private async checkEgress(actor: Actor, adapterId: string, manifest: Record<string, unknown>): Promise<'allowed' | 'denied' | 'unavailable'> {
     if (!this.egressAllows) return 'denied';
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const signal = AbortSignal.timeout(this.egressTimeoutMs);
     try {
       // 사본 생성 실패(비직렬화 값)도 훅 예외와 같이 정책 불가로 fail-closed한다.
-      const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) };
-      // 훅의 응답 지연이 resolve/revalidate를 무기한 붙잡지 않게 호출 상한을 두고, 판정 후 타이머를 해제한다.
+      const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor), signal };
+      // 훅은 분리 호출해 this로 서비스 인스턴스가 새지 않게 하고, 호출 상한 신호로 정책 쪽 외부 작업도 중단할 수 있게 한다.
+      const allows = this.egressAllows;
       const verdict = await Promise.race([
-        Promise.resolve(this.egressAllows(input)),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ModelEgressTimeoutError()), this.egressTimeoutMs); timer.unref(); }),
+        Promise.resolve(allows.call(undefined, input)),
+        new Promise<never>((_, reject) => { signal.addEventListener('abort', () => reject(new ModelEgressTimeoutError()), { once: true }); }),
       ]);
       return verdict === true ? 'allowed' : 'denied';
     } catch (error) {
       // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
-      try { this.egressOnError?.(error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
+      try { this.egressOnError?.call(undefined, error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
       return 'unavailable';
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -1237,8 +1236,9 @@ export class KnowledgerService {
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), documents: [], checkpoint: at };
     }
     // 발급 run에 요청 어댑터를 결속한다 — revalidate는 같은 어댑터의 현재 전송 권한을 다시 확인해야 한다.
+    // 미지정은 null 센티널로 저장한다 — 키가 아예 없는 기록은 변조와 구분할 수 없기 때문이다(JSON은 undefined 키를 버린다).
     // 내부 재검증 호출은 원래 run의 manifest만 새로 만들 뿐 run 기록을 다시 발급하지 않는다.
-    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id });
+    if (!existingRunId) this.vault.put('run', runId, actor, { manifest, slot, boot_id: this.bootId, issued_monotonic: performance.now(), model_adapter_id: input.model_adapter_id ?? null });
     return { status: 'provided', mode: this.ledger.mode, documents: [{ revision_digest: revision.revision_digest, title: revision.payload.title, body_markdown: revision.payload.body_markdown, agreement_id: agreement.agreement_id }], manifest, checkpoint: at };
   }
 
@@ -1251,8 +1251,10 @@ export class KnowledgerService {
     const run = this.vault.get('run', runIdStr, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
     if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
+    // 발급 시점부터 어댑터 키는 항상 존재한다(null 센티널) — 키 부재는 기록 변조다.
+    if (run.model_adapter_id === undefined) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED' };
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
-    if (input.model_adapter_id !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
+    if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const old = run.manifest.provided_revisions[0];
@@ -1266,10 +1268,15 @@ export class KnowledgerService {
       // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
       if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
-    if (run.model_adapter_id !== undefined) {
+    // 승인 결정 결속도 서버에서 대조한다 — 클라이언트 검증만에 의존하지 않는다.
+    const decisions = (manifest: any) => [...manifest.approval_decisions].sort((a: any, b: any) => a.decision_id.localeCompare(b.decision_id));
+    if (domain.canonicalize(decisions(run.manifest)) !== domain.canonicalize(decisions(freshManifest))) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
+    if (run.model_adapter_id !== null) {
       const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
     }
+    // 발급 manifest는 감사 기준점으로 유지하고 최신 재검증 manifest는 별도 필드에 보존한다.
+    this.vault.replace('run', runIdStr, actor, { ...run, last_refreshed_manifest: result.manifest });
     return { status: 'valid', checkpoint: result.checkpoint, refreshed_manifest: result.manifest };
   }
 }

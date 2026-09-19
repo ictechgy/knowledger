@@ -8,7 +8,11 @@ import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import { ensureConfigurationScope } from '../../packages/storage/configuration-scope.ts';
 import type { ConfiguredRuntimeBinding } from '../../packages/storage/configuration-scope.ts';
 
-/** Select and bind one installation before opening any configured identity or connection. */
+/**
+ * Select and bind one installation before opening any configured identity or connection.
+ * modelEgress는 런타임 주입 옵션이다 — allows 훅은 직렬화 불가라 설정 파일에 둘 수 없고,
+ * policy_version은 그 훅에 붙는 배포 계약이라 configurationAuthorityDigest 대상이 아니다.
+ */
 export async function createConfiguredApp(input: ProjectConfiguration, options: {dataDir:string;port:number;organization?:string;modelEgress?:ModelEgressPolicy}) {
   const configuration = validateProjectConfiguration(input);
   const definition = applicationDefinition(configuration);
