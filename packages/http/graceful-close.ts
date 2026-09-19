@@ -64,6 +64,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let isSettled = false;
     let isForced = false;
     let hasAbandoned = false;
+    let hasCloseArrived = false;
     let hasLateClose = false;
     let connections = UNKNOWN_CONNECTION_COUNT;
     let pendingCount: Promise<void> | undefined;
@@ -126,9 +127,19 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
                 reject(closeError);
                 return;
               }
+              // 마감 발화 직전에 도착한 정상 콜백이 공유 예산 경주에서 질 수 있다 — 예산이 부동소수로
+              // 콜백 측 대기보다 미세하게 짧기 때문이다. 도착 사실이 있으니 'abandoned'가 아닌 'forced'로 귀결한다.
+              if (hasCloseArrived) {
+                resolve({ outcome: 'forced', connections });
+                return;
+              }
               resolve({ outcome: 'abandoned', connections, remaining, lateClose: hasLateClose });
             }),
-            lookupError => finish(() => reject(lookupError)),
+            // 조회 실패로 거절돼도 강제 해제는 이미 실행됐다 — 해제 사실을 진단으로 남겨 closeError 분기와 대칭을 맞춘다.
+            lookupError => finish(() => {
+              reportForcedRelease(label, connections);
+              reject(lookupError);
+            }),
           );
       } catch (error) {
         finish(() => reject(error));
@@ -150,6 +161,9 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
           if (!error) hasLateClose = true;
           return;
         }
+        // 마감 발화 전 도착을 기록한다 — 이 콜백의 지연 settle이 공유 예산 경주에서 져도
+        // abandon 귀결이 'abandoned'로 오보고하지 않고 'forced'로 정직하게 끝나게 한다.
+        hasCloseArrived = true;
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
         const settleClose = () => {
           try {

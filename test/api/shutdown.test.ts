@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDemoApp } from '../../examples/order-workflow/application.ts';
 import { ReadinessMonitor } from '../../apps/api/readiness.ts';
+import type { TeardownAggregateError, TeardownStageError } from '../../apps/api/server.ts';
 import { MAX_TIMEOUT_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
 
@@ -50,7 +51,7 @@ test('app.close still runs resource teardown when the HTTP close rejects', async
   });
   const failure = await app.close().then(() => assert.fail('app.close must reject when the HTTP close rejects'), (error: unknown) => error);
   assert.ok(failure instanceof Error && /injected close boom/.test(failure.message), 'the single failure rethrows the original error');
-  assert.equal((failure as { stage?: string }).stage, 'http', 'a single failure still carries its stage name');
+  assert.equal((failure as TeardownStageError).stage, 'http', 'a single failure still carries its stage name');
   assert.equal(indexClosed, true, 'vectorIndex.close must still run when the HTTP close rejects');
 });
 
@@ -119,7 +120,7 @@ test('app.close aggregates multiple teardown failures into one AggregateError', 
     assert.ok(failure instanceof AggregateError, 'multiple teardown failures must surface as AggregateError');
     assert.equal(failure.errors.length, 2, 'both stage failures are collected');
     assert.match(String(failure.message), /readiness.*http|http.*readiness/, 'the message names the failed stages');
-    assert.deepEqual((failure as { stages?: string[] }).stages, ['readiness', 'http'], 'the stages array aligns with errors order for machine aggregation');
+    assert.deepEqual((failure as TeardownAggregateError).stages, ['readiness', 'http'], 'the stages array aligns with errors order for machine aggregation');
     assert.ok(failure.errors.some((e: unknown) => e instanceof Error && /readiness boom/.test(e.message)), 'the readiness failure is preserved');
     assert.ok(failure.errors.some((e: unknown) => e instanceof Error && /http close boom/.test(e.message)), 'the http failure is preserved');
   } finally {

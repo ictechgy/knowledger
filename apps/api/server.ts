@@ -65,10 +65,10 @@ export interface AppOptions {
   shutdownDeadlineMs?: number;
 }
 
-/** 해제 단계 이름을 단 오류 — 단일 실패는 원오류에 직접 달리고, 복수 실패는 AggregateError.errors 각 항목에 붙는다. */
+/** 해제 단계 이름을 단 오류 — 단일 실패에서만 원오류에 달린다. 복수 실패의 단계 목록은 TeardownAggregateError.stages를 본다. */
 export type TeardownStageError = Error & { stage?: string };
 
-/** 여러 해제 단계의 실패를 묶은 오류 — 실패한 단계 이름을 errors와 같은 순서로 실어 둔다. */
+/** 여러 해제 단계의 실패를 묶은 오류 — 실패한 단계 이름을 errors와 같은 순서로 실어 둔다. 개별 errors 항목은 원오류 그대로다. */
 export type TeardownAggregateError = AggregateError & { stages: string[] };
 
 export async function createApp(options: AppOptions) {
@@ -393,7 +393,13 @@ export async function createApp(options: AppOptions) {
       if (errors.length === 1) {
         // 단일 실패는 원오류를 그대로 던지되 단계 이름을 달아 둔다 — 복수 실패의 stages와 같은 정보를 잃지 않게 한다.
         const [{ stage, error }] = errors;
-        if (error instanceof Error) (error as TeardownStageError).stage = stage;
+        if (error instanceof Error) {
+          try {
+            (error as TeardownStageError).stage = stage;
+          } catch {
+            // 동결·확장 불가인 호출자 소유 오류에는 단계를 못 단다 — 부가 정보 부착 실패가 원오류를 대체하지 않게 한다.
+          }
+        }
         throw error;
       }
       if (errors.length > 1) {

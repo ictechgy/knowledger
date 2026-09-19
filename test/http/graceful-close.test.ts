@@ -301,21 +301,17 @@ test('closeHttpServer waits for the count capture when the close callback arrive
   try {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
     await once(socket, 'data');
-    // close 콜백이 개수 포착보다 먼저 도착하는 순서를 결정적으로 만든다 — 포착 호출 시점에 close 콜백을
-    // 마이크로태스크로 발화해 pendingCount 할당 뒤 도착을 보장하고, 개수 응답은 테스트가 직접 준다.
-    let captured: ((error: Error | null, count: number) => void) | undefined;
+    // close 콜백이 개수 포착보다 먼저 도착하는 순서를 같은 마이크로태스크에 실어 고정한다 — 콜백이
+    // 유한 대기를 설치한 직후 개수 응답이 와서, 이벤트 루프 지연과 무관하게 '포착 완료 → forced'가 된다.
     let closeCallback: ((error?: Error) => void) | undefined;
     server.getConnections = ((callback: (error: Error | null, count: number) => void) => {
-      captured = callback;
-      queueMicrotask(() => closeCallback?.());
+      queueMicrotask(() => {
+        closeCallback?.();
+        callback(null, 7);
+      });
     }) as Server['getConnections'];
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
-    const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 200, label: 'race-test' });
-    // 마감(60ms) 발화 뒤 포착이 시작될 때까지 기다린다 — 느린 러너의 타이머 지터를 흡수하게 폴링한다.
-    for (let i = 0; i < 100 && !captured; i += 1) await sleep(10);
-    assert.ok(captured, 'the count capture must have started before we answer it');
-    captured(null, 7);
-    await closePromise;
+    await closeHttpServer(server, { deadlineMs: 60, settleMs: 200, label: 'race-test' });
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 1, 'the close callback arrived so only the forced release reports');
     assert.match(messages[0], /강제 해제/, 'the diagnostic names the forced-release reason');
