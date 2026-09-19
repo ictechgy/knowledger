@@ -1257,7 +1257,7 @@ export class KnowledgerService {
     // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
     // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나
     // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
-    const freshManifest: Record<string, unknown> = result.manifest;
+    const freshManifest: Record<string, unknown> = result.manifest!;
     for (const field of ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id']) {
       // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
       if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
