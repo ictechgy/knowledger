@@ -385,7 +385,12 @@ export async function createApp(options: AppOptions) {
       await attempt('vault', () => vault.close());
       await attempt('authentication', () => authentication?.close());
       if (errors.length === 1) throw errors[0].error;
-      if (errors.length > 1) throw new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`);
+      if (errors.length > 1) {
+        const aggregate = new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`);
+        // 단계 이름은 메시지에만 두지 않고 집계 오류에도 실어 둔다 — 로그 수집기가 문자열 파싱 없이 단계를 집계할 수 있다.
+        (aggregate as AggregateError & { stages?: string[] }).stages = errors.map(entry => entry.stage);
+        throw aggregate;
+      }
     },
   };
 }

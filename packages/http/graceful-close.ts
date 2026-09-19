@@ -64,7 +64,6 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let isSettled = false;
     let isForced = false;
     let hasAbandoned = false;
-    let hasCloseArrived = false;
     let hasLateClose = false;
     let connections = UNKNOWN_CONNECTION_COUNT;
     let pendingCount: Promise<void> | undefined;
@@ -86,7 +85,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
       }
     };
     // 개수 포착 promise를 주어진 상한으로 기다린다 — 늦거나 오지 않으면 그냥 넘겨 대기가 마감을 넘기지 않게 한다.
-    // 돌려주는 promise가 거절될 수 있으므로 소비 측이 거절 경로까지 귀결시켜야 한다.
+    // 현재 소스(포착·타이머)는 거절하지 않지만 promise 계약상 거절될 수 있다 — 소비 측의 거절 귀결이
+    // 미처리 거절을 막는 방어선이다.
     // 상한 타이머는 의도적으로 ref다 — abandon 상황(서버 핸들 소실)에서 진단 창 도중 프로세스가
     // 종료되면 진단 출력과 호출자 측 finally 자원 해제가 건너뛰어진다. 경주 종료 시 .finally가 해제한다.
     const boundedWait = (pending: Promise<void>, timeoutMs: number): Promise<void> => {
@@ -115,20 +115,15 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         const counting = pendingCount ?? release();
         const budgetEnd = performance.now() + REMAINING_LOOKUP_MS;
         void boundedWait(counting, Math.max(0, budgetEnd - performance.now()))
-          // 다른 경로가 먼저 settle했으면 닫힌 서버에 잔여 조회를 다시 걸지 않는다.
-          .then(() => isSettled ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
+          // 다른 경로가 먼저 settle했거나 close 오류가 이미 도착했으면 잔여 조회를 건너뛴다 —
+          // 닫힌 서버에 조회를 다시 걸지 않고, 오류 전파가 조회 예산만큼 늦어지지도 않게 한다.
+          .then(() => (isSettled || closeError) ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
           .then(
             remaining => finish(() => {
               // 마감 창 안에 도착한 close 오류는 '마감' 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
               if (closeError) {
                 reportForcedRelease(label, connections);
                 reject(closeError);
-                return;
-              }
-              // 마감 발화 전에 도착한 콜백이 포착 대기로 아직 settle하지 못한 극단적 경주다 —
-              // 콜백은 마감까지 도착했으므로 'abandoned'가 아니라 'forced'가 정직한 결과다.
-              if (hasCloseArrived) {
-                resolve({ outcome: 'forced', connections });
                 return;
               }
               resolve({ outcome: 'abandoned', connections, remaining, lateClose: hasLateClose });
@@ -155,9 +150,6 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
           if (!error) hasLateClose = true;
           return;
         }
-        // 마감 발화 전 도착을 기록한다 — 이 콜백의 settle이 abandon에 극단적으로 진 뒤에도 결과가
-        // '콜백 미도착'으로 오보고되지 않게 한다.
-        hasCloseArrived = true;
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
         const settleClose = () => {
           try {
