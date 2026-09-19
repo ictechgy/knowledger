@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { KnowledgerService } from '../../apps/api/service.ts';
 import { LocalVectorIndex, cosineSimilarity, developmentEmbedding } from '../../packages/storage/vector-index.ts';
 import type { VectorIndexEntry } from '../../packages/storage/vector-index.ts';
 import { PgVectorIndex } from '../../packages/storage/pgvector-index.ts';
-import { demoFixtures, actorIdentity, PERSONAS } from '../../examples/order-workflow/config.ts';
-import { seedDemo } from '../../examples/order-workflow/application.ts';
+import { demoFixtures, actorIdentity, PERSONAS, BOOTSTRAP_ACTOR } from '../../examples/order-workflow/config.ts';
+import { seedDemo, createDemoApp } from '../../examples/order-workflow/application.ts';
 import { demoDefinition } from '../../examples/order-workflow/config.ts';
 
 const fixtures = demoFixtures();
@@ -200,12 +203,14 @@ test('rebuildVectorIndex repopulates the index only from verified revisions', as
   const index = new LocalVectorIndex();
   const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   index.upsert({ ...entry(0), revision_digest: 'b'.repeat(64) }); // 원장에 없는 낡은 행
-  const rebuilt = await f.service.rebuildVectorIndex(actor);
+  // 전수 스캔·전체 교체를 유발하므로 배포 운영자(bootstrap actor)만 실행할 수 있다.
+  await assert.rejects(f.service.rebuildVectorIndex(actor), (error: any) => error.code === 'FORBIDDEN');
+  const rebuilt = await f.service.rebuildVectorIndex(BOOTSTRAP_ACTOR);
   assert.equal(rebuilt.indexed, fixtures.revisions.length);
   assert.equal(index.size, fixtures.revisions.length, 'replaceAll must drop the stale digest atomically');
   const ranked = index.candidates({ embedding: [1, 0, 0], limit: 50 });
   assert.ok(ranked.every(candidate => fixtures.revisions.some((revision: any) => revision.revision_digest === candidate.revision_digest)));
-  await assert.rejects(fixture(t).then(f2 => f2.service.rebuildVectorIndex(actor)), (error: any) => error.code === 'UNSUPPORTED_ACTION');
+  await assert.rejects(fixture(t).then(f2 => f2.service.rebuildVectorIndex(BOOTSTRAP_ACTOR)), (error: any) => error.code === 'UNSUPPORTED_ACTION');
 });
 
 test('index configuration errors are reported non-retryable, not as retryable 503', async t => {
@@ -273,6 +278,9 @@ test('PgVectorIndex issues version-scoped SQL through an injectable client', asy
   const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 7,
     pg: { Client: function () { return client; } } });
   await index.candidates({ embedding: [1, 0, 0], limit: 5, context_id: 'context-sales' });
+  // HNSW는 ef_search까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면 세션 값을 올린다.
+  assert.match(calls.at(-2)!.text, /set_config\('hnsw\.ef_search', \$1, false\)/);
+  assert.deepEqual(calls.at(-2)!.values, ['5']);
   const select = calls.at(-1)!;
   assert.match(select.text, /index_version = \$2/);
   assert.match(select.text, /context_id = \$3/);
@@ -313,4 +321,87 @@ test('PgVectorIndex retries after a failed connection attempt', async () => {
   await index.candidates({ embedding: [1], limit: 1 });
   assert.equal(attempts, 2);
   await index.close();
+});
+
+test('PgVectorIndex lazily reports the missing optional pg package as a permanent error', async () => {
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1 });
+  // 이 개발 환경에는 pg가 설치되어 있지 않다 — 모듈 부재는 재시도 불가 TypeError다.
+  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }),
+    (error: any) => error instanceof TypeError && /optional "pg" package/.test(error.message));
+});
+
+test('PgVectorIndex translates pgvector shape rejections into permanent TypeErrors', async () => {
+  const client = {
+    on: () => {}, connect: async () => {}, end: async () => {},
+    query: async (text: string) => {
+      if (/set_config/.test(text)) return { rows: [] };
+      const error: any = new Error('different vector dimensions 3 and 64');
+      error.code = '22000';
+      throw error;
+    },
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pg: { Client: function () { return client; } } });
+  await assert.rejects(index.candidates({ embedding: [1, 0, 0], limit: 5 }),
+    (error: any) => error instanceof TypeError && /embedding shape/.test(error.message));
+});
+
+test('an over-limit adapter result is truncated to the candidate bound', async t => {
+  // 인터리브된 240행 — 절단 없이 처리하면 과잉 주석·정렬 작업이 생긴다.
+  const flooded = { candidates: () => Array.from({ length: 60 }, () =>
+    fixtures.revisions.map((revision: any) => ({ revision_digest: revision.revision_digest, score: 0.5 }))).flat() };
+  const f = await fixture(t, { vectorIndex: flooded, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const result = await f.service.vectorSearch(actor, { query: 'q' });
+  assert.equal(result.total, fixtures.revisions.length, 'over-limit rows are truncated then collapse to verified digests');
+});
+
+test('async embedders are awaited on both query and revision paths', async t => {
+  const f = await fixture(t, { embedQuery: async (text: string) => developmentEmbedding(text),
+    embedRevision: async (title: string, body: string) => developmentEmbedding(`${title}\n${body}`) });
+  const result = await f.service.vectorSearch(actor, { query: '주문' });
+  assert.equal(result.candidate_source, 'derived-scan');
+  assert.ok(result.total > 0);
+});
+
+test('required refs keep a null score in derived-scan mode too', async t => {
+  const f = await fixture(t);
+  const result = await f.service.vectorSearch(actor, { query: '주문', document_ids: [sales.payload.document_id] });
+  const required = result.results.find((item: any) => item.revision_digest === sales.revision_digest);
+  assert.ok(required);
+  assert.equal(required.score, null, 'required refs stay unranked references in every mode');
+});
+
+test('POST /vector-search and /vector-index/rebuild route through the service and close() owns the index', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-vector-route-'));
+  const index = new LocalVectorIndex();
+  index.upsert(entry(0));
+  let closed = 0;
+  const tracked = { candidates: (query: any) => index.candidates(query),
+    replaceAll: (entries: any) => index.replaceAll(entries), close: () => { closed++; } };
+  const app = await createDemoApp({ dataDir: directory, vectorIndex: tracked,
+    embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const url = await app.listen(0);
+  let appClosed = false;
+  t.after(async () => { if (!appClosed) await app.close(); });
+  const initial = await fetch(`${url}/api/session`);
+  const cookie = initial.headers.get('set-cookie')!.split(';')[0];
+  const session = await initial.json() as any;
+  const post = (path: string, input: any) => fetch(`${url}/v1/workspaces/demo${path}`, { method: 'POST',
+    headers: { Cookie: cookie, Origin: url, 'Content-Type': 'application/json', 'X-KNOWLEDGER-CSRF': session.csrf_token }, body: JSON.stringify(input) });
+
+  const search = await post('/vector-search', { query: '주문' });
+  assert.equal(search.status, 200);
+  const body = await search.json() as any;
+  assert.equal(body.candidate_source, 'external-index');
+  assert.equal(body.results[0].revision_digest, sales.revision_digest);
+
+  // 기본 세션 actor는 bootstrap actor다 — 재구축 라우트가 서비스에 도달한다.
+  const rebuild = await post('/vector-index/rebuild', {});
+  assert.equal(rebuild.status, 200);
+  const rebuilt = await rebuild.json() as any;
+  assert.equal(rebuilt.indexed, fixtures.revisions.length);
+
+  await app.close();
+  appClosed = true;
+  assert.equal(closed, 1, 'the app owns the index lifecycle');
 });

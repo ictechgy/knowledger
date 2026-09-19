@@ -58,14 +58,31 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
 
   private async loadPg(): Promise<any> {
     if (this.pgModule) return this.pgModule;
-    // 정적 import('pg')로는 pg 타입·패키지가 없는 개발 환경의 타입 검사와 번들링이 깨진다 —
-    // 동적 해석은 런타임에만 일어나게 둔다.
-    try { return await (new Function('specifier', 'return import(specifier);') as (specifier: string) => Promise<any>)('pg'); }
+    // 변수 지정자로 두면 tsc가 pg 타입 없이도 컴파일하고 번들러가 정적 해석을 강요하지 않는다 —
+    // 모듈 해석은 어댑터를 실제로 쓰는 런타임에만 일어난다.
+    const specifier = 'pg';
+    try { return await import(specifier); }
     catch (error) {
-      // 모듈 부재만 안내로 감싼다 — 다른 로딩 실패의 원인은 숨기지 않는다.
+      // 모듈 부재는 영구 설정 오류다 — TypeError로 던져 서비스가 재시도 불가로 분류하게 한다.
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'MODULE_NOT_FOUND') throw error;
-      throw new Error('pgvector index requires the optional "pg" package — install it in the deployment that configures an external index', { cause: error });
+      throw new TypeError('pgvector index requires the optional "pg" package — install it in the deployment that configures an external index', { cause: error });
+    }
+  }
+
+  /**
+   * 차원·형 불일치 같은 pgvector 거부는 재시도로 해소되지 않는 영구 설정 오류다 —
+   * pg의 DatabaseError(22000 데이터 예외, 42804 형 불일치)를 TypeError로 변환해
+   * 서비스가 INDEX_MISCONFIGURED로 분류하게 한다.
+   */
+  private async run(client: any, text: string, values: unknown[]) {
+    try { return await client.query(text, values); }
+    catch (error) {
+      const code = (error as any)?.code;
+      if (code === '22000' || code === '42804' || /different vector dimensions|expected \d+ dimensions/i.test(String((error as Error)?.message))) {
+        throw new TypeError('pgvector rejected the embedding shape — check index dimensions and embedding profile', { cause: error });
+      }
+      throw error;
     }
   }
 
@@ -100,6 +117,8 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1000) throw new TypeError('Vector candidate query limit is invalid');
     const literal = `[${query.embedding.join(',')}]`;
     const client = await this.connect();
+    // HNSW 인덱스는 ef_search(기본 40)까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면 세션 값을 올린다.
+    await this.run(client, `SELECT set_config('hnsw.ef_search', $1, false)`, [String(query.limit)]);
     const clauses = ['index_version = $2'];
     const values: unknown[] = [literal, this.indexVersion];
     for (const [field, column] of [['context_id', 'context_id'], ['scope_id', 'scope_id'], ['usage_scope', 'usage_scope']] as const) {
@@ -107,7 +126,7 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
       if (value !== undefined) { values.push(value); clauses.push(`${column} = $${values.length}`); }
     }
     values.push(query.limit);
-    const result = await client.query(
+    const result = await this.run(client,
       `SELECT revision_digest, document_id, context_id, scope_id, usage_scope,
               1 - (embedding <=> $1::vector) AS score
          FROM ${this.table} WHERE ${clauses.join(' AND ')}
@@ -121,7 +140,7 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
     const literal = `[${entry.embedding.join(',')}]`;
     const client = await this.connect();
-    await client.query(
+    await this.run(client,
       `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
        VALUES ($1,$2,$3,$4,$5,$6::vector,$7)
        ON CONFLICT (revision_digest, index_version) DO UPDATE SET
@@ -132,36 +151,45 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
 
   async remove(revisionDigest: string): Promise<void> {
     const client = await this.connect();
-    await client.query(`DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
+    await this.run(client, `DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
   }
 
   /** Remove every row under this index version — the rebuild path re-inserts from verified state. */
   async clear(): Promise<void> {
     const client = await this.connect();
-    await client.query(`DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
+    await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
   }
 
   /**
-   * Atomically replace every row of this index version in one transaction —
-   * readers never observe an empty or partially populated index during a rebuild.
+   * Atomically replace every row of this index version in one transaction.
+   * The transaction runs on a dedicated connection so concurrent candidates()
+   * reads on the shared client keep seeing the committed pre-rebuild rows
+   * until COMMIT — readers never observe an empty or partially populated index.
    */
   async replaceAll(entries: readonly VectorIndexEntry[]): Promise<void> {
     for (const entry of entries) if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
-    const client = await this.connect();
+    const pg = await this.loadPg();
+    const client = new pg.Client(this.connection);
+    // 전용 연결의 error 이벤트를 삼키지 않으면 프로세스가 죽는다 — 실패는 아래 await에서 잡힌다.
+    client.on('error', () => { /* 실패는 query/connect await에서 전파된다 */ });
+    await client.connect();
     try {
-      await client.query('BEGIN');
-      await client.query(`DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
+      await this.run(client, 'BEGIN', []);
+      await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
       for (const entry of entries) {
-        await client.query(
+        await this.run(client,
           `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
            VALUES ($1,$2,$3,$4,$5,$6::vector,$7)`,
           [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, `[${entry.embedding.join(',')}]`, this.indexVersion]);
       }
-      await client.query('COMMIT');
+      await this.run(client, 'COMMIT', []);
     } catch (error) {
       try { await client.query('ROLLBACK'); }
       catch (rollbackError) { (error as any).rollback = rollbackError; }
       throw error;
+    } finally {
+      // 전용 연결은 요청마다 닫는다 — 정리 실패는 이미 죽은 소켓이므로 다음 호출에 영향이 없다.
+      await client.end().catch(() => { /* 이미 죽은 연결의 종료 실패는 무시해도 안전하다 */ });
     }
   }
 

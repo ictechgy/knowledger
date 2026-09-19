@@ -49,8 +49,8 @@ export interface AppOptions {
   binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
   /** Ownership transfers to the app — createApp closes it on shutdown and on initialization failure. */
   vectorIndex?: VectorCandidateIndex;
-  embedQuery?: (text: string) => readonly number[];
-  embedRevision?: (title: string, body: string) => readonly number[];
+  embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
+  embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
 }
 
 export async function createApp(options: AppOptions) {
@@ -247,6 +247,7 @@ export async function createApp(options: AppOptions) {
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),
           [`${root}/search`]: () => service.search(actor, input),
           [`${root}/vector-search`]: () => service.vectorSearch(actor, input),
+          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
