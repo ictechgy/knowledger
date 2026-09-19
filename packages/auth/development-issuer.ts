@@ -426,7 +426,12 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
     async close() {
       provider.removeAllListeners();
       csrfByInteraction.clear();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      // keep-alive 소켓이 재사용되거나 진행 중 요청이 끝나지 않으면 close()가 멈춘다 — 유휴 연결은 즉시 거두고 잔여 연결은 마감 후 강제 해제한다.
+      await new Promise<void>((resolve, reject) => {
+        const forceTimer = setTimeout(() => server.closeAllConnections(), 5_000);
+        server.close((error) => { clearTimeout(forceTimer); error ? reject(error) : resolve(); });
+        server.closeIdleConnections();
+      });
     },
     setAccountEnabled(subject, enabled) {
       const account = accountFor(accounts, subject);
