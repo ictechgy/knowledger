@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, existsSync, fchmodSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -56,6 +56,30 @@ function contentDigest(rows: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 }
 
+/** 저널 전체를 페이지로 읽는다 — 첫 페이지만 보면 잘린 이력을 다이제스트가 놓친다. */
+function readAllEvents(ledger: LocalLedger): ReturnType<LocalLedger['events']> {
+  const all: ReturnType<LocalLedger['events']> = [];
+  let after = 0;
+  for (;;) {
+    const page = ledger.events(after, 1000);
+    all.push(...page);
+    if (page.length < 1000) return all;
+    after = page[page.length - 1].checkpoint.block_number;
+  }
+}
+
+/** 초안 다이제스트 전체를 페이지로 읽는다 — 첫 페이지만 비교하면 초안 손상을 놓친다. */
+async function readAllDraftDigests(service: KnowledgerService, actor: ReturnType<typeof actorIdentity>): Promise<string[]> {
+  const digests: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await service.listDrafts(actor, 50, cursor);
+    digests.push(...page.drafts.map(row => row.revision_digest));
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return digests.sort();
+}
+
 export async function runBackupRehearsal(rootDir: string): Promise<BackupRehearsalResult> {
   if (!isAbsolute(rootDir)) throw new Error('rootDir must be absolute');
   const root = resolve(rootDir);
@@ -81,11 +105,10 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
     const published = await service.publish(actor(), { preview_id: (await service.preview(actor(), { draft_id: draft.draft_id })).preview_id, confirm_shared: true, command_id: 'backup-rehearsal-publish-001' });
     if (published.status !== 'committed') throw new Error('rehearsal fixture did not commit');
     checkpoint = published.checkpoint;
-    const journal = ledger.events(0, 1000);
+    const journal = readAllEvents(ledger);
     journalDigest = contentDigest(journal);
     eventCount = journal.length;
-    const draftsBefore = await service.listDrafts(actor(), 50, undefined);
-    draftsDigest = contentDigest(draftsBefore.drafts.map(row => row.revision_digest).sort());
+    draftsDigest = contentDigest(await readAllDraftDigests(service, actor()));
   } finally {
     ledger.close();
     vault.close();
@@ -101,15 +124,14 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
   for (const sidecar of ['shared-ledger.sqlite-wal', 'shared-ledger.sqlite-shm', 'private-local.sqlite-wal', 'private-local.sqlite-shm']) {
     if (existsSync(join(dataDir, sidecar))) throw new Error(`clean stop left a real sidecar: ${sidecar}`);
   }
-  const fakeWalPath = join(dataDir, 'shared-ledger.sqlite-wal');
-  // 배타 생성 — 확인과 생성 사이에 진짜 WAL이 생기면 덮어쓰지 않고 실패한다.
-  writeFileSync(fakeWalPath, 'not-a-real-wal', { flag: 'wx' });
-  const fakeWalId = statSync(fakeWalPath);
-  expectSnapshotError(() => createRuntimeSnapshot({ dataDir, snapshotDir }), 'offline_required', 'snapshot with WAL sidecar');
-  // 삭제 전에 심어둔 파일과 동일한지 확인한다 — 진짜 WAL을 지우는 일은 없어야 한다.
-  const beforeUnlink = statSync(fakeWalPath);
-  if (beforeUnlink.dev !== fakeWalId.dev || beforeUnlink.ino !== fakeWalId.ino) throw new Error('planted WAL sidecar was replaced — refusing to unlink');
-  unlinkSync(fakeWalPath);
+  // WAL 거부는 별도 일회용 사본에서 검증한다 — 실제 데이터 디렉터리에 가짜
+  // WAL을 심고 지우는 방식은 어떤 경합으로도 진짜 WAL을 건드릴 여지를 남긴다.
+  const guardDir = join(root, 'guard-source');
+  mkdirSync(guardDir, { recursive: true, mode: 0o700 });
+  copyFileSync(join(dataDir, 'shared-ledger.sqlite'), join(guardDir, 'shared-ledger.sqlite'));
+  copyFileSync(join(dataDir, 'private-local.sqlite'), join(guardDir, 'private-local.sqlite'));
+  writeFileSync(join(guardDir, 'shared-ledger.sqlite-wal'), 'not-a-real-wal', { flag: 'wx' });
+  expectSnapshotError(() => createRuntimeSnapshot({ dataDir: guardDir, snapshotDir: join(root, 'guard-snapshot') }), 'offline_required', 'snapshot with WAL sidecar');
 
   const backup = createRuntimeSnapshot({ dataDir, snapshotDir });
   const manifestNames = backup.files.map(file => file.name);
@@ -123,12 +145,11 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
     const restored = new KnowledgerService(restoredLedger, restoredVault, demoDefinition());
     await restored.initialize();
     if (restoredLedger.checkpoint()?.transaction_id !== checkpoint.transaction_id) throw new Error('restored checkpoint differs');
-    const restoredJournal = restoredLedger.events(0, 1000);
+    const restoredJournal = readAllEvents(restoredLedger);
     if (contentDigest(restoredJournal) !== journalDigest || restoredJournal.length !== eventCount) throw new Error('restored journal differs');
     const overview = await restored.overview(actor());
     if (!overview.documents.some((item: { payload: { document_id?: string } }) => item.payload.document_id === 'doc-backup-rehearsal-001')) throw new Error('restored document missing');
-    const drafts = await restored.listDrafts(actor(), 50, undefined);
-    if (contentDigest(drafts.drafts.map(row => row.revision_digest).sort()) !== draftsDigest) throw new Error('restored private drafts differ');
+    if (contentDigest(await readAllDraftDigests(restored, actor())) !== draftsDigest) throw new Error('restored private drafts differ');
   } finally {
     restoredLedger.close();
     restoredVault.close();
@@ -151,14 +172,11 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
   };
 }
 
-/** 증거 아티팩트를 쓴다 — 기존 파일이면 덮어쓰되 권한은 항상 0600으로 맞춘다. */
+/** 증거 아티팩트를 쓴다 — 심볼릭 링크는 O_NOFOLLOW로 거부하고, 열린 디스크립터가 일반 파일인지 확인한 뒤 항상 0600으로 쓴다. */
 function writeArtifact(path: string, output: string): void {
-  if (existsSync(path)) {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('--out must be a regular file');
-  }
-  const fd = openSync(path, 'w');
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
   try {
+    if (!fstatSync(fd).isFile()) throw new Error('--out must be a regular file');
     fchmodSync(fd, 0o600);
     writeFileSync(fd, `${output}\n`);
   } finally {

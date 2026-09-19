@@ -31,6 +31,30 @@ function contentDigest(rows: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 }
 
+/** 저널 전체를 페이지로 읽는다 — 첫 페이지만 보면 잘린 이력을 다이제스트가 놓친다. */
+function readAllEvents(): ReturnType<LocalLedger['events']> {
+  const all: ReturnType<LocalLedger['events']> = [];
+  let after = 0;
+  for (;;) {
+    const page = ledger.events(after, 1000);
+    all.push(...page);
+    if (page.length < 1000) return all;
+    after = page[page.length - 1].checkpoint.block_number;
+  }
+}
+
+/** 초안 다이제스트 전체를 페이지로 읽는다 — 첫 페이지만 비교하면 초안 손상을 놓친다. */
+async function readAllDraftDigests(): Promise<string[]> {
+  const digests: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await service.listDrafts(actor, 50, cursor);
+    digests.push(...page.drafts.map(row => row.revision_digest));
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor);
+  return digests.sort();
+}
+
 const dataDir = dataPath();
 const writeEvery = writeEveryMs();
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -53,13 +77,12 @@ try {
   const commandId = 'resilience-publish-001';
   const receipt = await service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: commandId });
   if (receipt.status !== 'committed') throw new Error('resilience fixture did not commit');
-  const journal = ledger.events(0, 1000);
-  const drafts = await service.listDrafts(actor, 50, undefined);
+  const journal = readAllEvents();
   process.stdout.write(`${JSON.stringify({
     ready: true, draft_id: draft.draft_id, preview_id: preview.preview_id, command_id: commandId,
     checkpoint: receipt.checkpoint, event_count: journal.length,
     journal_digest: contentDigest(journal),
-    drafts_digest: contentDigest(drafts.drafts.map(row => row.revision_digest).sort()),
+    drafts_digest: contentDigest(await readAllDraftDigests()),
   })}\n`);
   // 쓰기 루프가 켜지면 실제 커밋이 진행 중인 상태로 강제 종료될 수 있게 계속 발행한다.
   let loopBusy = false;
@@ -69,6 +92,8 @@ try {
     loopBusy = true;
     loopWrites += 1;
     const tag = loopWrites;
+    // begin은 쓰기 시작 전에 알린다 — 부모가 kill 시점에 진행 중인 쓰기를 입증할 수 있다.
+    process.stdout.write(`${JSON.stringify({ begin: tag })}\n`);
     void (async () => {
       const loopDraft = await service.draft(actor, {
         title: 'Resilience loop document', body_markdown: '# resilience-loop\n',

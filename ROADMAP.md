@@ -20,9 +20,9 @@ verified, or still planned. Items are grouped by track, not by promised date.
 
 ## Track A — Protocol completeness
 
-Design contracts in `docs/` that are not yet implemented:
+Design contracts in `docs/` and their implementation status:
 
-1. ~~**Organizational signing gateway**~~ — merged: per-organization remote
+1. **Organizational signing gateway** — implemented: per-organization remote
    signing service with attestation, receipts and audit (PR #6).
 2. **SSO adapter interface** — implemented: shared `createOidcAdapter`
    boundary (PR #7).
