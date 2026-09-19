@@ -39,6 +39,8 @@ export interface StartDevelopmentIssuerOptions {
   redirectUri: string;
   clientId?: string;
   subjects?: readonly string[];
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 5_000, 초과 시 잔여 연결을 강제 해제한다. */
+  shutdownDeadlineMs?: number;
 }
 
 function assertLoopbackRedirect(redirectUri: string): URL {
@@ -428,7 +430,7 @@ export async function startDevelopmentIssuer(options: StartDevelopmentIssuerOpti
       provider.removeAllListeners();
       csrfByInteraction.clear();
       // keep-alive 소켓 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 둔다.
-      await closeHttpServer(server);
+      await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'development-issuer' });
     },
     setAccountEnabled(subject, enabled) {
       const account = accountFor(accounts, subject);

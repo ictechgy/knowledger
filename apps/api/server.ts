@@ -61,6 +61,8 @@ export interface AppOptions {
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
+  /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 5_000, 초과 시 잔여 연결을 강제 해제한다. */
+  shutdownDeadlineMs?: number;
 }
 
 export async function createApp(options: AppOptions) {
@@ -364,9 +366,9 @@ export async function createApp(options: AppOptions) {
     },
     async close() {
       readiness.close();
-      // keep-alive 소켓 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 둔다.
-      await closeHttpServer(server);
-      try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } }
+      // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
+      try { await closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }); }
+      finally { try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } } }
     },
   };
 }
