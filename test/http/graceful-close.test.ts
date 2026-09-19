@@ -38,6 +38,8 @@ test('closeHttpServer rejects non-finite or negative close bounds', async () => 
   const server = createServer();
   await assert.rejects(() => closeHttpServer(server, { deadlineMs: -1 }), RangeError);
   await assert.rejects(() => closeHttpServer(server, { settleMs: -5 }), RangeError);
+  await assert.rejects(() => closeHttpServer(server, { deadlineMs: Number.NaN }), RangeError);
+  await assert.rejects(() => closeHttpServer(server, { settleMs: Number.POSITIVE_INFINITY }), RangeError);
 });
 
 test('closeHttpServer reaps an idle keep-alive socket without waiting for the deadline', async (t) => {
@@ -96,7 +98,8 @@ test('closeHttpServer force-releases a request that never finishes after the dea
     assert.equal(diagnostic.mock.callCount(), 1, 'forced release reports a diagnostic');
     const message = String(diagnostic.mock.calls[0].arguments[0]);
     assert.match(message, /test-server/, 'the diagnostic carries the server label');
-    assert.match(message, /미해제 연결 \d+개/, 'the diagnostic carries the remaining connection count');
+    assert.match(message, /강제 해제/, 'the diagnostic names the forced-release reason');
+    assert.match(message, /연결 [1-9]\d*개/, 'the diagnostic counts the sockets held at release');
   } finally {
     socket.destroy();
   }
@@ -107,11 +110,12 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
   const { server, port } = await listeningServer((_req, res) => { res.end('ok'); });
   const socket = connect(port, '127.0.0.1');
   const originalClose = server.close.bind(server);
+  let closeCallback: ((error?: Error) => void) | undefined;
   try {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
     await once(socket, 'data');
-    // close 콜백이 도착하지 않는 최악(추적 끊긴 소켓 등)을 시뮬레이션한다.
-    server.close = (() => server) as Server['close'];
+    // close 콜백이 도착하지 않는 최악(추적 끊긴 소켓 등)을 시뮬레이션한다 — 콜백은 가로채 둔다.
+    server.close = ((callback: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
     const started = Date.now();
     await closeHttpServer(server, { deadlineMs: 100, settleMs: 40, label: 'abandon-test' });
     const elapsed = Date.now() - started;
@@ -120,7 +124,12 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
     assert.equal(diagnostic.mock.callCount(), 1, 'the abandon reports a diagnostic');
     const message = String(diagnostic.mock.calls[0].arguments[0]);
     assert.match(message, /abandon-test/, 'the diagnostic carries the server label');
+    assert.match(message, /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
     assert.match(message, /미해제 연결 \d+개/, 'the diagnostic carries the remaining connection count');
+    // 마감 뒤 도착한 close 오류는 settled promise가 버리지 않고 진단으로 남긴다.
+    closeCallback?.(new Error('late boom'));
+    assert.equal(diagnostic.mock.callCount(), 2, 'a late close error is still reported');
+    assert.match(String(diagnostic.mock.calls[1].arguments[0]), /abandon-test/, 'the late error carries the server label');
   } finally {
     socket.destroy();
     await releaseServer(server, originalClose);
@@ -141,11 +150,13 @@ test('closeHttpServer propagates a server.close error instead of hanging', async
 test('closeHttpServer propagates a synchronous server.close throw without lingering timers', async () => {
   const { server } = await listeningServer((_req, res) => res.end());
   const originalClose = server.close.bind(server);
+  const timeouts = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length;
   try {
     server.close = (() => { throw new Error('sync boom'); }) as Server['close'];
-    const started = Date.now();
+    const before = timeouts();
     await assert.rejects(() => closeHttpServer(server, { deadlineMs: 5_000, settleMs: 250 }), /sync boom/);
-    assert.ok(Date.now() - started < 500, 'a sync throw rejects immediately instead of lingering for the deadline');
+    await sleep(20);
+    assert.equal(timeouts(), before, 'a sync throw must not leak the deadline timers');
   } finally {
     await releaseServer(server, originalClose);
   }
