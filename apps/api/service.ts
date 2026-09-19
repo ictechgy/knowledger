@@ -1294,7 +1294,7 @@ export class KnowledgerService {
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const freshManifest: Record<string, unknown> = result.manifest!;
     if (this.storedManifestMismatch(run, freshManifest)) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
-    if (run.model_adapter_id !== null) {
+    if (typeof run.model_adapter_id === 'string') {
       const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
     }
