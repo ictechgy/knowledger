@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { KnowledgerService, ModelEgressTimeoutError } from '../../apps/api/service.ts';
+import type { ModelEgressPolicy } from '../../apps/api/service.ts';
 import { demoFixtures, actorIdentity, PERSONAS, demoDefinition } from '../../examples/order-workflow/config.ts';
 import { seedDemo } from '../../examples/order-workflow/application.ts';
 import { guardedGeneration } from '../../packages/client/guarded-generation.ts';
@@ -12,7 +13,7 @@ const sales = fixtures.revisions[0];
 const actor = actorIdentity(PERSONAS[0]);
 const selection = { document_ids: [sales.payload.document_id], context_id: sales.payload.context_id, scope_id: sales.payload.scope_id, usage_scope: sales.payload.usage_scope };
 
-async function fixture(t: any, modelEgress?: any) {
+async function fixture(t: any, modelEgress?: ModelEgressPolicy) {
   const ledger = new LocalLedger(':memory:', 'kcl-demo');
   const vault = new PrivateStore(':memory:');
   const service = new KnowledgerService(ledger, vault, demoDefinition(), undefined, modelEgress ? { modelEgress } : {});
@@ -20,6 +21,15 @@ async function fixture(t: any, modelEgress?: any) {
   await seedDemo(service);
   t.after(() => { ledger.close(); vault.close(); });
   return { service, ledger, vault };
+}
+
+/** 저장된 run 기록을 공개 API 없이 직접 변조한다 — 영향 행 수를 단언해 스키마 드리프트 시 조용히 무력화되지 않게 한다. */
+function tamperStoredRun(vault: PrivateStore, runId: string, mutate: (run: any) => void) {
+  const run = vault.get('run', runId, actor);
+  mutate(run);
+  const info = (vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
+    .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
+  assert.equal(info.changes, 1);
 }
 
 test('resolve embeds the configured egress policy version in the manifest', async t => {
@@ -151,10 +161,7 @@ test('a tampered stored manifest binding field is detected at revalidation', asy
   const resolved = await f.service.resolve(actor, selection);
   assert.equal(resolved.status, 'provided');
   const runId = resolved.manifest.run_id;
-  const run = f.vault.get('run', runId, actor);
-  run.manifest.model_egress_policy_version = run.manifest.model_egress_policy_version + 1;
-  (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
-    .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
+  tamperStoredRun(f.vault, runId, run => { run.manifest.model_egress_policy_version += 1; });
   const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
   assert.equal(result.status, 'withheld');
   assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
@@ -238,13 +245,7 @@ test('a missing binding field in the stored run record is treated as tampering',
   const resolved = await f.service.resolve(actor, selection);
   assert.equal(resolved.status, 'provided');
   const runId = resolved.manifest.run_id;
-  const run = f.vault.get('run', runId, actor);
-  delete run.manifest.policy_id;
-  // 공개 API는 run 기록 갱신을 허용하지 않으므로 변조 시뮬레이션은 저장소 내부에 직접 닿는다 —
-  // 영향 행 수를 단언해 스키마 드리프트 시 이 테스트가 무력화되지 않고 실패하게 한다.
-  const info = (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
-    .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
-  assert.equal(info.changes, 1);
+  tamperStoredRun(f.vault, runId, run => { delete run.manifest.policy_id; });
   const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
   assert.equal(result.status, 'withheld');
   assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
@@ -271,14 +272,16 @@ test('a hanging egress hook times out at revalidation too', async t => {
   assert.ok(errors[0] instanceof ModelEgressTimeoutError);
 });
 
-test('a denied resolve does not persist a run record', async t => {
-  const f = await fixture(t, { allows: () => false });
+test('a denied resolve does not persist a run record and revalidation mints none', async t => {
+  const f = await fixture(t, { allows: ({ adapter_id }: any) => adapter_id === 'adapter-allowed' });
+  const runCount = () => (f.vault as any).db.prepare("SELECT COUNT(*) AS c FROM private_records WHERE kind = 'run'").get().c;
   const denied = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-blocked' });
   assert.equal(denied.status, 'withheld');
-  const runs = (f.vault as any).db.prepare("SELECT COUNT(*) AS c FROM private_records WHERE kind = 'run'").get();
-  assert.equal(runs.c, 0);
+  assert.equal(runCount(), 0);
   const allowed = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-allowed' });
-  assert.equal(allowed.status, 'withheld');
-  const still = (f.vault as any).db.prepare("SELECT COUNT(*) AS c FROM private_records WHERE kind = 'run'").get();
-  assert.equal(still.c, 0);
+  assert.equal(allowed.status, 'provided');
+  assert.equal(runCount(), 1);
+  const result = await f.service.revalidate(actor, allowed.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-allowed' });
+  assert.equal(result.status, 'valid');
+  assert.equal(runCount(), 1);
 });

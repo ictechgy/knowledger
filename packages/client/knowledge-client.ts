@@ -1,4 +1,4 @@
-import { digestPayload, validateRevision, canonicalize, MODEL_ADAPTER_ID } from '../domain/index.ts';
+import { digestPayload, validateRevision, canonicalize, MODEL_ADAPTER_ID, MANIFEST_BINDING_FIELDS } from '../domain/index.ts';
 import { parseStrictJson } from '../fabric/canonical.ts';
 
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/u;
@@ -82,6 +82,7 @@ function isLoopback(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
+/** 모델 어댑터 식별자 검증 — 서버 assertModelAdapterId와 같은 MODEL_ADAPTER_ID 계약을 공유한다. */
 function assertAdapterId(value: unknown): string {
   if (typeof value !== 'string' || !MODEL_ADAPTER_ID.test(value)) invalid();
   return value;
@@ -199,7 +200,7 @@ export function validateRefreshedManifest(previousValue:unknown,nextValue:unknow
   validateManifest(previous,selection,digest,agreement);
   const next=validateManifest(nextValue,selection,digest,agreement);
   if(previous.run_id!==next.run_id)invalid();
-  for(const field of ['policy_id','policy_version','membership_epoch','model_egress_policy_version','retrieval_profile_id'])if(previous[field]!==next[field])invalid();
+  for(const field of MANIFEST_BINDING_FIELDS)if(previous[field]!==next[field])invalid();
   const before=previous.checkpoint,after=next.checkpoint;
   if(after.channel_id!==before.channel_id||after.block_number<before.block_number||(after.block_number===before.block_number&&after.transaction_index<=before.transaction_index))invalid();
   if(canonicalize(previous.provided_revisions)!==canonicalize(next.provided_revisions))invalid();

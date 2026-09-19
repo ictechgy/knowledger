@@ -56,19 +56,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests are dropped. `LocalVectorIndex` provides the in-process development
   adapter; `PgVectorIndex` targets pgvector with an `index_version`-scoped
   schema and lazily loaded `pg` dependency.
-- Server-side model egress gate: `KnowledgerService`/`createApp` accept a
-  `modelEgress` policy (`policy_version` lands in the manifest's
-  `model_egress_policy_version`; `allows` is consulted whenever the caller
-  names a `model_adapter_id`). `resolve` withholds `EGRESS_POLICY_DENIED`
-  before issuing a manifest — adapter requests are denied outright when no
-  `allows` hook is configured — and `revalidate` re-checks the current policy
-  immediately before release against the adapter bound into the run record,
-  rejecting a different or missing adapter with `EGRESS_ADAPTER_MISMATCH` and
-  distinguishing a throwing policy hook as `EGRESS_POLICY_UNAVAILABLE`. The
-  policy, membership-epoch, egress-version and retrieval-profile bindings are
-  compared server-side instead of relying on client validation alone.
-  `guardedGeneration` now forwards its `adapterId` through `resolve` and both
-  `revalidate` calls so the server policy gate covers generate and release.
+- Server-side model egress gate: `KnowledgerService`/`createApp`/
+  `createConfiguredApp` accept a `modelEgress` policy (`policy_version` lands
+  in the manifest's `model_egress_policy_version`; `allows` is consulted
+  whenever the caller names a `model_adapter_id`). `resolve` withholds
+  `EGRESS_POLICY_DENIED` before issuing a manifest — adapter requests are
+  denied outright when no `allows` hook is configured — and `revalidate`
+  re-checks the current policy immediately before release against the adapter
+  bound into the run record, rejecting a different or missing adapter with
+  `EGRESS_ADAPTER_MISMATCH` and distinguishing a throwing or timed-out policy
+  hook as `EGRESS_POLICY_UNAVAILABLE` (`timeout_ms`, reported through the
+  `onError` diagnostic). The policy, membership-epoch, egress-version and
+  retrieval-profile bindings are compared server-side instead of relying on
+  client validation alone. `guardedGeneration` now forwards its `adapterId`
+  through `resolve` and both `revalidate` calls so the server policy gate
+  covers generate and release. Deployment notes: callers that pass
+  `model_adapter_id` without a configured `allows` hook now fail closed
+  (`EGRESS_POLICY_DENIED`) — configure `modelEgress.allows` where adapter
+  egress is intended; revalidation refreshes the same run instead of minting
+  a new run id, and the client requires the run id to match, so server and
+  client should be deployed together.
 - Signing audit hardening: the audit log path may not collide with configured
   key, certificate, socket or signing configuration paths — hard links and
   non-regular targets are refused — records are appended in one write call,
