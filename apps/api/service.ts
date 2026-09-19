@@ -5,7 +5,7 @@ import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { BrowseQuery, BrowseResult, RevisionBrowseRef, ProposalBrowseRef, AgreementBrowseRef, RevisionBrowseAnnotation } from '../../packages/storage/browse-contract.ts';
 import { ScanningBrowseQueries } from '../../packages/storage/scanning-browse.ts';
 import { cosineSimilarity, developmentEmbedding, isFiniteEmbedding } from '../../packages/storage/vector-index.ts';
-import type { VectorCandidateIndex, VectorIndexWriter } from '../../packages/storage/vector-index.ts';
+import type { VectorCandidate, VectorCandidateIndex, VectorIndexEntry, VectorIndexWriter } from '../../packages/storage/vector-index.ts';
 import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
@@ -66,13 +66,13 @@ export class KnowledgerService {
   private scanningBrowse: ScanningBrowseQueries | undefined;
   private readonly searchMatches = new SearchMatchCache();
   private readonly vectorIndex: VectorCandidateIndex | undefined;
-  private readonly embedQuery: (text: string) => readonly number[];
-  private readonly embedRevision: (title: string, body: string) => readonly number[];
+  private readonly embedQuery: (text: string) => readonly number[] | Promise<readonly number[]>;
+  private readonly embedRevision: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 개정본 다이제스트는 불변이므로 임베딩도 불변 — derived-scan의 요청당 O(N) 재계산을 막는 상한 캐시다. */
   private readonly embeddingCache = new Map<string, readonly number[]>();
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
-    options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[]; embedRevision?: (title: string, body: string) => readonly number[] } = {}) {
+    options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     if ((options.embedQuery === undefined) !== (options.embedRevision === undefined)) throw new TypeError('embedQuery and embedRevision must be configured together');
@@ -86,14 +86,28 @@ export class KnowledgerService {
     this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));
   }
 
-  private embedRevisionCached(digest: string, title: string, body: string): readonly number[] {
+  private async embedRevisionCached(digest: string, title: string, body: string): Promise<readonly number[]> {
     const cached = this.embeddingCache.get(digest);
     if (cached) return cached;
-    const embedded = this.embedRevision(title, body);
+    const embedded = await this.embedRevision(title, body);
     if (!isFiniteEmbedding(embedded)) throw new TypeError('embedRevision returned an invalid embedding');
     if (this.embeddingCache.size >= EMBEDDING_CACHE_LIMIT) this.embeddingCache.delete(this.embeddingCache.keys().next().value!);
     this.embeddingCache.set(digest, embedded);
     return embedded;
+  }
+
+  /**
+   * 임베딩·후보 수집 경로의 오류 분류 — TypeError·RangeError는 영구 설정 오류라
+   * 재시도 불가 INDEX_MISCONFIGURED로, 그 외 연결·조회 실패는 재시도 가능
+   * INDEX_UNAVAILABLE로 감싼다. 원인은 cause에 보존한다.
+   */
+  private indexError(error: unknown): ApiError {
+    const permanent = error instanceof TypeError || error instanceof RangeError;
+    const wrapped = new ApiError(permanent ? 'INDEX_MISCONFIGURED' : 'INDEX_UNAVAILABLE',
+      permanent ? '후보 색인 설정이 올바르지 않습니다. 배포 설정을 확인해 주세요.' : '후보 색인을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+      permanent ? 500 : 503, !permanent);
+    wrapped.cause = error;
+    return wrapped;
   }
   async refresh(): Promise<void> {
     try { await this.ledger.refresh(); }
@@ -897,8 +911,10 @@ export class KnowledgerService {
     const filter = { query: input.query, document_ids: input.document_ids ?? null, context_id: input.context_id ?? null, scope_id: input.scope_id ?? null, usage_scope: input.usage_scope ?? null };
     const page = this.page(actor, 'vector-search', input, filter);
     const context = this.browseContext(page.checkpoint);
-    const embedding = this.embedQuery(input.query);
-    if (!isFiniteEmbedding(embedding)) throw new ApiError('INDEX_MISCONFIGURED', '질의 임베딩이 유효하지 않습니다. 임베딩 설정을 확인해 주세요.', 500);
+    let embedding: readonly number[];
+    try { embedding = await this.embedQuery(input.query); }
+    catch (error) { throw this.indexError(error); }
+    if (!isFiniteEmbedding(embedding)) throw this.indexError(new TypeError('embedQuery returned an invalid embedding'));
     const scores = new Map<string, number | null>();
     const required = new Set<string>();
 
@@ -913,26 +929,19 @@ export class KnowledgerService {
 
     if (this.vectorIndex) {
       // 외부 색인은 후보 제안기다 — 색인이 놓친 문서를 없다고 단정할 수 없다.
-      let candidates: readonly { revision_digest: string; score: number }[];
-      try {
-        candidates = await this.vectorIndex.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: VECTOR_CANDIDATE_LIMIT });
-      } catch (error) {
-        // 영구 설정 오류(차원·한도 위반)는 재시도로 해소되지 않는다 — 연결 계열 실패만 503 재시도다.
-        const code = error instanceof TypeError || error instanceof RangeError ? 'INDEX_MISCONFIGURED' : 'INDEX_UNAVAILABLE';
-        const wrapped = new ApiError(code, code === 'INDEX_MISCONFIGURED' ? '후보 색인 설정이 올바르지 않습니다. 배포 설정을 확인해 주세요.' : '후보 색인을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.', code === 'INDEX_MISCONFIGURED' ? 500 : 503, code !== 'INDEX_MISCONFIGURED');
-        wrapped.cause = error;
-        throw wrapped;
-      }
-      // 형식이 깨진 후보는 어차피 원장에서 검증되지 않으므로 정렬 교란 전에 버린다.
-      for (const candidate of candidates) {
-        if (typeof candidate.revision_digest !== 'string' || !DIGEST.test(candidate.revision_digest) || !Number.isFinite(candidate.score)) continue;
+      for (const candidate of await this.externalCandidates(embedding, input)) {
         if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
       }
     } else {
       // 외부 색인이 없으면 검증된 개정본을 체크포인트에서 전수 열거해 점수를 매긴다 —
       // 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
+      // 필수 참조는 점수 없는 고정 참조 계약을 유지한다 — 모드마다 응답 형태가 달라지지 않게 한다.
       for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, { context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope })) {
-        scores.set(reference.revision_digest, cosineSimilarity(embedding, this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)));
+        if (required.has(reference.revision_digest)) continue;
+        let score: number;
+        try { score = cosineSimilarity(embedding, await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)); }
+        catch (error) { throw this.indexError(error); }
+        scores.set(reference.revision_digest, score);
       }
     }
 
@@ -968,24 +977,45 @@ export class KnowledgerService {
   }
 
   /**
+   * 외부 색인의 후보를 수집해 계약 범위로 정규화한다 — 색인 실패는 indexError로
+   * 분류하고, 과잉·형식 파괴 행은 정렬·주석 작업을 오염시키기 전에 버린다.
+   */
+  private async externalCandidates(embedding: readonly number[], input: any): Promise<readonly VectorCandidate[]> {
+    let candidates: readonly VectorCandidate[];
+    try {
+      candidates = await this.vectorIndex!.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: VECTOR_CANDIDATE_LIMIT });
+    } catch (error) { throw this.indexError(error); }
+    if (!Array.isArray(candidates)) throw this.indexError(new TypeError('Vector index returned a non-array result'));
+    return candidates.slice(0, VECTOR_CANDIDATE_LIMIT).filter(candidate =>
+      candidate !== null && typeof candidate === 'object' && typeof candidate.revision_digest === 'string'
+      && DIGEST.test(candidate.revision_digest) && Number.isFinite(candidate.score));
+  }
+
+  /**
    * 파생 벡터 색인 재구축 — 검증된 개정본의 전수 스캔만이 색인의 입력이다.
    * 색인은 후보 저장소이며 자격의 근거가 아니므로 재구축은 언제든 안전하다.
    * 새 행을 모두 계산한 뒤 replaceAll로 한 번에 교체해 재구축 도중이나 실패 시에도
    * 빈·부분 색인이 읽기 경로에 노출되지 않는다.
+   * 전수 스캔·전체 교체를 유발하므로 배포 운영자(bootstrap actor)만 호출할 수 있다.
    */
   async rebuildVectorIndex(actor: Actor) {
     const writer = this.vectorIndex as (VectorCandidateIndex & Partial<VectorIndexWriter>) | undefined;
     if (!writer || typeof writer.replaceAll !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '원자적 재구축을 지원하는 벡터 색인이 설정되지 않았습니다.');
     await this.refresh();
     this.actor(actor);
+    const operator = this.definition.bootstrap_actor;
+    if (actor.org_id !== operator.org_id || actor.actor_id !== operator.actor_id || actor.kind !== operator.kind) throw new ApiError('FORBIDDEN', '벡터 색인 재구축은 배포 운영자만 실행할 수 있습니다.', 403);
     const page = this.page(actor, 'vector-index-rebuild', {}, {});
-    const entries: { document_id: string; revision_digest: string; context_id: string; scope_id: string; usage_scope: string; embedding: readonly number[] }[] = [];
+    const entries: VectorIndexEntry[] = [];
     for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, {})) {
+      let embedded: readonly number[];
+      try { embedded = await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown); }
+      catch (error) { throw this.indexError(error); }
       entries.push({ document_id: reference.slot.document_id, revision_digest: reference.revision_digest,
-        context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope,
-        embedding: this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown) });
+        context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope, embedding: embedded });
     }
-    await writer.replaceAll(entries);
+    try { await writer.replaceAll(entries); }
+    catch (error) { throw this.indexError(error); }
     return { indexed: entries.length, checkpoint: page.checkpoint };
   }
 
