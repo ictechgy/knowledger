@@ -168,3 +168,63 @@ test('invalid egress policy versions are rejected at construction', async t => {
     ledger.close(); vault.close();
   }
 });
+
+test('a throwing egress hook reports the error to the diagnostic callback', async t => {
+  const errors: unknown[] = [];
+  const cause = new Error('policy store down');
+  const f = await fixture(t, { allows: () => { throw cause; }, onError: (error: unknown) => errors.push(error) });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+  assert.deepEqual(errors, [cause]);
+});
+
+test('a hanging egress hook times out as policy unavailability', async t => {
+  const errors: unknown[] = [];
+  const f = await fixture(t, { timeout_ms: 5, allows: () => new Promise(() => {}), onError: (error: unknown) => errors.push(error) });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+  assert.equal(errors.length, 1);
+});
+
+test('an asynchronous false egress verdict is denied at resolve and revalidate', async t => {
+  const f = await fixture(t, { allows: async () => false });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'withheld');
+  assert.equal(resolved.reason, 'EGRESS_POLICY_DENIED');
+});
+
+test('a truthy non-boolean egress verdict is denied at revalidation too', async t => {
+  let verdict: unknown = true;
+  const f = await fixture(t, { allows: () => verdict });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  verdict = 1;
+  const result = await f.service.revalidate(actor, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'EGRESS_POLICY_DENIED');
+});
+
+test('the egress hook receives isolated copies that cannot mutate server state', async t => {
+  let seen: any;
+  const f = await fixture(t, { allows: (input: any) => { seen = input; input.manifest.policy_id = 'tampered'; input.actor.actor_id = 'tampered'; return true; } });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  assert.notEqual(seen.manifest, resolved.manifest);
+  assert.notEqual(resolved.manifest.policy_id, 'tampered');
+  assert.equal(actor.actor_id, PERSONAS[0].actor_id);
+});
+
+test('a missing binding field in the stored run record is treated as tampering', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, selection);
+  assert.equal(resolved.status, 'provided');
+  const runId = resolved.manifest.run_id;
+  const run = f.vault.get('run', runId, actor);
+  delete run.manifest.policy_id;
+  (f.vault as any).db.prepare("UPDATE private_records SET value_json = ? WHERE kind = 'run' AND record_id = ? AND org_id = ? AND actor_id = ?")
+    .run(JSON.stringify(run), runId, actor.org_id, actor.actor_id);
+  const result = await f.service.revalidate(actor, runId, { action: 'use-context' });
+  assert.equal(result.status, 'withheld');
+  assert.equal(result.reason, 'KNOWLEDGE_CHANGED');
+});

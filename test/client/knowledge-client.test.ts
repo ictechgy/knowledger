@@ -98,7 +98,7 @@ test('validated resolve rejects development modes by default and catches revisio
 
 test('client validates the real demo resolve and revalidate manifest lifecycle with caller cookie and CSRF', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'knowledger-client-integration-'));
-  const app = await createDemoApp({ dataDir: directory, modelEgress: { allows: () => true } });
+  const app = await createDemoApp({ dataDir: directory, modelEgress: { allows: ({ adapter_id }: any) => adapter_id === 'demo-adapter' } });
   const origin = await app.listen(0);
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const sessionResponse = await fetch(`${origin}/api/session`);
@@ -122,6 +122,15 @@ test('client validates the real demo resolve and revalidate manifest lifecycle w
   });
   assert.equal(guarded.status, 'provided');
   if (guarded.status === 'provided') assert.equal(guarded.output, 'generated-from-approved-data');
+  const denied = await client.resolve(selection, { allowDevelopment: true, modelAdapterId: 'adapter-not-allowed' });
+  assert.equal(denied.status, 'withheld');
+  assert.equal(denied.reason, 'EGRESS_POLICY_DENIED');
+  const bound = await client.resolve(selection, { allowDevelopment: true, modelAdapterId: 'demo-adapter' });
+  assert.equal(bound.status, 'provided');
+  if (bound.status !== 'provided') return;
+  const mismatch = await client.revalidate(bound.manifest.run_id);
+  assert.equal(mismatch.status, 'withheld');
+  assert.equal(mismatch.reason, 'EGRESS_ADAPTER_MISMATCH');
 });
 
 test('revalidate does not accept a bare valid status without a refreshed manifest', async () => {
