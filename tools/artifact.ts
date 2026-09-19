@@ -90,6 +90,8 @@ export function assertWritableTarget(path: string, protectedPaths: string[]): vo
  * 검증과 쓰기가 항상 같은 디렉터리를 본다.
  * 주의: cwd 고정은 Node에서 유일한 이식 가능한 inode 고정 수단이지만 프로세스 전역이다 —
  * 동기 단일 스레드 컨텍스트에서만 호출해야 하며 worker thread와 cwd를 공유해선 안 된다.
+ * 출력 디렉터리는 쓰기 중 내용이 바뀌지 않는 신뢰 경로여야 한다 — 검증·게시 사이의
+ * 하나의 syscall 간격은 이식 가능한 수단으로 없앨 수 없어 잔여 경합을 탐지해 거부한다.
  */
 export function writeArtifact(path: string, output: string, guard?: ArtifactGuard): void {
   const realDir = realpathSync(dirname(path));
@@ -98,7 +100,9 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
   // 실패해 검증 없이 끝나지 않게 한다.
   const tmp = `.kcl-artifact-${randomUUID()}.tmp`;
   const cwd = process.cwd();
-  const cwdStat = statSync(cwd);
+  // 실제 cwd inode를 '.'로 캡처한다 — 경로명으로 조회하면 이름이 바뀐 대체 디렉터리를
+  // 잘못 신원으로 삼을 수 있다.
+  const cwdStat = statSync('.');
   // realpath와 chdir 사이의 네임스페이스 변경은 고정된 inode와의 비교로 잡는다 — 하나의
   // syscall 간격만 남는 잔여 창은 이식 가능한 수단으로는 더 좁힐 수 없다.
   const expected = statSync(realDir);
@@ -137,20 +141,24 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
       assertNotProtected(join(realpathSync('.'), fileName), dest ? `${dest.dev}:${dest.ino}` : undefined, guard.protectedPaths, fold);
     }
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
-    // 게시 직전 고정 디렉터리와 임시 inode를 다시 확인한다 — 하나의 syscall 간격의
-    // 잔여 창만 남긴다.
+    // 게시 직전 고정 디렉터리와 임시·대상 신원을 다시 확인한다 — 하나의 syscall
+    // 간격의 잔여 창만 남긴다. 대상이 검증과 다른 inode로 바뀌면 rename이 외부
+    // 객체를 지우므로 거부한다 — 출력 디렉터리는 쓰기 중 바뀌지 않는 신뢰 경로여야 한다.
     const repin = statSync('.');
     if (repin.dev !== expected.dev || repin.ino !== expected.ino) throw new Error('--out directory changed during write');
     const tmpFinal = lstatSync(tmp, { throwIfNoEntry: false });
     if (!tmpFinal || !tmpFinal.isFile() || tmpFinal.dev !== tmpStat.dev || tmpFinal.ino !== tmpStat.ino || tmpFinal.nlink !== 1) {
       throw new Error('--out temporary file was replaced');
     }
+    const destFinal = lstatSync(fileName, { throwIfNoEntry: false });
+    if (destFinal?.dev !== dest?.dev || destFinal?.ino !== dest?.ino) throw new Error('--out changed during write');
     renameSync(tmp, fileName);
     // 게시된 객체가 쓴 inode인지 확인한다 — 재검증과 rename 사이의 잔여 창에서 이름이
     // 대체돼도 대상 경로에 외부 객체를 남기지 않고 닫힌 실패로 둔다.
     const published = lstatSync(fileName, { throwIfNoEntry: false });
     if (!published || !published.isFile() || published.dev !== tmpStat.dev || published.ino !== tmpStat.ino || published.nlink !== 1) {
-      try { rmSync(fileName, { force: true }); } catch { /* 대체된 객체 정리 시도만 한다 */ }
+      // 대체된 객체가 디렉터리일 수도 있어 재귀로 정리한다 — 심볼릭 링크는 따라가지 않는다.
+      try { rmSync(fileName, { recursive: true, force: true }); } catch { /* 대체된 객체 정리 시도만 한다 */ }
       throw new Error('--out was replaced during publish');
     }
     try {
