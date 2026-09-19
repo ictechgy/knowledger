@@ -18,3 +18,7 @@ __pycache__/
 
 playwright-report/
 test-results/
+
+# 로컬 전용 — 에이전트 도구 상태와 별도 작업 리포지터리
+.serena/
+scorpionfish/
