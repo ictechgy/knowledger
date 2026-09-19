@@ -13,7 +13,7 @@ import { guardedGeneration } from '../packages/client/guarded-generation.ts';
 export async function runKbDemo(){
   const directory=mkdtempSync(join(tmpdir(),'knowledger-kb-demo-'));
   const config=createProjectTemplate(['WriterMSP','ReviewerMSP'],'kb-demo');
-  const app=await createConfiguredApp(config,{dataDir:directory,port:0});
+  const app=await createConfiguredApp(config,{dataDir:directory,port:0,modelEgress:{allows:({adapter_id}:any)=>adapter_id==='example-local-generator'}});
   try{
     const origin=await app.listen(0);
     const writer=await createDevelopmentClient({baseUrl:origin,workspaceId:config.workspace.id,orgId:'WriterMSP',actorId:'maintainer'});

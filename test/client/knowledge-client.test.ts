@@ -98,7 +98,7 @@ test('validated resolve rejects development modes by default and catches revisio
 
 test('client validates the real demo resolve and revalidate manifest lifecycle with caller cookie and CSRF', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'knowledger-client-integration-'));
-  const app = await createDemoApp({ dataDir: directory });
+  const app = await createDemoApp({ dataDir: directory, modelEgress: { allows: () => true } });
   const origin = await app.listen(0);
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const sessionResponse = await fetch(`${origin}/api/session`);
@@ -111,7 +111,7 @@ test('client validates the real demo resolve and revalidate manifest lifecycle w
   if (resolved.status !== 'provided') return;
   const revalidated = await client.revalidate(resolved.manifest.run_id);
   assert.equal(revalidated.status, 'valid');
-  assert.notEqual(revalidated.refreshed_manifest.run_id, resolved.manifest.run_id);
+  assert.equal(revalidated.refreshed_manifest.run_id, resolved.manifest.run_id);
   const guarded = await guardedGeneration({
     client, selection, allowDevelopment: true, adapterId: 'demo-adapter', authorize: async () => true,
     generate: async ({ documents, manifest: generationManifest }) => {

@@ -1,4 +1,5 @@
 import { createApp } from './server.ts';
+import type { ModelEgressPolicy } from './service.ts';
 import { configuredOutboxFile } from './configured-fabric-runtime.ts';
 import { applicationDefinition, configurationAuthorityDigest, validateProjectConfiguration } from '../../packages/config/project.ts';
 import type { ProjectConfiguration } from '../../packages/config/types.ts';
@@ -8,7 +9,7 @@ import { ensureConfigurationScope } from '../../packages/storage/configuration-s
 import type { ConfiguredRuntimeBinding } from '../../packages/storage/configuration-scope.ts';
 
 /** Select and bind one installation before opening any configured identity or connection. */
-export async function createConfiguredApp(input: ProjectConfiguration, options: {dataDir:string;port:number;organization?:string}) {
+export async function createConfiguredApp(input: ProjectConfiguration, options: {dataDir:string;port:number;organization?:string;modelEgress?:ModelEgressPolicy}) {
   const configuration = validateProjectConfiguration(input);
   const definition = applicationDefinition(configuration);
   const fabric = configuration.ledger.mode === 'fabric';
@@ -46,5 +47,5 @@ export async function createConfiguredApp(input: ProjectConfiguration, options: 
     }
   } catch(error) { await ledger?.close();await authentication?.close();throw error; }
   // createApp takes ownership and closes resources on initialization failure.
-  return createApp({dataDir:options.dataDir,definition,ledger,personas,authentication,binding,publicOrigin:configuration.server?.public_origin});
+  return createApp({dataDir:options.dataDir,definition,ledger,personas,authentication,binding,publicOrigin:configuration.server?.public_origin,modelEgress:options.modelEgress});
 }
