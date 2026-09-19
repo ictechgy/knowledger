@@ -62,6 +62,10 @@ function assertModelAdapterId(value: unknown): asserts value is string | undefin
 export interface ModelEgressCheck { adapter_id: string; manifest: Record<string, unknown>; actor: Actor }
 /** 어댑터별 현재 모델 전송 허용 여부 — 엄격한 true만 허용으로 간주한다. */
 export type ModelEgressAllows = (input: ModelEgressCheck) => boolean | Promise<boolean>;
+/** egress 정책 훅 호출 상한 초과 오류 — onError 소비자가 정책 예외와 타임아웃을 구분할 수 있다. */
+export class ModelEgressTimeoutError extends Error {
+  constructor() { super('model egress policy timeout'); this.name = 'ModelEgressTimeoutError'; }
+}
 /**
  * modelEgress 옵션 — policy_version은 manifest에 결속되고(기본 1), allows가
  * resolve·revalidate 시점의 현재 전송 권한을 재확인한다. allows 미설정 시
@@ -125,10 +129,12 @@ export class KnowledgerService {
     if (!Number.isSafeInteger(version) || version < 1) throw new TypeError('Model egress policy version must be a positive integer');
     this.egressVersion = version;
     this.egressAllows = options.modelEgress?.allows;
+    if (this.egressAllows !== undefined && typeof this.egressAllows !== 'function') throw new TypeError('Model egress allows must be a function');
     const timeoutMs = options.modelEgress?.timeout_ms ?? 10_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('Model egress timeout must be a positive integer of milliseconds');
     this.egressTimeoutMs = timeoutMs;
     this.egressOnError = options.modelEgress?.onError;
+    if (this.egressOnError !== undefined && typeof this.egressOnError !== 'function') throw new TypeError('Model egress onError must be a function');
   }
 
   /**
@@ -137,20 +143,24 @@ export class KnowledgerService {
    * 장애와 정상 거부를 구분하도록 'unavailable'을 돌린다 — 둘 다 fail-closed다.
    * manifest·actor는 사본으로 넘겨 훅이 서버 상태를 변조하지 못하게 한다.
    */
-  private async checkEgress(actor: Actor, adapterId: string, manifest: any): Promise<'allowed' | 'denied' | 'unavailable'> {
+  private async checkEgress(actor: Actor, adapterId: string, manifest: Record<string, unknown>): Promise<'allowed' | 'denied' | 'unavailable'> {
     if (!this.egressAllows) return 'denied';
-    const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) };
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // 훅의 응답 지연이 resolve/revalidate를 무기한 붙잡지 않게 호출 상한을 둔다.
+      // 사본 생성 실패(비직렬화 값)도 훅 예외와 같이 정책 불가로 fail-closed한다.
+      const input = { adapter_id: adapterId, manifest: structuredClone(manifest), actor: structuredClone(actor) };
+      // 훅의 응답 지연이 resolve/revalidate를 무기한 붙잡지 않게 호출 상한을 두고, 판정 후 타이머를 해제한다.
       const verdict = await Promise.race([
         Promise.resolve(this.egressAllows(input)),
-        new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('model egress policy timeout')), this.egressTimeoutMs); timer.unref(); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new ModelEgressTimeoutError()), this.egressTimeoutMs); timer.unref(); }),
       ]);
       return verdict === true ? 'allowed' : 'denied';
     } catch (error) {
       // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
       try { this.egressOnError?.(error); } catch { /* 진단 콜백 실패는 판정에 영향을 주지 않는다 */ }
       return 'unavailable';
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -1237,6 +1247,8 @@ export class KnowledgerService {
     const run = this.vault.get('run', runIdStr, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
     if (run.boot_id !== this.bootId) return { status: 'withheld', reason: 'SESSION_RESTARTED_RESOLVE_AGAIN' };
+    // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
+    if (input.model_adapter_id !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH' };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, runIdStr);
     if (result.status !== 'provided') return { status: 'withheld', reason: result.reason, checkpoint: result.checkpoint };
     const old = run.manifest.provided_revisions[0];
@@ -1245,13 +1257,11 @@ export class KnowledgerService {
     // 정책·epoch·egress 결속 필드는 서버에서도 대조한다 — 클라이언트 검증만에 의존하지 않는다.
     // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나
     // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
-    const freshManifest: any = result.manifest;
+    const freshManifest: Record<string, unknown> = result.manifest;
     for (const field of ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id']) {
       // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
       if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
-    // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 거부한다 — egress 확인을 우회할 수 없다.
-    if (input.model_adapter_id !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: result.checkpoint };
     if (run.model_adapter_id !== undefined) {
       const egress = await this.checkEgress(actor, run.model_adapter_id, freshManifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), checkpoint: result.checkpoint };
