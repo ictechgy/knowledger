@@ -206,6 +206,9 @@ export class DomainError extends Error {
 /** Model adapter identifier contract shared by the server egress gate and the knowledge client. */
 export const MODEL_ADAPTER_ID = /^[A-Za-z][A-Za-z0-9._:-]{2,127}$/u;
 
+/** Manifest binding fields compared on revalidation — server and knowledge client must share this exact list. */
+export const MANIFEST_BINDING_FIELDS = ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id'] as const;
+
 export const KEY_PREFIXES = Object.freeze({
   config: "kcl:v1:config",
   revision: "kcl:v1:revision",

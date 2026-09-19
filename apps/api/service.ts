@@ -135,6 +135,8 @@ export class KnowledgerService {
     this.egressTimeoutMs = timeoutMs;
     this.egressOnError = options.modelEgress?.onError;
     if (this.egressOnError !== undefined && typeof this.egressOnError !== 'function') throw new TypeError('Model egress onError must be a function');
+    // onError 미설정 배포도 정책 장애를 인지할 수 있게 기본 진단은 표준 오류로 남긴다 — 명시적 onError는 이를 대체한다.
+    this.egressOnError ??= (error: unknown) => { console.error('model egress policy check failed:', error); };
   }
 
   /**
@@ -1193,6 +1195,8 @@ export class KnowledgerService {
     this.actor(actor); onlyFields(input, ['document_ids', 'context_id', 'scope_id', 'usage_scope', 'query', 'model_adapter_id']);
     if (!Array.isArray(input.document_ids) || input.document_ids.length !== 1) throw new ApiError('INVALID_INPUT', 'v0.1에서는 정확한 문서 한 개의 사용 범위를 지정해 주세요.');
     assertModelAdapterId(input.model_adapter_id);
+    // 재검증 내부 호출은 어댑터를 싣지 않는다 — 바깥 revalidate가 결속 어댑터로 한 번만 정책을 확인해 훅 중복 호출·onError 중복 보고를 막는다.
+    if (existingRunId !== undefined && input.model_adapter_id !== undefined) throw new Error('internal invariant: revalidation runs do not carry model_adapter_id');
     const slot = { channel_id: this.ledger.channelId, document_id: identifier(input.document_ids[0]), context_id: identifier(input.context_id), scope_id: identifier(input.scope_id), usage_scope: input.usage_scope };
     if (typeof input.usage_scope !== 'string' || !/^[a-z][a-z0-9-]{1,40}\/v[1-9][0-9]*$/.test(input.usage_scope)) throw new ApiError('INVALID_INPUT', '버전이 있는 사용 범위가 필요합니다.');
     if (input.query !== undefined && (typeof input.query !== 'string' || input.query.length > 1000)) throw new ApiError('INVALID_INPUT', '검색어가 너무 깁니다.');
@@ -1258,7 +1262,7 @@ export class KnowledgerService {
     // egressVersion은 한 boot 안에서 상수라 불일치는 재시작(boot_id가 먼저 차단)이나
     // run 기록 변조를 의미한다 — 이 대조는 변조된 기록에 대한 심층 방어다.
     const freshManifest: Record<string, unknown> = result.manifest!;
-    for (const field of ['policy_id', 'policy_version', 'membership_epoch', 'model_egress_policy_version', 'retrieval_profile_id']) {
+    for (const field of domain.MANIFEST_BINDING_FIELDS) {
       // run 기록에 필드가 없거나 값이 다르면 기록 변조다 — 양쪽 undefined 통과를 허용하지 않는다.
       if (run.manifest[field] === undefined || run.manifest[field] !== freshManifest[field]) return { status: 'withheld', reason: 'KNOWLEDGE_CHANGED', checkpoint: result.checkpoint };
     }
