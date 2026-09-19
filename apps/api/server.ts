@@ -369,22 +369,23 @@ export async function createApp(options: AppOptions) {
     async close() {
       // keep-alive 재사용이나 끝나지 않는 요청이 close()를 멈추지 못하게 유휴 스윕·강제 해제 마감을 두고, 종료 실패 시에도 자원 해제는 진행한다.
       // 각 단계를 독립 실행해 한 단계의 실패가 다음 단계를 건너뛰게 하지 않고, 오류를 모아 한꺼번에 보고한다 — 중첩 finally의 오류 덮어쓰기를 없앤다.
-      const errors: unknown[] = [];
-      const attempt = async (step: () => unknown) => {
+      const errors: { stage: string; error: unknown }[] = [];
+      const attempt = async (stage: string, step: () => unknown) => {
         try {
           await step();
         } catch (error) {
-          errors.push(error);
+          errors.push({ stage, error });
         }
       };
-      await attempt(() => readiness.close());
-      await attempt(() => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
-      await attempt(() => options.vectorIndex?.close?.());
-      await attempt(() => ledger.close());
-      await attempt(() => vault.close());
-      await attempt(() => authentication?.close());
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, `app.close failed in ${errors.length} teardown stages`);
+      await attempt('readiness', () => readiness.close());
+      await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
+      // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
+      await attempt('vectorIndex', () => options.vectorIndex?.close?.());
+      await attempt('ledger', () => ledger.close());
+      await attempt('vault', () => vault.close());
+      await attempt('authentication', () => authentication?.close());
+      if (errors.length === 1) throw errors[0].error;
+      if (errors.length > 1) throw new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`);
     },
   };
 }

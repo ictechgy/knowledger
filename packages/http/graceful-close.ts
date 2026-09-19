@@ -70,12 +70,18 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let forceTimer: NodeJS.Timeout;
     let abandonTimer: NodeJS.Timeout;
     // 모든 settle 경로가 거치는 단일 출구 — 중복 settle을 막고 두 타이머를 반드시 해제한다.
+    // settle 안의 진단 출력이 던져도 귀결을 막지 못하게 한다 — 그대로 올라가면 isSettled만 선 채
+    // 대기 promise가 영구 pending + 미처리 거절이 된다.
     const finish = (settle: () => void) => {
       if (isSettled) return;
       isSettled = true;
       clearTimeout(forceTimer);
       clearTimeout(abandonTimer);
-      settle();
+      try {
+        settle();
+      } catch (error) {
+        reject(error);
+      }
     };
     // 개수 포착 promise를 주어진 상한으로 기다린다 — 늦거나 오지 않으면 그냥 넘겨 대기가 마감을 넘기지 않게 한다.
     // 돌려주는 promise가 거절될 수 있으므로 소비 측이 거절 경로까지 귀결시켜야 한다.
@@ -136,7 +142,9 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         closeError = error ?? null;
         // 마감이 이미 발화했다면 settle 경주를 걸지 않는다 — 늦은 도착으로 확정해 순서를 결정론적으로 만든다.
         if (isSettled || hasAbandoned) {
-          reportLateClose(error);
+          // 창 안에 도착한 오류는 abandon 귀결이 '강제 해제 → 거절'로 보고한다 — 여기서도 찍으면
+          // 같은 오류가 로그와 거절에 이중 노출되고 강제 해제 진단이 늦은 도착 뒤로 밀려 순서가 뒤집힌다.
+          if (isSettled || !error) reportLateClose(error);
           return;
         }
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.

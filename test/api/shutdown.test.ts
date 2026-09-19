@@ -83,10 +83,9 @@ test('app.close forwards shutdownDeadlineMs and labels diagnostics as api', asyn
   const app = await createDemoApp({ dataDir: directory, shutdownDeadlineMs: 60, seed: false });
   await app.listen(0);
   const originalClose = app.server.close.bind(app.server);
-  let closeCallback: ((error?: Error) => void) | undefined;
   try {
     // close 콜백을 가로채 abandon 경로를 탄다 — 60ms 마감의 강제 해제와 'api' 레이블이 진단에 도달해야 한다.
-    app.server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return app.server; }) as Server['close'];
+    app.server.close = (() => app.server) as Server['close'];
     const started = Date.now();
     await app.close();
     // 마감 60 + 기본 정착 250 + 진단 예산 100 — 기본값(5000)이 전달되지 않았다면 이 상한 안에 끝날 수 없다.
@@ -96,6 +95,33 @@ test('app.close forwards shutdownDeadlineMs and labels diagnostics as api', asyn
     assert.ok(messages.some(m => /\[api\]/.test(m) && /마감까지/.test(m)), 'the api label reaches the abandon diagnostic');
   } finally {
     app.server.close = originalClose;
+    await new Promise<void>(resolve => { app.server.close(() => resolve()); });
+  }
+});
+
+test('app.close aggregates multiple teardown failures into one AggregateError', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'knowledger-close-aggregate-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const app = await createDemoApp({ dataDir: directory, seed: false });
+  await app.listen(0);
+  const originalReadinessClose = ReadinessMonitor.prototype.close;
+  const originalServerClose = app.server.close.bind(app.server);
+  try {
+    // 두 단계가 함께 실패하면 어느 오류도 덮어쓰지 않고 AggregateError로 보고돼야 한다.
+    ReadinessMonitor.prototype.close = () => { throw new Error('readiness boom'); };
+    app.server.close = ((callback?: (error?: Error) => void) => { callback?.(new Error('http close boom')); return app.server; }) as Server['close'];
+    const failure = await app.close().then(
+      () => assert.fail('app.close must reject when two teardown stages fail'),
+      error => error,
+    );
+    assert.ok(failure instanceof AggregateError, 'multiple teardown failures must surface as AggregateError');
+    assert.equal(failure.errors.length, 2, 'both stage failures are collected');
+    assert.match(String(failure.message), /readiness.*http|http.*readiness/, 'the message names the failed stages');
+    assert.ok(failure.errors.some((e: unknown) => e instanceof Error && /readiness boom/.test(e.message)), 'the readiness failure is preserved');
+    assert.ok(failure.errors.some((e: unknown) => e instanceof Error && /http close boom/.test(e.message)), 'the http failure is preserved');
+  } finally {
+    ReadinessMonitor.prototype.close = originalReadinessClose;
+    app.server.close = originalServerClose;
     await new Promise<void>(resolve => { app.server.close(() => resolve()); });
   }
 });
