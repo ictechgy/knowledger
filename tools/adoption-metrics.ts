@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { lstatSync, readFileSync, realpathSync, mkdirSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
@@ -79,23 +79,38 @@ if (isMain()) {
       const out = values.get('--out');
       if (out) {
         const target = resolve(out);
-        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
         // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크 포함)이면
         // 측정 결과가 입력을 덮어쓴다 — 정규 경로와 inode 양쪽으로 충돌을 거부한다.
+        // 존재하지 않는 경로는 가장 가까운 기존 조상의 정규 경로 위에 얹어 해석한다.
         const canonical = (p: string): string => {
-          try { return realpathSync(p); } catch { return join(realpathSync(dirname(p)), basename(p)); }
+          const missing: string[] = [];
+          for (let current = p;;) {
+            try { return join(realpathSync(current), ...missing.reverse()); } catch {
+              const parent = dirname(current);
+              if (parent === current) return p;
+              missing.push(basename(current));
+              current = parent;
+            }
+          }
         };
         const inodeOf = (p: string): string | undefined => {
           const stat = lstatSync(p, { throwIfNoEntry: false });
           return stat ? `${stat.dev}:${stat.ino}` : undefined;
         };
         // 저널 sidecar(-wal/-shm/-journal)도 보호 대상이다 — WAL 안의 커밋된 상태를
-        // 측정 출력이 덮어쓰는 것을 막는다.
+        // 측정 출력이 덮어쓰는 것을 막는다. 보호 경로의 하위에 쓰는 것도 거부한다 —
+        // 거기에 디렉터리를 만들면 저널이 sidecar를 생성할 수 없게 된다.
         const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
+        const targetCanonical = canonical(target);
         const targetInode = inodeOf(target);
-        if (inputs.some(input => canonical(input) === canonical(target)) || (targetInode && inputs.some(input => inodeOf(input) === targetInode))) {
-          throw new Error('invalid option');
-        }
+        const collides = inputs.some((input) => {
+          const base = canonical(input);
+          return targetCanonical === base || targetCanonical.startsWith(`${base}${sep}`)
+            || (targetInode !== undefined && inodeOf(input) === targetInode);
+        });
+        if (collides) throw new Error('invalid option');
+        // 검증을 통과한 뒤에만 디렉터리를 만든다 — 보호 경로에 디렉터리가 생기는 것을 막는다.
+        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
         writeArtifact(target, output);
       }
       process.stdout.write(`${output}\n`);

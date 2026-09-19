@@ -96,6 +96,11 @@ test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip
   await assert.rejects(() => readGitSource({ root: item.repo, ref: hexName, manifest: item.manifest }), /모호|ref/);
   const qualifiedHex = await readGitSource({ root: item.repo, ref: `refs/heads/${hexName}`, manifest: item.manifest });
   assert.equal(qualifiedHex.commit, item.head);
+  // 커밋이 아닌 대상을 가리키는 태그도 16진 이름 모호성으로 잡힌다 — 이름 존재가 기준이다.
+  const blobId = execFileSync('git', ['-C', item.repo, 'hash-object', '-w', '--stdin'], { input: 'blob' }).toString().trim();
+  const hexTag = 'b'.repeat(40);
+  execFileSync('git', ['-C', item.repo, 'update-ref', `refs/tags/${hexTag}`, blobId], { stdio: 'ignore' });
+  await assert.rejects(() => readGitSource({ root: item.repo, ref: hexTag, manifest: item.manifest }), /모호|ref/);
   // 저장소 안의 일반 하위 디렉터리는 root로 받지 않는다 — worktree top만 허용한다.
   await assert.rejects(() => readGitSource({ root: join(item.repo, 'docs'), ref: item.head, manifest: item.manifest }));
 });

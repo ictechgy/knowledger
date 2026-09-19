@@ -58,6 +58,17 @@ function objectIdLength(root: string): number {
   invalid();
 }
 
+/**
+ * 후보와 바이트 단위로 정확히 일치하는 ref 이름만 돌려준다. rev-parse 검증은 대소문자
+ * 비구분 파일시스템에서 다른 철자의 느슨한 ref를 집을 수 있고 커밋이 아닌 대상을
+ * 가리키는 태그는 실패로 떨어지므로, 존재 여부는 열거 결과와의 정확한 비교로 판정한다.
+ */
+function exactRefNames(root: string, candidates: string[]): Set<string> {
+  const output = git(root, ['for-each-ref', '--format=%(refname)', ...candidates], 64 * 1024).toString('utf8');
+  const found = new Set(output.split('\n'));
+  return new Set(candidates.filter((name) => found.has(name)));
+}
+
 /** `name^{commit}`를 검증해 커밋 ID를 돌려준다 — 없거나 해석할 수 없으면 undefined. */
 function tryVerify(root: string, name: string): string | undefined {
   try {
@@ -85,20 +96,25 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
   let commit: string | undefined;
   if (ref.length === idLength && COMMIT_PATTERN.test(ref)) {
     // 16진 오브젝트 ID 형태의 브랜치·태그가 있으면 의도가 모호하다 — 명시할 때만 해석된다.
-    if (tryVerify(root, `refs/heads/${ref}`) || tryVerify(root, `refs/tags/${ref}`)) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
+    // 커밋이 아닌 대상의 태그도 존재 자체로 모호하므로 해석 결과가 아니라 이름 존재로 본다.
+    if (exactRefNames(root, [`refs/heads/${ref}`, `refs/tags/${ref}`]).size > 0) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
     commit = tryVerify(root, ref);
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   } else if (ref.startsWith('refs/')) {
     if (!ref.startsWith('refs/heads/') && !ref.startsWith('refs/tags/')) invalid('올바른 Git ref가 필요합니다.');
+    // 대소문자 비구분 파일시스템에서 다른 철자의 ref를 대신 집지 않게 정확한 이름 존재를 먼저 확인한다.
+    if (!exactRefNames(root, [ref]).has(ref)) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
     commit = tryVerify(root, ref);
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   } else {
     // refs/heads/HEAD가 실제로 있어도 짧은 pseudoref 철자는 받지 않는다 — 명시할 때만 유효하다.
     if (PSEUDOREF_PATTERN.test(ref) || PSEUDOREF_NAMES.has(ref)) invalid('올바른 Git ref가 필요합니다.');
-    const head = tryVerify(root, `refs/heads/${ref}`);
-    const tag = tryVerify(root, `refs/tags/${ref}`);
+    const names = exactRefNames(root, [`refs/heads/${ref}`, `refs/tags/${ref}`]);
+    const head = names.has(`refs/heads/${ref}`);
+    const tag = names.has(`refs/tags/${ref}`);
     if (head && tag) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
-    commit = head ?? tag;
+    const name = head ? `refs/heads/${ref}` : tag ? `refs/tags/${ref}` : undefined;
+    commit = name ? tryVerify(root, name) : undefined;
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   }
   if (commit.length !== idLength) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
@@ -158,6 +158,13 @@ test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
   assert.throws(() => writeArtifact(hardlinked, 'x'));
   assert.throws(() => writeArtifact(target, 'x'));
   assert.equal(readFileSync(target, 'utf8'), '{"a":1}\n');
+  // umask가 생성 모드를 지워도 fchmod로 0600이 보장된다.
+  if (process.platform !== 'win32') {
+    const masked = join(root, 'masked.json');
+    const previous = process.umask(0o777);
+    try { writeArtifact(masked, '{"b":2}'); } finally { process.umask(previous); }
+    assert.equal(statSync(masked).mode & 0o777, 0o600);
+  }
 });
 
 test('adoption-metrics rejects a missing --ledger path without creating a file', t => {
@@ -193,6 +200,10 @@ test('adoption-metrics rejects --out colliding with its inputs', async t => {
   // 관찰 입력 파일과의 충돌도 거부한다.
   assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', observations], { stdio: 'ignore', cwd }));
   assert.ok(readFileSync(observations, 'utf8').includes('pilot-2026-order'));
+  // 저널 sidecar 경로와 그 하위 경로도 거부한다 — 하위 디렉터리 생성이 저널 동작을 깨뜨릴 수 있다.
+  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', `${dbPath}-wal`], { stdio: 'ignore', cwd }));
+  assert.throws(() => execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', join(`${dbPath}-wal`, 'out.json')], { stdio: 'ignore', cwd }));
+  assert.notEqual(lstatSync(`${dbPath}-wal`, { throwIfNoEntry: false })?.isDirectory(), true);
   // 정상 경로는 성공한다.
   const good = join(root, 'measurement.json');
   execFileSync(process.execPath, ['tools/adoption-metrics.ts', '--ledger', dbPath, '--observations', observations, '--out', good], { stdio: 'ignore', cwd });
