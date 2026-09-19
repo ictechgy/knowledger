@@ -12,8 +12,8 @@ export interface CloseHttpServerOptions {
   label?: string;
 }
 
-/** 서버 종료 대기의 결과 — 강제 해제 시점에 포착한 연결 수와, 콜백 미도착 뒤 읽은 잔여 연결 수를 함께 돌려준다. */
-type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned'; connections: number; remaining: number };
+/** 서버 종료 대기의 결과 — 강제 해제 시점에 포착한 연결 수와, 콜백 미도착 뒤 읽은 잔여 연결 수, 그리고 마감 창 안에 도착한 늦은 콜백 여부를 함께 돌려준다. */
+type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned'; connections: number; remaining: number; lateClose: boolean };
 
 /** 종료 마감의 기본값(ms) — 앱 옵션 문서가 이 상수를 참조해 기본값 설명이 갈라지지 않게 한다. */
 export const DEFAULT_CLOSE_DEADLINE_MS = 5_000;
@@ -64,6 +64,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let isSettled = false;
     let isForced = false;
     let hasAbandoned = false;
+    let hasLateClose = false;
     let connections = UNKNOWN_CONNECTION_COUNT;
     let pendingCount: Promise<void> | undefined;
     let closeError: Error | null = null;
@@ -93,10 +94,6 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         .finally(() => clearTimeout(boundTimer));
     };
     // settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다.
-    const reportLateClose = (lateError: Error | null | undefined) => {
-      if (lateError) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${lateError.message}`);
-      else console.error(`[${label}] HTTP 종료 마감 후 close 콜백이 늦게 도착했다`);
-    };
     // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     // getConnections 콜백은 nextTick 이후 도착해 비클러스터 경로에서는 소켓 파괴 전 값을 읽는다 — 클러스터 primary의 IPC 왕복에서는 늦어질 수 있다.
     // 돌려주는 promise는 개수 포착이 끝나는 시점을 알린다 — close 콜백과 포착의 도착 순서는 보장이 없어 진단 전에 유한하게 기다린다.
@@ -128,7 +125,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
                 reject(closeError);
                 return;
               }
-              resolve({ outcome: 'abandoned', connections, remaining });
+              resolve({ outcome: 'abandoned', connections, remaining, lateClose: hasLateClose });
             }),
             lookupError => finish(() => reject(lookupError)),
           );
@@ -142,16 +139,22 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         closeError = error ?? null;
         // 마감이 이미 발화했다면 settle 경주를 걸지 않는다 — 늦은 도착으로 확정해 순서를 결정론적으로 만든다.
         if (isSettled || hasAbandoned) {
-          // 창 안에 도착한 오류는 abandon 귀결이 '강제 해제 → 거절'로 보고한다 — 여기서도 찍으면
-          // 같은 오류가 로그와 거절에 이중 노출되고 강제 해제 진단이 늦은 도착 뒤로 밀려 순서가 뒤집힌다.
-          if (isSettled || !error) reportLateClose(error);
+          if (isSettled) {
+            reportLateClose(label, error);
+            return;
+          }
+          // 마감 창 안의 도착 — 오류는 abandon 귀결이 '강제 해제 → 거절'로 보고하고, 정상 도착은
+          // 결과에 실어 강제 해제·마감 진단 뒤에 찍는다. 도착 즉시 찍으면 아직 출력되지 않은
+          // 진단들보다 앞에 서서 인과 순서가 뒤집힌다.
+          if (!error) hasLateClose = true;
           return;
         }
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
         const settle = () => {
           try {
-            // 포착 대기 사이 abandon이 먼저 마감했을 수 있다 — 재검사해 진단 중복과 오류 삼킴을 막는다.
-            if (isSettled) { reportLateClose(error); return; }
+            // 포착 대기 사이 abandon이 먼저 마감했을 수 있다 — 콜백은 마감 전에 도착했으므로 늦은 도착이
+            // 아니고, 오류는 closeError로 이미 귀결에 반영됐다. 다시 진단하면 이중 보고가 된다.
+            if (isSettled) return;
             if (error && isForced) reportForcedRelease(label, connections);
             finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
           } catch (settleError) {
@@ -206,6 +209,12 @@ function reportForcedRelease(label: string, connections: number): void {
   console.error(`[${label}] HTTP 종료가 마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(connections)}`);
 }
 
+/** settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다. */
+function reportLateClose(label: string, lateError: Error | null | undefined): void {
+  if (lateError) console.error(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${lateError.message}`);
+  else console.error(`[${label}] HTTP 종료 마감 후 close 콜백이 늦게 도착했다`);
+}
+
 /**
  * 유휴 keep-alive 소켓은 즉시 거두고 진행 중 요청이 끝나길 기다린 뒤, 마감을
  * 넘긴 잔여 연결은 강제 해제한다 — 종료 중 완료되는 요청의 소켓도 주기 스윕이
@@ -250,4 +259,6 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   // 콜백 미도착 경로는 마감이든 폴백이든 강제 해제가 반드시 실행됐다 — 해제 사실과 포착 수를 버리지 않는다.
   reportForcedRelease(label, result.connections);
   console.error(`[${label}] HTTP 종료 close 콜백이 마감까지 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
+  // 마감 창 안에 도착한 정상 콜백은 결과에 실어 왔다 — 강제 해제·마감 진단 뒤에 찍어 인과 순서를 유지한다.
+  if (result.lateClose) reportLateClose(label, null);
 }

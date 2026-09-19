@@ -199,6 +199,26 @@ test('closeHttpServer treats a close callback inside the abandon window as a lat
   }
 });
 
+test('closeHttpServer still settles when a diagnostic throws inside the abandon finish', async (t) => {
+  t.mock.method(console, 'error', () => { throw new Error('stderr boom'); });
+  const { server } = await listeningServer((_req, res) => res.end('ok'));
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  let closeCallback: ((error?: Error) => void) | undefined;
+  try {
+    // 창 안 close 오류가 abandon 귀결의 강제 해제 진단을 유도한다 — 진단 출력이 던져도 대기가 귀결돼야 한다.
+    server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
+    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'diag-throw' });
+    await sleep(140);
+    closeCallback?.(new Error('late cb boom'));
+    await assert.rejects(() => closePromise, /stderr boom/, 'a throwing diagnostic must reject the close wait instead of leaving it pending forever');
+  } finally {
+    server.getConnections = originalGetConnections;
+    await releaseServer(server, originalClose);
+  }
+});
+
 test('closeHttpServer reports a successful close callback that arrives after abandonment', async (t) => {
   const diagnostic = t.mock.method(console, 'error');
   const { server } = await listeningServer((_req, res) => res.end('ok'));
@@ -210,14 +230,17 @@ test('closeHttpServer reports a successful close callback that arrives after aba
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
     server.getConnections = (() => server) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-ok' });
-    await sleep(100);
+    // abandon(90ms) 발화 뒤 창 한가운데(±50ms 여유)에 정상 콜백을 도착시킨다 — 타이머 지터에 창 밖으로 밀리지 않게 한다.
+    await sleep(140);
     closeCallback?.();
     await closePromise;
     await sleep(150);
-    // 오류 없는 늦은 도착도 진단으로 남아 소켓 추적 유실과 단순 지연을 구분할 수 있다.
+    // 오류 없는 늦은 도착도 진단으로 남아 소켓 추적 유실과 단순 지연을 구분할 수 있다 — 결과에 실어 오므로 항상 마지막에 찍힌다.
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 3, 'forced release, abandon, and the late callback each report once');
-    assert.ok(messages.some(m => /늦게 도착/.test(m)), 'a successful late callback is still diagnosed');
+    assert.match(messages[0], /강제 해제/, 'the forced release reports first');
+    assert.match(messages[1], /마감까지 도착하지 않아/, 'the abandon reason reports second');
+    assert.match(messages[2], /늦게 도착/, 'the in-window late callback reports last, after the diagnostics it follows');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);

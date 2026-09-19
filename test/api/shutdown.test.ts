@@ -41,7 +41,7 @@ test('app.close still runs resource teardown when the HTTP close rejects', async
   const vectorIndex: VectorCandidateIndex = { candidates: () => [], close: () => { indexClosed = true; } };
   const app = await createDemoApp({ dataDir: directory, vectorIndex, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0], seed: false });
   await app.listen(0);
-  // HTTP 종료가 거부돼도 finally의 자원 해제는 실행돼야 한다 — 실제 close는 t.after에서 복구해 마무리한다.
+  // HTTP 종료가 거부돼도 나머지 해제 단계는 실행돼야 한다 — 실제 close는 t.after에서 복구해 마무리한다.
   const originalClose = app.server.close.bind(app.server);
   app.server.close = ((callback: (error?: Error) => void) => { callback(new Error('injected close boom')); return app.server; }) as Server['close'];
   t.after(async () => {
