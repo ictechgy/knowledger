@@ -172,7 +172,7 @@ test('closeHttpServer abandons instead of hanging when the close callback never 
   }
 });
 
-test('closeHttpServer treats a close callback inside the abandon window as a late arrival', async (t) => {
+test('closeHttpServer rejects an in-window close error with the forced release reported once', async (t) => {
   const diagnostic = t.mock.method(console, 'error');
   const { server } = await listeningServer((_req, res) => res.end('ok'));
   const originalClose = server.close.bind(server);
@@ -183,8 +183,8 @@ test('closeHttpServer treats a close callback inside the abandon window as a lat
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
     server.getConnections = (() => server) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-cb' });
-    // abandon(90ms) 발화 뒤 포착 대기(최대 +100ms)가 진행 중인 창에 close 오류 콜백을 도착시킨다.
-    await sleep(100);
+    // abandon(90ms) 발화 뒤 포착 대기(최대 +100ms)가 진행 중인 창 한가운데에 close 오류 콜백을 도착시킨다.
+    await sleep(140);
     closeCallback?.(new Error('late cb boom'));
     // 창 안에 도착한 close 오류는 마감 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
     await assert.rejects(() => closePromise, /late cb boom/);
@@ -199,20 +199,20 @@ test('closeHttpServer treats a close callback inside the abandon window as a lat
   }
 });
 
-test('closeHttpServer still settles when a diagnostic throws inside the abandon finish', async (t) => {
+test('closeHttpServer preserves the real close error when diagnostics throw', async (t) => {
   t.mock.method(console, 'error', () => { throw new Error('stderr boom'); });
   const { server } = await listeningServer((_req, res) => res.end('ok'));
   const originalClose = server.close.bind(server);
   const originalGetConnections = server.getConnections.bind(server);
   let closeCallback: ((error?: Error) => void) | undefined;
   try {
-    // 창 안 close 오류가 abandon 귀결의 강제 해제 진단을 유도한다 — 진단 출력이 던져도 대기가 귀결돼야 한다.
+    // 창 안 close 오류가 abandon 귀결의 강제 해제 진단을 유도한다 — 진단 실패가 실제 오류를 대체하지 않아야 한다.
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
     server.getConnections = (() => server) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'diag-throw' });
     await sleep(140);
     closeCallback?.(new Error('late cb boom'));
-    await assert.rejects(() => closePromise, /stderr boom/, 'a throwing diagnostic must reject the close wait instead of leaving it pending forever');
+    await assert.rejects(() => closePromise, /late cb boom/, 'a throwing diagnostic must not replace the real close error or leave the wait pending');
   } finally {
     server.getConnections = originalGetConnections;
     await releaseServer(server, originalClose);
