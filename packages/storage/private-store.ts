@@ -38,6 +38,10 @@ export class PrivateStore {
   put(kind: PrivateKind, id: string, actor: Actor, value: any): void {
     this.db.prepare('INSERT INTO private_records VALUES (?, ?, ?, ?, ?)').run(kind, id, actor.org_id, actor.actor_id, JSON.stringify(value));
   }
+  /** 같은 키의 최신 상태로 덮어쓴다 — run 재검증의 최신 manifest처럼 최신 값만 의미 있는 기록 전용이다. */
+  replace(kind: PrivateKind, id: string, actor: Actor, value: any): void {
+    this.db.prepare('INSERT INTO private_records VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind,record_id,org_id,actor_id) DO UPDATE SET value_json=excluded.value_json').run(kind, id, actor.org_id, actor.actor_id, JSON.stringify(value));
+  }
   get(kind: PrivateKind, id: string, actor: Actor): any | undefined {
     const row = this.db.prepare('SELECT value_json FROM private_records WHERE kind = ? AND record_id = ? AND org_id = ? AND actor_id = ?').get(kind, id, actor.org_id, actor.actor_id) as any;
     return row ? JSON.parse(row.value_json) : undefined;
