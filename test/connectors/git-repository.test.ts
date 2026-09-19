@@ -105,7 +105,7 @@ test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip
   execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/shadow', item.head], { stdio: 'ignore' });
   execFileSync('git', ['-C', item.repo, 'pack-refs', '--all'], { stdio: 'ignore' });
   const shadowTree = execFileSync('git', ['-C', item.repo, 'rev-parse', `${item.head}^{tree}`]).toString().trim();
-  const otherCommit = execFileSync('git', ['-C', item.repo, 'commit-tree', shadowTree, '-p', item.head, '-m', 'shadow']).toString().trim();
+  const otherCommit = execFileSync('git', ['-C', item.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit-tree', shadowTree, '-p', item.head, '-m', 'shadow']).toString().trim();
   execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/Shadow', otherCommit], { stdio: 'ignore' });
   const shadowed = await readGitSource({ root: item.repo, ref: 'refs/heads/shadow', manifest: item.manifest });
   assert.equal(shadowed.commit, item.head);
@@ -181,6 +181,22 @@ test('git connector reads SHA-256 object-format repositories', { skip: !gitAvail
   const snapshot = await readGitSource({ root: repo, ref: head, manifest });
   assert.equal(snapshot.commit, head);
   assert.equal(snapshot.files[0].content_base64, content.toString('base64'));
+});
+
+test('git connector treats allowlist paths as literal pathspecs', { skip: !gitAvailable }, async t => {
+  const item = fixture();
+  t.after(() => rmSync(item.root, { recursive: true, force: true }));
+  // pathspec 메타문자를含む 파일명은 와일드카드가 아니라 문자 그대로 일치해야 한다.
+  writeFileSync(join(item.repo, 'docs', '[x].md'), Buffer.from('# 대괄호\n', 'utf8'));
+  writeFileSync(join(item.repo, 'docs', 'x.md'), Buffer.from('# 다른 파일\n', 'utf8'));
+  const head = commit(item.repo, 'glob');
+  const manifest: MarkdownSourceManifest = { version: 1, source_id: 'kb-source-001', files: [{ path: 'docs/[x].md', policy_id: 'policy-v1', policy_version: 1, title: '대괄호' }] };
+  const snapshot = await readGitSource({ root: item.repo, ref: head, manifest });
+  assert.equal(snapshot.files.length, 1);
+  assert.equal(snapshot.files[0].content_base64, Buffer.from('# 대괄호\n', 'utf8').toString('base64'));
+  // 대문자 16진 오브젝트 ID도 Git과 같이 받는다.
+  const upper = await readGitSource({ root: item.repo, ref: head.toUpperCase(), manifest });
+  assert.equal(upper.commit, head);
 });
 
 test('git connector enforces markdown decoding and manifest validation', { skip: !gitAvailable }, async t => {

@@ -8,6 +8,9 @@ import type { MarkdownSourceSnapshot } from './filesystem-markdown.ts';
 import type { MarkdownSourceManifest } from './source-contract.ts';
 
 const COMMIT_PATTERN = /^[a-f0-9]+$/u;
+// 입력 오브젝트 ID는 Git이 받는 대소문자 16진을 모두 허용한다 — 출력 검증은 Git이
+// 항상 소문자로 출력하므로 COMMIT_PATTERN을 유지한다.
+const OBJECT_ID_PATTERN = /^[a-fA-F0-9]+$/u;
 // ref 이름은 명령행 옵션·refspec·리비전 문법으로 해석될 수 없는 형태만 허용한다.
 const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u;
 // HEAD·ORIG_HEAD·MERGE_HEAD 같은 작업 트리 종속 pseudoref 철자는 짧은 이름으로 받지 않는다.
@@ -39,6 +42,8 @@ function gitEnv(): NodeJS.ProcessEnv {
   }
   env.GIT_NO_LAZY_FETCH = '1';
   env.GIT_NO_REPLACE_OBJECTS = '1';
+  // allowlist 경로는 와일드카드·매직이 아니라 문자 그대로의 pathspec이어야 한다.
+  env.GIT_LITERAL_PATHSPECS = '1';
   return env;
 }
 
@@ -59,23 +64,32 @@ function objectIdLength(root: string): number {
 }
 
 /**
- * 후보와 바이트 단위로 정확히 일치하는 ref의 대상 오브젝트 ID를 돌려준다.
- * rev-parse 검증은 대소문자 비구분 파일시스템에서 다른 철자의 느슨한 ref를 집을 수
- * 있고 커밋이 아닌 대상의 태그는 실패로 떨어지므로, 존재 여부는 열거 결과와의 정확한
- * 비교로 판정한다. --count=1은 정렬상 첫 항목만 반환하므로 정확한 이름이 있으면
- * 후손 ref가 아무리 많아도 항상 첫 결과다. 이어서 오브젝트 ID로 해석하면 이름 철자의
- * 재조회가 일어나지 않아 다른 철자의 느슨한 ref 덮어쓰기에 흔들리지 않는다.
+ * 후보와 바이트 단위로 정확히 일치하는 ref의 대상 오브젝트 ID를 한 번의 열거로
+ * 스냅샷한다. rev-parse 검증은 대소문자 비구분 파일시스템에서 다른 철자의 느슨한
+ * ref를 집을 수 있고 커밋이 아닌 대상의 태그는 실패로 떨어지므로, 존재 여부는 열거
+ * 결과와의 정확한 비교로 판정한다. 단일 프로세스 스냅샷이므로 후보별 개별 조회처럼
+ * 서로 다른 시점의 상태가 섞이지 않는다. 이어서 오브젝트 ID로 해석하면 이름 철자의
+ * 재조회가 일어나지 않아 다른 철자의 느슨한 ref 덮어쓰기에도 흔들리지 않는다.
  */
-function exactRefObjects(root: string, candidates: string[]): Map<string, string> {
+function refSnapshot(root: string, candidates: string[]): Map<string, string> {
   const objects = new Map<string, string>();
-  for (const candidate of candidates) {
-    const line = git(root, ['for-each-ref', '--count=1', '--format=%(refname) %(objectname)', candidate], 4096).toString('utf8').trim();
+  const output = git(root, ['for-each-ref', '--format=%(refname) %(objectname)', ...candidates], 16 * 1024 * 1024).toString('utf8');
+  for (const line of output.split('\n')) {
     const splitAt = line.lastIndexOf(' ');
     if (splitAt < 0) continue;
     const [name, object] = [line.slice(0, splitAt), line.slice(splitAt + 1)];
-    if (name === candidate && COMMIT_PATTERN.test(object)) objects.set(name, object);
+    if (candidates.includes(name) && COMMIT_PATTERN.test(object)) objects.set(name, object);
   }
   return objects;
+}
+
+/**
+ * 해석 중 후보 ref가 바뀌지 않았는지 스냅샷을 다시 찍어 확인한다 — 어느 한 시점의
+ * 상태도 대표하지 못하는 결과를 받아들이지 않고 닫힌 실패로 둔다.
+ */
+function revalidate(root: string, candidates: string[], before: Map<string, string>): void {
+  const after = refSnapshot(root, candidates);
+  if (after.size !== before.size || [...after].some(([name, object]) => before.get(name) !== object)) invalid('Git 저장소가 해석 중 변경됐습니다.');
 }
 
 /** `name^{commit}`를 검증해 커밋 ID를 돌려준다 — 없거나 해석할 수 없으면 undefined. */
@@ -103,27 +117,34 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
   const top = git(root, ['rev-parse', '--show-toplevel'], 4096).toString('utf8').trim();
   if (!top || realpathSync(top) !== realpathSync(root)) invalid();
   let commit: string | undefined;
-  if (ref.length === idLength && COMMIT_PATTERN.test(ref)) {
+  if (ref.length === idLength && OBJECT_ID_PATTERN.test(ref)) {
     // 16진 오브젝트 ID 형태의 브랜치·태그가 있으면 의도가 모호하다 — 명시할 때만 해석된다.
     // 커밋이 아닌 대상의 태그도 존재 자체로 모호하므로 해석 결과가 아니라 이름 존재로 본다.
-    if (exactRefObjects(root, [`refs/heads/${ref}`, `refs/tags/${ref}`]).size > 0) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
+    const candidates = [`refs/heads/${ref}`, `refs/tags/${ref}`];
+    const objects = refSnapshot(root, candidates);
+    if (objects.size > 0) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
     commit = tryVerify(root, ref);
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+    revalidate(root, candidates, objects);
   } else if (ref.startsWith('refs/')) {
     if (!ref.startsWith('refs/heads/') && !ref.startsWith('refs/tags/')) invalid('올바른 Git ref가 필요합니다.');
     // 이름 철자가 아니라 열거가 잡은 오브젝트를 peel한다 — 대소문자 다른 느슨한 ref 덮어쓰기를 막는다.
-    const object = exactRefObjects(root, [ref]).get(ref);
+    const objects = refSnapshot(root, [ref]);
+    const object = objects.get(ref);
     commit = object ? tryVerify(root, object) : undefined;
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+    revalidate(root, [ref], objects);
   } else {
     // refs/heads/HEAD가 실제로 있어도 짧은 pseudoref 철자는 받지 않는다 — 명시할 때만 유효하다.
     if (PSEUDOREF_PATTERN.test(ref) || PSEUDOREF_NAMES.has(ref)) invalid('올바른 Git ref가 필요합니다.');
-    const objects = exactRefObjects(root, [`refs/heads/${ref}`, `refs/tags/${ref}`]);
+    const candidates = [`refs/heads/${ref}`, `refs/tags/${ref}`];
+    const objects = refSnapshot(root, candidates);
     const head = objects.get(`refs/heads/${ref}`);
     const tag = objects.get(`refs/tags/${ref}`);
     if (head && tag) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
     commit = head ?? tag ? tryVerify(root, (head ?? tag)!) : undefined;
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
+    revalidate(root, candidates, objects);
   }
   if (commit.length !== idLength) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   return commit;

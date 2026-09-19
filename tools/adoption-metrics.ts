@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { lstatSync, readFileSync, realpathSync, mkdirSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { lstatSync, readFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { verifyJournalDb } from '../packages/storage/local-ledger.ts';
@@ -79,43 +79,13 @@ if (isMain()) {
       const out = values.get('--out');
       if (out) {
         const target = resolve(out);
-        // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크 포함)이면
-        // 측정 결과가 입력을 덮어쓴다 — 정규 경로와 inode 양쪽으로 충돌을 거부한다.
-        // 존재하지 않는 경로는 가장 가까운 기존 조상의 정규 경로 위에 얹어 해석한다.
-        const canonical = (p: string): string => {
-          const missing: string[] = [];
-          for (let current = p;;) {
-            try { return join(realpathSync(current), ...missing.reverse()); } catch {
-              const parent = dirname(current);
-              if (parent === current) return p;
-              missing.push(basename(current));
-              current = parent;
-            }
-          }
-        };
-        const inodeOf = (p: string): string | undefined => {
-          const stat = lstatSync(p, { throwIfNoEntry: false });
-          return stat ? `${stat.dev}:${stat.ino}` : undefined;
-        };
-        // 저널 sidecar(-wal/-shm/-journal)도 보호 대상이다 — WAL 안의 커밋된 상태를
-        // 측정 출력이 덮어쓰는 것을 막는다. 보호 경로의 하위에 쓰는 것도 거부한다 —
-        // 거기에 디렉터리를 만들면 저널이 sidecar를 생성할 수 없게 된다.
+        // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크·대소문자
+        // 별칭 포함)이면 측정 결과가 입력을 덮어쓴다 — 저널 sidecar(-wal/-shm/-journal)와
+        // 그 하위 경로도 보호 대상이다. 충돌 검증은 writeArtifact의 inode 고정 디렉터리
+        // 안에서 수행돼 검증과 쓰기가 같은 디렉터리를 본다.
         const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
-        // 합성된 미존재 경로 조각은 원래 철자를 유지하므로, 대소문자 비구분 파일시스템의
-        // 다른 철자 별칭을 잡기 위해 정규화·대소문자를 접은 형태로 비교한다 — 대소문자
-        // 구분 시스템에서는 다른 파일을 넓게 거부할 뿐 조용한 우회는 허용하지 않는다.
-        const fold = (p: string): string => p.normalize('NFC').toLowerCase();
-        const targetFolded = fold(canonical(target));
-        const targetInode = inodeOf(target);
-        const collides = inputs.some((input) => {
-          const base = fold(canonical(input));
-          return targetFolded === base || targetFolded.startsWith(`${base}${sep}`)
-            || (targetInode !== undefined && inodeOf(input) === targetInode);
-        });
-        if (collides) throw new Error('invalid option');
-        // 검증을 통과한 뒤에만 디렉터리를 만든다 — 보호 경로에 디렉터리가 생기는 것을 막는다.
         mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-        writeArtifact(target, output);
+        writeArtifact(target, output, { protectedPaths: inputs });
       }
       process.stdout.write(`${output}\n`);
     }
