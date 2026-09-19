@@ -1,14 +1,12 @@
 /**
- * Vector candidate index port for the search read model.
+ * 검색 읽기 모델의 벡터 후보 색인 포트.
  *
- * The index is a candidate source only: it may rank or propose documents,
- * but it is never authoritative. Every candidate is re-verified against the
- * verified ledger state at the request checkpoint before it is returned,
- * and an empty index result must never be read as "no knowledge exists" —
- * required document refs are resolved directly against ledger eligibility.
+ * 색인은 후보 제안기일 뿐 결정권이 없다 — 모든 후보는 반환 전 요청 체크포인트의
+ * 검증된 원장 상태로 재검증되고, 빈 색인 결과를 "지식이 없다"로 읽으면 안 된다.
+ * 필수 문서 참조는 색인과 무관하게 원장 자격으로 직접 해상한다.
  */
 export interface VectorCandidateQuery {
-  /** Query embedding produced by the caller's embedder. */
+  /** 호출자의 임베더가 만든 질의 임베딩. */
   readonly embedding: readonly number[];
   readonly context_id?: string;
   readonly scope_id?: string;
@@ -27,21 +25,21 @@ export interface VectorCandidate {
 
 export interface VectorCandidateIndex {
   candidates(query: VectorCandidateQuery): readonly VectorCandidate[] | Promise<readonly VectorCandidate[]>;
-  /** Optional lifecycle hook — indexes holding connections should release them here. */
+  /** 선택적 수명주기 훅 — 연결을 쥐는 색인은 여기서 해제한다. */
   close?(): void | Promise<void>;
 }
 
 /**
- * Write side of a candidate index — a derived store rebuilt only from
- * verified revisions. Implementations may be sync (local) or async (pg).
+ * 후보 색인의 쓰기 측 — 검증된 개정본에서만 재구축되는 파생 저장소다.
+ * 구현은 동기(local)거나 비동기(pg)일 수 있다.
  */
 export interface VectorIndexWriter {
   upsert(entry: VectorIndexEntry): void | Promise<void>;
   remove(revisionDigest: string): void | Promise<void>;
   clear(): void | Promise<void>;
   /**
-   * Atomically replace every row of this index version — readers never
-   * observe an empty or partially populated index during a rebuild.
+   * 이 색인 버전의 모든 행을 원자적으로 교체한다 — 재구축 도중에도
+   * 읽기 경로에 빈·부분 색인이 노출되지 않는다.
    */
   replaceAll(entries: readonly VectorIndexEntry[]): void | Promise<void>;
 }
@@ -57,12 +55,12 @@ export interface VectorIndexEntry {
 
 const finite = (values: readonly number[]) => values.length > 0 && values.length <= 4096 && values.every(value => Number.isFinite(value));
 
-/** Shared embedding validity contract for every adapter and query path. */
+/** 모든 어댑터와 질의 경로가 공유하는 임베딩 유효성 계약. */
 export function isFiniteEmbedding(values: readonly number[]): boolean {
   return finite(values);
 }
 
-/** Cosine similarity; mismatched dimensions are a configuration error, non-finite or zero-norm inputs yield 0. */
+/** 코사인 유사도 — 차원 불일치는 설정 오류, 비유한·영노름 입력은 0이다. */
 export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   if (a.length !== b.length) throw new TypeError('Embedding dimensions do not match');
   if (!finite(a) || !finite(b)) return 0;
@@ -73,9 +71,8 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
 }
 
 /**
- * In-process derived index for development and tests. Entries are rebuilt
- * from verified revisions — stale digests are removed on re-keying so an
- * index rebuild cannot resurrect a superseded revision.
+ * 개발과 테스트용 인프로세스 파생 색인. 항목은 검증된 개정본에서만 채워지고,
+ * 재키잉 시 낡은 다이제스트가 제거되므로 재구축이 대체된 개정본을 되살리지 않는다.
  */
 export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
   private entries = new Map<string, VectorIndexEntry>();
@@ -86,7 +83,7 @@ export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter
   }
   remove(revisionDigest: string): void { this.entries.delete(revisionDigest); }
   clear(): void { this.entries.clear(); }
-  /** Validates every row first, then swaps the whole map so readers never see a partial index. */
+  /** 모든 행을 먼저 검증한 뒤 맵을 통째로 바꿔 읽기 경로에 부분 색인이 보이지 않게 한다. */
   replaceAll(entries: readonly VectorIndexEntry[]): void {
     const next = new Map<string, VectorIndexEntry>();
     for (const entry of entries) {
@@ -112,9 +109,8 @@ export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter
 }
 
 /**
- * Deterministic bag-of-token embedding for development. It gives the local
- * index a real similarity signal without an external model — it is not a
- * semantic embedder and must never be presented as one.
+ * 개발용 결정적 bag-of-token 임베딩 — 외부 모델 없이 로컬 색인에 실제 유사도
+ * 신호를 준다. 의미 임베더가 아니며 그런 것처럼 보여서도 안 된다.
  */
 export function developmentEmbedding(text: string, dimensions = 64): number[] {
   if (!Number.isSafeInteger(dimensions) || dimensions < 8 || dimensions > 4096) throw new TypeError('Embedding dimensions out of bounds');

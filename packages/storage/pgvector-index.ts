@@ -2,16 +2,15 @@ import { isFiniteEmbedding } from './vector-index.ts';
 import type { VectorCandidate, VectorCandidateIndex, VectorCandidateQuery, VectorIndexEntry, VectorIndexWriter } from './vector-index.ts';
 
 /**
- * pgvector-backed candidate index. `pg` is an optional deployment dependency
- * loaded lazily so local runtimes and minimal CI jobs never import it.
+ * pgvector 기반 후보 색인. `pg`는 지연 로드되는 선택적 배포 의존성이라
+ * 로컬 런타임과 최소 CI 작업은 이 모듈을 절대 import하지 않는다.
  *
- * The index is a derived candidate source only — every row must carry the
- * exact `revision_digest` it was embedded from, and the service re-verifies
- * each candidate against verified ledger state at the request checkpoint.
- * Rebuilding the index from verified revisions is always safe: stale rows
- * are dropped on re-key, never trusted.
+ * 색인은 파생 후보 공급원일 뿐이다 — 모든 행은 임베딩된 원본의 정확한
+ * `revision_digest`를 가져야 하고, 서비스는 각 후보를 요청 체크포인트의
+ * 검증된 원장 상태로 재검증한다. 검증된 개정본에서의 색인 재구축은 항상
+ * 안전하다 — 낡은 행은 재키잉 때 버려지지 신뢰되지 않는다.
  *
- * Expected schema (versioned per embedding profile):
+ * 기대 스키마(임베딩 프로파일별 버전):
  *
  *   CREATE EXTENSION vector;
  *   CREATE TABLE <table> (
@@ -29,14 +28,16 @@ import type { VectorCandidate, VectorCandidateIndex, VectorCandidateQuery, Vecto
 const IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/;
 
 export interface PgVectorIndexOptions {
-  /** `pg` ClientConfig — connection string, host/credentials, or a pooled config. */
+  /** `pg` ClientConfig — 단일 클라이언트의 연결 문자열이나 호스트·자격증명. */
   connection: Record<string, unknown>;
-  /** Table name; include the embedding profile version, e.g. `kcl_vector_bge_v1`. */
+  /** 테이블 이름 — 임베딩 프로파일 버전을 포함한다(예: `kcl_vector_bge_v1`). */
   table: string;
-  /** Rows written under other embedding/index versions are invisible to queries. */
+  /** 다른 임베딩·색인 버전으로 기록된 행은 질의에 보이지 않는다. */
   indexVersion: number;
-  /** Optional `pg` module override — injected in tests; deployments rely on the lazy import. */
+  /** 선택적 `pg` 모듈 오버라이드 — 테스트에서 주입; 배포는 지연 import에 의존한다. */
   pg?: unknown;
+  /** 선택적 지연 `pg` 로더 오버라이드 — 모듈 부재를 결정적으로 재현하는 테스트용. */
+  pgLoader?: () => Promise<unknown>;
 }
 
 export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
@@ -44,6 +45,7 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
   private readonly table: string;
   private readonly indexVersion: number;
   private readonly pgModule: unknown;
+  private readonly pgLoader: (() => Promise<unknown>) | undefined;
   private opening: Promise<any> | undefined;
 
   constructor(options: PgVectorIndexOptions) {
@@ -54,33 +56,42 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     this.table = options.table;
     this.indexVersion = options.indexVersion;
     this.pgModule = options.pg;
+    this.pgLoader = options.pgLoader;
   }
 
   private async loadPg(): Promise<any> {
     if (this.pgModule) return this.pgModule;
+    try { if (this.pgLoader) return await this.pgLoader(); }
+    catch (error) { throw this.pgModuleError(error); }
     // 변수 지정자로 두면 tsc가 pg 타입 없이도 컴파일하고 번들러가 정적 해석을 강요하지 않는다 —
     // 모듈 해석은 어댑터를 실제로 쓰는 런타임에만 일어난다.
     const specifier = 'pg';
     try { return await import(specifier); }
-    catch (error) {
-      // 모듈 부재는 영구 설정 오류다 — TypeError로 던져 서비스가 재시도 불가로 분류하게 한다.
-      const code = (error as NodeJS.ErrnoException)?.code;
-      if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'MODULE_NOT_FOUND') throw error;
-      throw new TypeError('pgvector index requires the optional "pg" package — install it in the deployment that configures an external index', { cause: error });
-    }
+    catch (error) { throw this.pgModuleError(error); }
   }
 
   /**
-   * 차원·형 불일치 같은 pgvector 거부는 재시도로 해소되지 않는 영구 설정 오류다 —
-   * pg의 DatabaseError(22000 데이터 예외, 42804 형 불일치)를 TypeError로 변환해
-   * 서비스가 INDEX_MISCONFIGURED로 분류하게 한다.
+   * pg 모듈 부재를 영구 설정 오류로 변환한다 — 모듈 부재 이외의 import 실패는
+   * 그대로 다시 던져 원인을 보존한다.
+   */
+  private pgModuleError(error: unknown): unknown {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'MODULE_NOT_FOUND') return error;
+    return new TypeError('pgvector index requires the optional "pg" package — install it in the deployment that configures an external index', { cause: error });
+  }
+
+  /**
+   * 차원·형 불일치·스키마 부재 같은 pg 거부는 재시도로 해소되지 않는 영구 설정
+   * 오류다 — SQLSTATE 42클래스(테이블·컬럼·권한 부재)와 3D000(카탈로그 부재),
+   * 22000/42804(데이터·형 예외)를 TypeError로 변환해 서비스가 INDEX_MISCONFIGURED로
+   * 분류하게 한다. 그 외 연결·일시 오류는 그대로 전파해 재시도 가능으로 남긴다.
    */
   private async run(client: any, text: string, values: unknown[]) {
     try { return await client.query(text, values); }
     catch (error) {
-      const code = (error as any)?.code;
-      if (code === '22000' || code === '42804' || /different vector dimensions|expected \d+ dimensions/i.test(String((error as Error)?.message))) {
-        throw new TypeError('pgvector rejected the embedding shape — check index dimensions and embedding profile', { cause: error });
+      const code = String((error as any)?.code ?? '');
+      if (code.startsWith('42') || code === '3D000' || code === '22000' || /different vector dimensions|expected \d+ dimensions/i.test(String((error as Error)?.message))) {
+        throw new TypeError('pgvector rejected the request shape or schema — check index table, dimensions, and privileges', { cause: error });
       }
       throw error;
     }
@@ -88,6 +99,8 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
 
   private connect(): Promise<any> {
     if (!this.opening) {
+      // 클로저 안에서 자기 Promise를 참조해야 해 선언 후 할당한다 —
+      // 참조는 첫 await 이후의 콜백에서만 일어나므로 할당 전 사용은 없다.
       let opening!: Promise<any>;
       opening = (async () => {
         try {
@@ -117,8 +130,6 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1000) throw new TypeError('Vector candidate query limit is invalid');
     const literal = `[${query.embedding.join(',')}]`;
     const client = await this.connect();
-    // HNSW 인덱스는 ef_search(기본 40)까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면 세션 값을 올린다.
-    await this.run(client, `SELECT set_config('hnsw.ef_search', $1, false)`, [String(query.limit)]);
     const clauses = ['index_version = $2'];
     const values: unknown[] = [literal, this.indexVersion];
     for (const [field, column] of [['context_id', 'context_id'], ['scope_id', 'scope_id'], ['usage_scope', 'usage_scope']] as const) {
@@ -126,16 +137,29 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
       if (value !== undefined) { values.push(value); clauses.push(`${column} = $${values.length}`); }
     }
     values.push(query.limit);
-    const result = await this.run(client,
-      `SELECT revision_digest, document_id, context_id, scope_id, usage_scope,
-              1 - (embedding <=> $1::vector) AS score
-         FROM ${this.table} WHERE ${clauses.join(' AND ')}
-        ORDER BY embedding <=> $1::vector LIMIT $${values.length}`, values);
+    // HNSW 인덱스는 ef_search(기본 40)까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면
+    // 올려야 하는데, 세션 전역 설정은 한도가 다른 동시 호출끼리 섞일 수 있다.
+    // 트랜잭션 안의 LOCAL 설정으로 묶어 이 호출에만 적용한다.
+    let result: any;
+    await this.run(client, 'BEGIN', []);
+    try {
+      await this.run(client, `SELECT set_config('hnsw.ef_search', $1, true)`, [String(query.limit)]);
+      result = await this.run(client,
+        `SELECT revision_digest, document_id, context_id, scope_id, usage_scope,
+                1 - (embedding <=> $1::vector) AS score
+           FROM ${this.table} WHERE ${clauses.join(' AND ')}
+          ORDER BY embedding <=> $1::vector LIMIT $${values.length}`, values);
+      await this.run(client, 'COMMIT', []);
+    } catch (error) {
+      try { await client.query('ROLLBACK'); }
+      catch (rollbackError) { (error as any).rollback = rollbackError; }
+      throw error;
+    }
     return result.rows.map((row: any) => ({ revision_digest: row.revision_digest, document_id: row.document_id,
       context_id: row.context_id, scope_id: row.scope_id, usage_scope: row.usage_scope, score: Number(row.score) }));
   }
 
-  /** Upsert one entry; re-keying on (revision_digest, index_version) makes rebuilds idempotent. */
+  /** 항목 하나를 올리거나 갱신한다 — (revision_digest, index_version) 재키잉으로 재구축이 멱등이다. */
   async upsert(entry: VectorIndexEntry): Promise<void> {
     if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
     const literal = `[${entry.embedding.join(',')}]`;
@@ -154,17 +178,16 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     await this.run(client, `DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
   }
 
-  /** Remove every row under this index version — the rebuild path re-inserts from verified state. */
+  /** 이 색인 버전의 모든 행을 지운다 — 재구축 경로는 검증된 상태에서 다시 채운다. */
   async clear(): Promise<void> {
     const client = await this.connect();
     await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
   }
 
   /**
-   * Atomically replace every row of this index version in one transaction.
-   * The transaction runs on a dedicated connection so concurrent candidates()
-   * reads on the shared client keep seeing the committed pre-rebuild rows
-   * until COMMIT — readers never observe an empty or partially populated index.
+   * 이 색인 버전의 모든 행을 하나의 트랜잭션으로 원자 교체한다.
+   * 전용 연결에서 실행해 공유 클라이언트의 동시 candidates() 읽기가 COMMIT까지
+   * 재구축 전 커밋 행을 계속 본다 — 빈·부분 색인이 읽기에 노출되지 않는다.
    */
   async replaceAll(entries: readonly VectorIndexEntry[]): Promise<void> {
     for (const entry of entries) if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');

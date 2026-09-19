@@ -247,7 +247,7 @@ export async function createApp(options: AppOptions) {
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),
           [`${root}/search`]: () => service.search(actor, input),
           [`${root}/vector-search`]: () => service.vectorSearch(actor, input),
-          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor),
+          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor, input),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
