@@ -12,8 +12,8 @@ export interface CloseHttpServerOptions {
   label?: string;
 }
 
-/** 서버 종료 대기의 결과 — 강제 해제와 콜백 미도착은 해제 실행 여부와 그 시점에 포착한 연결 수를 함께 돌려준다. */
-type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned'; forced: boolean; connections: number };
+/** 서버 종료 대기의 결과 — 강제 해제 시점에 포착한 연결 수와, 콜백 미도착 뒤 읽은 잔여 연결 수를 함께 돌려준다. */
+type CloseWaitResult = { outcome: 'closed' } | { outcome: 'forced'; connections: number } | { outcome: 'abandoned'; connections: number; remaining: number };
 
 /** 종료 마감의 기본값(ms) — 앱 옵션 문서가 이 상수를 참조해 기본값 설명이 갈라지지 않게 한다. */
 export const DEFAULT_CLOSE_DEADLINE_MS = 5_000;
@@ -50,8 +50,10 @@ export function assertOptionalCloseBound(value: number | undefined, name: string
 /**
  * close가 deadlineMs + settleMs를 넘기지 않게 감시한다 — deadlineMs까지는 진행 중 요청이
  * 끝나길 기다리고, 그 뒤에는 잔여 연결을 강제 해제하며, 추적이 끊긴 소켓으로 close 콜백이
- * 오지 않는 최악에는 deadlineMs + settleMs에 'abandoned'로 돌아온다. 모든 타이머는 finish
- * 경로에서 정리하고, settle 후 도착한 close 오류는 버리지 않고 진단으로 남긴다.
+ * 오지 않는 최악에는 deadlineMs + settleMs에 'abandoned'로 돌아온다. 마감·정착 타이머는
+ * finish 경로에서 정리하고(개수 포착의 짧은 상한 타이머는 스스로 해제된다), settle 후
+ * 도착한 close 오류는 버리지 않고 진단으로 남긴다. 포착·조회 진단 대기는 두 경로를 합쳐
+ * 최대 REMAINING_LOOKUP_MS만 더한다.
  */
 function waitForServerClose(server: Server, deadlineMs: number, settleMs: number, label: string, onSweepFailure: (error: unknown) => void): Promise<CloseWaitResult> {
   return new Promise<CloseWaitResult>((resolve, reject) => {
@@ -69,13 +71,12 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
       clearTimeout(abandonTimer);
       settle();
     };
-    // 개수 포착 promise를 짧은 상한으로 기다린 뒤 settle한다 — 콜백이 늦거나 오지 않으면
-    // '알 수 없음'으로 진행해 대기가 마감을 넘기지 않게 한다.
-    const settleAfterCount = (pending: Promise<void>, settle: () => void) => {
+    // 개수 포착 promise를 주어진 상한으로 기다린다 — 늦거나 오지 않으면 그냥 넘겨 대기가 마감을 넘기지 않게 한다.
+    // 돌려주는 promise가 거절될 수 있으므로 소비 측이 거절 경로까지 귀결시켜야 한다.
+    const boundedWait = (pending: Promise<void>, timeoutMs: number): Promise<void> => {
       let boundTimer: NodeJS.Timeout | undefined;
-      void Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, REMAINING_LOOKUP_MS); })])
-        .finally(() => clearTimeout(boundTimer))
-        .then(settle);
+      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); })])
+        .finally(() => clearTimeout(boundTimer));
     };
     // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     // getConnections 콜백은 nextTick 이후 도착해 비클러스터 경로에서는 소켓 파괴 전 값을 읽는다 — 클러스터 primary의 IPC 왕복에서는 늦어질 수 있다.
@@ -90,10 +91,18 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     // forceTimer가 어떤 이유로든 못 돈 최악(타이머 순서 역전)에도 강제 해제는 시도한 뒤 마감한다 — 폴백 해제는 개수 포착을 기다려 UNKNOWN 남발을 피한다.
     abandonTimer = setTimeout(() => {
       try {
-        // 이미 해제됐다면 그 포착을, 아니면 폴백 해제의 포착을 같은 상한으로 기다린다.
-        const counting = isForced ? pendingCount : release();
-        const settle = () => finish(() => resolve({ outcome: 'abandoned', forced: isForced, connections }));
-        if (counting) settleAfterCount(counting, settle); else settle();
+        // 해제가 마감에 일어났든 지금 폴백으로 일어나든 포착이 진행 중이다 — 포착 대기와 잔여 조회가 하나의
+        // 진단 예산(REMAINING_LOOKUP_MS)을 나눠 두 대기가 직렬로 쌓여 총 상한을 넘기는 일이 없게 한다.
+        const counting = pendingCount ?? release();
+        // 이 창에 도착한 close 콜백은 절대 마감을 넘긴 '늦은' 도착이다 — 포착 대기가 끝나면 이 finish가 먼저
+        // settle해 'abandoned'로 결정하고, 늦게 도착한 콜백은 isSettled 분기가 늦은 오류로만 다룬다.
+        const budgetEnd = Date.now() + REMAINING_LOOKUP_MS;
+        void boundedWait(counting, Math.max(0, budgetEnd - Date.now()))
+          .then(() => connectionCountBounded(server, Math.max(0, budgetEnd - Date.now())))
+          .then(
+            remaining => finish(() => resolve({ outcome: 'abandoned', connections, remaining })),
+            lookupError => finish(() => reject(lookupError)),
+          );
       } catch (error) {
         finish(() => reject(error));
       }
@@ -106,11 +115,19 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         }
         // 강제 해제 후 close 오류로 reject돼도 해제 사실은 진단으로 남긴다 — 포착한 연결 수가 버려지지 않게 한다.
         const settle = () => {
-          if (error && isForced) reportForcedRelease(label, connections);
-          finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
+          try {
+            if (error && isForced) reportForcedRelease(label, connections);
+            finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
+          } catch (settleError) {
+            finish(() => reject(settleError));
+          }
         };
         // close 콜백이 개수 포착보다 먼저 도착할 수 있다 — 진단이 항상 '알 수 없음'이 되지 않게 유한하게 기다린다.
-        if (isForced && pendingCount) settleAfterCount(pendingCount, settle); else settle();
+        if (isForced && pendingCount) {
+          void boundedWait(pendingCount, REMAINING_LOOKUP_MS).then(settle, waitError => finish(() => reject(waitError)));
+        } else {
+          settle();
+        }
       });
       try {
         server.closeIdleConnections();
@@ -123,8 +140,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
   });
 }
 
-/** 잔여 연결 수 진단 조회의 상한(ms) — 조회가 늦어져도 총 대기 상한을 넘기지 않게 한다. */
-const REMAINING_LOOKUP_MS = 100;
+/** 개수 포착·잔여 조회가 공유하는 진단 대기의 총 상한(ms) — 조회가 늦어져도 총 대기 상한을 넘기지 않게 한다. */
+export const REMAINING_LOOKUP_MS = 100;
 
 /** 서버의 현재 연결 수를 한 번 읽는다 — 조회 오류·동기 throw는 센티널로 강등해 진단이 위장하거나 거절로 번지지 않게 한다(진단용 best-effort다). */
 function connectionCount(server: Server): Promise<number> {
@@ -137,17 +154,13 @@ function connectionCount(server: Server): Promise<number> {
   });
 }
 
-/** 잔여 연결 수를 짧은 상한 안에 읽는다 — 클러스터 IPC 같은 느린 조회는 '알 수 없음'으로 강등해 총 대기 상한을 지킨다. */
-async function remainingConnectionsBounded(server: Server): Promise<number> {
+/** 연결 수를 주어진 상한 안에 읽는다 — 클러스터 IPC 같은 느린 조회는 '알 수 없음'으로 강등해 진단 예산을 지킨다. */
+function connectionCountBounded(server: Server, timeoutMs: number): Promise<number> {
   let lookupTimer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      connectionCount(server),
-      new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), REMAINING_LOOKUP_MS); }),
-    ]);
-  } finally {
-    clearTimeout(lookupTimer);
-  }
+  return Promise.race([
+    connectionCount(server),
+    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); }),
+  ]).finally(() => clearTimeout(lookupTimer));
 }
 
 /** 진단에 싣는 연결 수 표현 — 조회 실패 센티널을 개수로 위장하지 않게 '알 수 없음'으로 표시한다. */
@@ -164,9 +177,9 @@ function reportForcedRelease(label: string, connections: number): void {
  * 유휴 keep-alive 소켓은 즉시 거두고 진행 중 요청이 끝나길 기다린 뒤, 마감을
  * 넘긴 잔여 연결은 강제 해제한다 — 종료 중 완료되는 요청의 소켓도 주기 스윕이
  * 다시 거둬 마감 낭비와 강제 해제 오탐을 막는다. 강제 해제나 close 콜백
- * 미도착이 일어나면 stderr에 식별자·사유·연결 수를 남긴다. close 대기 자체는
- * deadlineMs + settleMs를 넘기지 않고, 콜백 미도착 뒤 잔여 수를 읽는 진단
- * 조회만 추가로 REMAINING_LOOKUP_MS 안에서 끝난다.
+ * 미도착이 일어나면 stderr에 식별자·사유·연결 수를 남긴다. close 대기는
+ * deadlineMs + settleMs 안에 끝나고, 포착·조회 진단 대기를 합해도 추가
+ * REMAINING_LOOKUP_MS를 넘지 않는다.
  */
 export async function closeHttpServer(server: Server, options: CloseHttpServerOptions = {}): Promise<void> {
   const { deadlineMs = DEFAULT_CLOSE_DEADLINE_MS, settleMs = DEFAULT_SETTLE_MS, label = 'http' } = options;
@@ -201,8 +214,7 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
     reportForcedRelease(label, result.connections);
     return;
   }
-  // 마감이 먼저 발화해 강제 해제가 실행됐다면 그 사실과 포착한 연결 수를 버리지 않는다 — 콜백 미도착 진단만 남기면 해제가 무소음이 된다.
-  if (result.forced) reportForcedRelease(label, result.connections);
-  const remaining = await remainingConnectionsBounded(server);
-  console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(remaining)}`);
+  // 콜백 미도착 경로는 마감이든 폴백이든 강제 해제가 반드시 실행됐다 — 해제 사실과 포착 수를 버리지 않는다.
+  reportForcedRelease(label, result.connections);
+  console.error(`[${label}] HTTP 종료 close 콜백이 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
 }

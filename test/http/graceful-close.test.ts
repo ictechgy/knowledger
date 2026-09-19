@@ -4,7 +4,7 @@ import { createServer, type RequestListener, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { closeHttpServer, MAX_TIMEOUT_MS } from '../../packages/http/graceful-close.ts';
+import { closeHttpServer, MAX_TIMEOUT_MS, REMAINING_LOOKUP_MS } from '../../packages/http/graceful-close.ts';
 
 /** 포트 0으로 듣는 서버를 띄워 주소를 돌려준다 — 매 테스트가 독립 포트를 쓰게 한다. */
 async function listeningServer(handler: RequestListener): Promise<{ server: Server; port: number }> {
@@ -186,20 +186,53 @@ test('closeHttpServer bounds the post-abandon connection lookup instead of waiti
   const originalClose = server.close.bind(server);
   const originalGetConnections = server.getConnections.bind(server);
   try {
-    // close 콜백도 연결 수 콜백도 오지 않는 최악 — 마감 뒤 진단 조회가 영원히 기다리지 않고 '알 수 없음'으로 끝나야 한다.
+    // close 콜백도 연결 수 콜백도 오지 않는 최악 — 마감 뒤 포착 대기와 잔여 조회가 하나의
+    // 진단 예산(REMAINING_LOOKUP_MS)을 공유해 직렬 대기가 쌓이지 않고 '알 수 없음'으로 끝나야 한다.
     server.close = (() => server) as Server['close'];
     server.getConnections = (() => server) as unknown as Server['getConnections'];
     const started = Date.now();
     await closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'lookup-bound' });
     const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 150, 'the abandon at 90ms plus the bounded lookup at ~100ms still applies');
-    assert.ok(elapsed < 2_000, 'a hung connection-count lookup cannot stall shutdown');
+    assert.ok(elapsed >= 150, 'the abandon at 90ms plus the shared bounded lookup at ~100ms still applies');
+    assert.ok(elapsed < 90 + REMAINING_LOOKUP_MS + 1_000, 'capture wait and remaining lookup must share one bounded budget');
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 2, 'forced release and abandon each report a diagnostic');
     assert.match(messages[1], /콜백이 도착하지 않아/, 'the diagnostic names the abandon reason');
     assert.match(messages[1], /알 수 없음/, 'the timed-out lookup degrades to an unknown count');
   } finally {
     server.getConnections = originalGetConnections;
+    await releaseServer(server, originalClose);
+  }
+});
+
+test('closeHttpServer waits for the count capture when the close callback arrives first', async (t) => {
+  const diagnostic = t.mock.method(console, 'error');
+  const { server, port } = await listeningServer((_req, res) => { res.writeHead(200); res.flushHeaders(); });
+  const socket = connect(port, '127.0.0.1');
+  const originalClose = server.close.bind(server);
+  const originalGetConnections = server.getConnections.bind(server);
+  try {
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
+    await once(socket, 'data');
+    // close 콜백이 개수 포착보다 먼저 도착하는 순서를 결정적으로 만든다 — 포착 콜백과 close 콜백을 둘 다 가로채 둔다.
+    let captured: ((error: Error | null, count: number) => void) | undefined;
+    let closeCallback: ((error?: Error) => void) | undefined;
+    server.getConnections = ((callback: (error: Error | null, count: number) => void) => { captured = callback; }) as Server['getConnections'];
+    server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
+    const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 200, label: 'race-test' });
+    // 마감(60ms) 뒤 release가 포착을 시작했지만 콜백이 아직 없는 창에 close 콜백을 도착시킨다.
+    await sleep(120);
+    closeCallback?.();
+    await sleep(20);
+    captured?.(null, 7);
+    await closePromise;
+    const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
+    assert.equal(messages.length, 1, 'the close callback arrived so only the forced release reports');
+    assert.match(messages[0], /강제 해제/, 'the diagnostic names the forced-release reason');
+    assert.match(messages[0], /연결 7개/, 'the diagnostic waits for the capture instead of reporting unknown');
+  } finally {
+    server.getConnections = originalGetConnections;
+    socket.destroy();
     await releaseServer(server, originalClose);
   }
 });
