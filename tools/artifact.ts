@@ -118,6 +118,9 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
   let failure: unknown;
   // 만든 임시 inode의 신원 — catch의 정리가 이 inode를 나타내는 이름만 지우게 한다.
   let tmpStat: Stats | undefined;
+  // 게시 검증을 통과한 뒤의 실패는 게시된 아티팩트를 걷지 않는다 — 이미 교체된 예전
+  // 대상은 되돌릴 수 없고, 내구성 보고 실패가 새 아티팩트까지 지우면 둘 다 잃는다.
+  let published = false;
   try {
     const pinned = statSync('.');
     if (pinned.dev !== expected.dev || pinned.ino !== expected.ino) throw new Error('--out directory changed during open');
@@ -165,12 +168,13 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     renameSync(tmp, fileName);
     // 게시된 객체가 쓴 inode인지 확인한다 — 재검증과 rename 사이의 잔여 창에서 이름이
     // 대체돼도 대상 경로에 외부 객체를 남기지 않고 닫힌 실패로 둔다.
-    const published = lstatSync(fileName, { throwIfNoEntry: false });
-    if (!published || !published.isFile() || published.dev !== tmpStat.dev || published.ino !== tmpStat.ino || published.nlink !== 1) {
+    const publishedCheck = lstatSync(fileName, { throwIfNoEntry: false });
+    if (!publishedCheck || !publishedCheck.isFile() || publishedCheck.dev !== tmpStat.dev || publishedCheck.ino !== tmpStat.ino || publishedCheck.nlink !== 1) {
       // 대상에 놓인 것이 우리 inode가 아니면 절대 지우지 않는다 — 경합자가 놓은 파일이나
       // 디렉터리일 수 있어 거부만 하고 그대로 둔다.
       throw new Error('--out was replaced during publish');
     }
+    published = true;
     try {
       // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다 — 같은 inode를 가리키는 '.'을 연다.
       const dirFd = openSync('.', constants.O_RDONLY);
@@ -185,7 +189,7 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     // 객체로 대체됐으면 경합자의 파일을 지우지 않고 그대로 둔다. 정리 실패는 원
     // 오류를 가리지 않는다.
     try {
-      for (const name of [tmp, fileName]) {
+      for (const name of published ? [tmp] : [tmp, fileName]) {
         const leftover = lstatSync(name, { throwIfNoEntry: false });
         if (leftover && tmpStat && leftover.isFile() && leftover.dev === tmpStat.dev && leftover.ino === tmpStat.ino) rmSync(name, { force: true });
       }

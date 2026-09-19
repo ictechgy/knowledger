@@ -118,7 +118,9 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
   const inside = git(root, ['rev-parse', '--is-inside-work-tree'], 1024).toString('utf8').trim();
   if (inside !== 'true') invalid();
   // 하위 디렉터리는 부모 저장소를 발견해 통과하므로 root 자체가 worktree top이어야 한다.
-  const top = git(root, ['rev-parse', '--show-toplevel'], 4096).toString('utf8').trim();
+  // 경로는 Git의 말미 개행 한 바이트만 뗀다 — trim은 끝이 공백·개행인 유효한
+  // 디렉터리 이름까지 지운다.
+  const top = git(root, ['rev-parse', '--show-toplevel'], 4096).toString('utf8').replace(/\n$/, '');
   if (!top || realpathSync(top) !== realpathSync(root)) invalid();
   let commit: string | undefined;
   if (ref.length === idLength && OBJECT_ID_PATTERN.test(ref)) {

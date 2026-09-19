@@ -92,6 +92,10 @@ if (isMain()) {
         let total = 0;
         for (let n = 1; n > 0; total += n) n = readSync(observationsFd, buffer, total, buffer.length - total, null);
         if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
+        // 같은 디스크립터의 읽기 후 메타를 비교한다 — 같은 inode의 제자리 덮어쓰기가
+        // 읽는 사이 섞여 들어오면 거부한다.
+        const afterStat = fstatSync(observationsFd);
+        if (afterStat.size !== observationsStat.size || afterStat.mtimeNs !== observationsStat.mtimeNs || afterStat.ctimeNs !== observationsStat.ctimeNs) throw new Error('invalid option');
         observationsBytes = buffer.subarray(0, total);
         // 치명적 디코딩 — 잘못된 UTF-8을 U+FFFD로 고쳐 읽지 않는다.
         observations = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observationsBytes));
