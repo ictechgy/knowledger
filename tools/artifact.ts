@@ -137,10 +137,22 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
       assertNotProtected(join(realpathSync('.'), fileName), dest ? `${dest.dev}:${dest.ino}` : undefined, guard.protectedPaths, fold);
     }
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
-    // 게시 직전 고정 디렉터리를 다시 확인한다 — 하나의 syscall 간격의 잔여 창만 남는다.
+    // 게시 직전 고정 디렉터리와 임시 inode를 다시 확인한다 — 하나의 syscall 간격의
+    // 잔여 창만 남긴다.
     const repin = statSync('.');
     if (repin.dev !== expected.dev || repin.ino !== expected.ino) throw new Error('--out directory changed during write');
+    const tmpFinal = lstatSync(tmp, { throwIfNoEntry: false });
+    if (!tmpFinal || !tmpFinal.isFile() || tmpFinal.dev !== tmpStat.dev || tmpFinal.ino !== tmpStat.ino || tmpFinal.nlink !== 1) {
+      throw new Error('--out temporary file was replaced');
+    }
     renameSync(tmp, fileName);
+    // 게시된 객체가 쓴 inode인지 확인한다 — 재검증과 rename 사이의 잔여 창에서 이름이
+    // 대체돼도 대상 경로에 외부 객체를 남기지 않고 닫힌 실패로 둔다.
+    const published = lstatSync(fileName, { throwIfNoEntry: false });
+    if (!published || !published.isFile() || published.dev !== tmpStat.dev || published.ino !== tmpStat.ino || published.nlink !== 1) {
+      try { rmSync(fileName, { force: true }); } catch { /* 대체된 객체 정리 시도만 한다 */ }
+      throw new Error('--out was replaced during publish');
+    }
     try {
       // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다 — 같은 inode를 가리키는 '.'을 연다.
       const dirFd = openSync('.', constants.O_RDONLY);
