@@ -130,6 +130,8 @@ export class FabricApplicationLedger implements ApplicationLedger {
         this.queue = Promise.resolve();
         reject(new FabricLedgerError('FRESHNESS_UNAVAILABLE', '원장 갱신이 시간 안에 끝나지 않았습니다.'));
       }, this.options.refreshTimeoutMs ?? 30_000);
+      // 감시 타이머를 unref하면 멈춘 갱신이 유일한 대기 작업일 때 이벤트 루프가 먼저 해제되어
+      // 이 버리기가 영구 미발사된다 — 정상 경로는 clearTimeout이 막으므로 ref를 유지한다.
       work.then(
         () => { clearTimeout(timer); resolve(); },
         error => { clearTimeout(timer); reject(error); },

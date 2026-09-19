@@ -119,6 +119,8 @@ test('revalidate rejects a different or missing adapter for an adapter-bound run
   const other = await f.service.revalidate(actor, runId, { action: 'use-context', model_adapter_id: 'adapter-b' });
   assert.equal(other.status, 'withheld');
   assert.equal(other.reason, 'EGRESS_ADAPTER_MISMATCH');
+  // 도장 검증을 통과한 기록의 불일치 거부는 발급 checkpoint를 실어 재시도 근거를 남긴다.
+  assert.deepEqual(other.checkpoint, resolved.manifest.checkpoint);
   const missing = await f.service.revalidate(actor, runId, { action: 'use-context' });
   assert.equal(missing.status, 'withheld');
   assert.equal(missing.reason, 'EGRESS_ADAPTER_MISMATCH');
@@ -234,14 +236,17 @@ test('a truthy non-boolean egress verdict is denied at revalidation too', async 
 
 test('the egress hook receives isolated copies that cannot mutate server state', async t => {
   let seen: any;
-  const f = await fixture(t, { allows: (input: any) => { seen = input; input.manifest.policy_id = 'tampered'; input.actor.actor_id = 'tampered'; return true; } });
+  let abortedInside = true;
+  const f = await fixture(t, { allows: (input: any) => { seen = input; abortedInside = input.signal.aborted; input.manifest.policy_id = 'tampered'; input.actor.actor_id = 'tampered'; return true; } });
   const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
   assert.equal(resolved.status, 'provided');
   assert.notEqual(seen.manifest, resolved.manifest);
   assert.notEqual(resolved.manifest.policy_id, 'tampered');
   assert.equal(actor.actor_id, PERSONAS[0].actor_id);
   assert.ok(seen.signal instanceof AbortSignal);
-  assert.equal(seen.signal.aborted, false);
+  // 훅 호출 중에는 신호가 울리지 않고, 판정이 끝나면 게이트가 신호를 울려 훅의 잔여 작업을 해제한다.
+  assert.equal(abortedInside, false);
+  assert.equal(seen.signal.aborted, true);
 });
 
 test('a missing binding field in the stored run record is treated as tampering', async t => {
@@ -477,4 +482,38 @@ test('require_adapter without allows denies every resolve fail-closed', async t 
   const withAdapter = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
   assert.equal(withAdapter.status, 'withheld');
   assert.equal(withAdapter.reason, 'EGRESS_POLICY_DENIED');
+});
+
+test('a sealed run record copied to another actor stays bound to its issuer', async t => {
+  const f = await fixture(t, { allows: () => true });
+  const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+  assert.equal(resolved.status, 'provided');
+  const other = actorIdentity(PERSONAS[2]);
+  const stolen = f.vault.get('run', resolved.manifest.run_id, actor);
+  // 도장이 발급 대상까지 묶으므로 다른 actor 행에 통째 복사해도 무결성 불일치다.
+  f.vault.put('run', resolved.manifest.run_id, other, stolen);
+  const verdict = await f.service.revalidate(other, resolved.manifest.run_id, { action: 'use-context', model_adapter_id: 'adapter-chat' });
+  assert.equal(verdict.status, 'withheld');
+  assert.equal(verdict.reason, 'KNOWLEDGE_CHANGED');
+});
+
+test('an asynchronously rejecting diagnostic sink cannot crash the process', async t => {
+  const f = await fixture(t, { allows: () => { throw new Error('policy store down'); }, onError: async () => { throw new Error('sink rejected'); } });
+  const original = console.error;
+  const reported: unknown[] = [];
+  console.error = (...args: unknown[]) => { reported.push(args); };
+  let unhandled = 0;
+  const onUnhandled = () => { unhandled += 1; };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const resolved = await f.service.resolve(actor, { ...selection, model_adapter_id: 'adapter-chat' });
+    assert.equal(resolved.status, 'withheld');
+    assert.equal(resolved.reason, 'EGRESS_POLICY_UNAVAILABLE');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reported.length, 1);
+    assert.equal(unhandled, 0);
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled);
+    console.error = original;
+  }
 });

@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digests are dropped. `LocalVectorIndex` provides the in-process development
   adapter; `PgVectorIndex` targets pgvector with an `index_version`-scoped
   schema and lazily loaded `pg` dependency.
+- Fabric adapter refresh watchdog: the refresh-abandon timer no longer uses
+  `unref()`, which previously let the event loop drain before
+  `FRESHNESS_UNAVAILABLE` fired when the stuck refresh was the only pending
+  work — a stuck refresh now deterministically abandons after
+  `refreshTimeoutMs` and may hold the event loop for that bound.
 - Server-side model egress gate: `KnowledgerService`/`createApp`/
   `createConfiguredApp` accept a `modelEgress` policy (`policy_version` lands
   in the manifest's `model_egress_policy_version`; `allows` is consulted

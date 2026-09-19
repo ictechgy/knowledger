@@ -175,18 +175,29 @@ export class KnowledgerService {
       return verdict === true ? 'allowed' : 'denied';
     } catch (error) {
       // 상한 신호가 울린 뒤 신호를 존중한 훅의 AbortError가 경주를 이겨도 진단에는 타임아웃으로 보고한다.
-      const reported = controller.signal.aborted && !(error instanceof ModelEgressTimeoutError) ? new ModelEgressTimeoutError(error) : error;
-      // 정책 저장소 장애를 진단 훅으로 보고한다 — 진단 훅 자체의 실패는 fail-closed 판정을 바꾸지 않는다.
-      try {
-        this.egressOnError.call(undefined, reported);
-      } catch (diagnosticError) {
-        // 깨진 진단 싱크를 조용히 삼키지 않고 기본 출력으로 한 번 더 보고한다 — 출력 자체가 불가하면 더 보고할 곳이 없다.
-        try { console.error('model egress diagnostic callback failed:', diagnosticError); } catch { /* 출력 불가 환경 */ }
-      }
+      this.reportEgressDiagnostic(controller.signal.aborted && !(error instanceof ModelEgressTimeoutError) ? new ModelEgressTimeoutError(error) : error);
       return 'unavailable';
     } finally {
       clearTimeout(timer);
+      // 판정이 끝나면 훅에 건넨 신호를 울려 훅이 신호에 묶어 둔 정책 측 작업도 해제한다 — 타임아웃 분류는 catch에서 이미 끝났다.
+      controller.abort();
     }
+  }
+
+  /** 정책 장애를 진단 싱크로 보고한다 — 싱크의 동기·비동기 실패 모두 fail-closed 판정을 바꾸지 않는다. */
+  private reportEgressDiagnostic(error: unknown): void {
+    try {
+      const sinkResult = this.egressOnError.call(undefined, error) as unknown;
+      // 비동기 싱크의 거부는 미처리 거부로 새지 않게 붙잡는다 — 싱크가 프로세스를 쓰러뜨려서는 안 된다.
+      if (sinkResult && typeof (sinkResult as PromiseLike<unknown>).then === 'function') void Promise.resolve(sinkResult).catch((diagnosticError: unknown) => this.fallbackDiagnostic(diagnosticError));
+    } catch (diagnosticError) {
+      this.fallbackDiagnostic(diagnosticError);
+    }
+  }
+
+  /** 깨진 진단 싱크의 마지막 보고 경로 — 출력 자체가 불가한 환경이면 더 보고할 곳이 없어 의도적으로 침묵한다. */
+  private fallbackDiagnostic(error: unknown): void {
+    try { console.error('model egress diagnostic callback failed:', error); } catch { /* 출력 불가 환경 — 남은 보고 채널 없음 */ }
   }
 
   /** run 기록 중 원장 닻이 없는 필드(run_id·slot·어댑터 결속·발급 manifest·발급 대상 actor)의 per-boot 무결성 도장 — boot 비밀키라 재시작 기록은 자연 폐기된다. */
@@ -1223,6 +1234,8 @@ export class KnowledgerService {
     this.actor(actor); onlyFields(input, ['document_ids', 'context_id', 'scope_id', 'usage_scope', 'query', 'model_adapter_id']);
     if (!Array.isArray(input.document_ids) || input.document_ids.length !== 1) throw new ApiError('INVALID_INPUT', 'v0.1에서는 정확한 문서 한 개의 사용 범위를 지정해 주세요.');
     assertModelAdapterId(input.model_adapter_id);
+    // 선언 강제 배포에서 입력만으로 판정되는 거부는 원장 분석 이전에 앞당긴다 — 자격 사유를 미선언 요청에 노출하지 않는다.
+    if (input.model_adapter_id === undefined && this.egressRequireAdapter && !existingRunId) return { status: 'withheld', reason: 'EGRESS_ADAPTER_REQUIRED', documents: [] };
     // 재검증 내부 호출은 어댑터를 싣지 않는다 — 바깥 revalidate가 결속 어댑터로 한 번만 정책을 확인해 훅 중복 호출·onError 중복 보고를 막는다.
     if (existingRunId !== undefined && input.model_adapter_id !== undefined) throw new Error('internal invariant: revalidation runs do not carry model_adapter_id');
     const slot = { channel_id: this.ledger.channelId, document_id: identifier(input.document_ids[0]), context_id: identifier(input.context_id), scope_id: identifier(input.scope_id), usage_scope: input.usage_scope };
@@ -1263,9 +1276,6 @@ export class KnowledgerService {
     if (input.model_adapter_id !== undefined) {
       const egress = await this.checkEgress(actor, input.model_adapter_id, manifest);
       if (egress !== 'allowed') return { status: 'withheld', reason: KnowledgerService.egressReason(egress), documents: [], checkpoint: at };
-    } else if (this.egressRequireAdapter && !existingRunId) {
-      // 선언 강제 배포 — 미지정 resolve는 허가 근거가 없어 거부한다. 내부 재검증 호출은 결속 어댑터를 바깥 revalidate가 확인한다.
-      return { status: 'withheld', reason: 'EGRESS_ADAPTER_REQUIRED', documents: [], checkpoint: at };
     }
     // 발급 run에 요청 어댑터를 결속한다 — revalidate는 같은 어댑터의 현재 전송 권한을 다시 확인해야 한다.
     // 미지정은 null 센티널로 저장한다 — 키가 아예 없는 기록은 변조와 구분할 수 없기 때문이다(JSON은 undefined 키를 버린다).
@@ -1283,11 +1293,11 @@ export class KnowledgerService {
     const validatedRunId = identifier(runId);
     const run: StoredRunRecord | undefined = this.vault.get('run', validatedRunId, actor);
     if (!run) throw new ApiError('NOT_FOUND', '실행 기록을 찾을 수 없거나 접근할 수 없습니다.', 404);
-    // 미신뢰 저장 기록의 manifest는 형태가 보장되지 않는다 — 객체만 발급 checkpoint 근거로 에코한다.
+    // 미신뢰 저장 기록의 manifest는 형태가 보장되지 않는다 — 발급 checkpoint는 도장 검증을 통과한 뒤에만 에코한다.
     const issuanceCheckpoint = run.manifest && typeof run.manifest === 'object' ? run.manifest.checkpoint : undefined;
     const blocked = this.storedRunBlockReason(run, validatedRunId, actor);
-    // 변조 판정 경로에서는 미신뢰 기록의 checkpoint를 에코하지 않는다 — 재시작 안내만 발급 시점 근거를 돌려준다.
-    if (blocked) return { status: 'withheld', reason: blocked, checkpoint: blocked === 'SESSION_RESTARTED_RESOLVE_AGAIN' ? issuanceCheckpoint : undefined };
+    // 변조·재시작 판정 경로에서는 미신뢰 기록의 checkpoint를 에코하지 않는다.
+    if (blocked) return { status: 'withheld', reason: blocked };
     // run에 결속된 어댑터와 다른 어댑터·무어댑터 재검증은 재해석 없이 바로 거부한다 — 불일치 요청에 현재 상태 분석을 노출하지 않는다.
     if ((input.model_adapter_id ?? null) !== run.model_adapter_id) return { status: 'withheld', reason: 'EGRESS_ADAPTER_MISMATCH', checkpoint: issuanceCheckpoint };
     const result = await this.resolveRun(actor, { document_ids: [run.slot.document_id], context_id: run.slot.context_id, scope_id: run.slot.scope_id, usage_scope: run.slot.usage_scope }, validatedRunId);
