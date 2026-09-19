@@ -257,7 +257,8 @@ test('issuer rejects an invalid shutdown deadline before binding a server', { sk
 
 test('issuer close forwards shutdownDeadlineMs and labels diagnostics as development-issuer', { skip: oidcTestSkip }, async (t) => {
   const diagnostic = t.mock.method(console, 'error');
-  const issuer = await startDevelopmentIssuer({ accounts: [{ subject: 'dev-owner', label: '담당자' }], port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: 60 });
+  const { startDevelopmentIssuer: startIssuer } = await import('../../packages/auth/development-issuer.ts');
+  const issuer = await startIssuer({ accounts: [{ subject: 'dev-owner', label: '담당자' }], port: 0, redirectUri: REDIRECT_URI, shutdownDeadlineMs: 60 });
   const originalClose = issuer.server.close.bind(issuer.server);
   try {
     // close 콜백을 가로채 abandon 경로를 탄다 — 60ms 마감의 강제 해제와 issuer 레이블이 진단에 도달해야 한다.

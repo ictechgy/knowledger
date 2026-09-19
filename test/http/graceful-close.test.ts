@@ -181,15 +181,14 @@ test('closeHttpServer rejects an in-window close error with the forced release r
   try {
     // close 콜백은 가로채 두고 연결 수 콜백은 영원히 오지 않는 최악 — abandon의 진단 대기 창에 close 콜백이 도착한다.
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
-    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    // abandon 귀결의 잔여 조회가 두 번째 getConnections 호출이다 — 그 시점에 오류 콜백을 발화시켜
+    // 타이머 지터와 무관하게 창 안 도착을 결정적으로 고정한다.
+    let getCalls = 0;
+    server.getConnections = (() => { getCalls += 1; if (getCalls === 2) closeCallback?.(new Error('late cb boom')); }) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-cb' });
-    // abandon(90ms) 발화 뒤 포착 대기(최대 +100ms)가 진행 중인 창 한가운데에 close 오류 콜백을 도착시킨다.
-    await sleep(140);
-    closeCallback?.(new Error('late cb boom'));
     // 창 안에 도착한 close 오류는 마감 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
     await assert.rejects(() => closePromise, /late cb boom/);
     // 창 안 오류는 reject가 보고를 대신하므로 진단은 강제 해제 한 건만 남는다 — 이중 보고가 없고 인과 순서가 유지된다.
-    await sleep(150);
     const messages = httpDiagnostics(diagnostic).map(args => String(args[0]));
     assert.equal(messages.length, 1, 'the in-window error is reported once via the rejection, not again as a late log');
     assert.match(messages[0], /강제 해제/, 'the forced release still reports before the rejection');
@@ -208,10 +207,10 @@ test('closeHttpServer preserves the real close error when diagnostics throw', as
   try {
     // 창 안 close 오류가 abandon 귀결의 강제 해제 진단을 유도한다 — 진단 실패가 실제 오류를 대체하지 않아야 한다.
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
-    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    // 두 번째 getConnections 호출이 abandon 귀결의 잔여 조회다 — 그 시점에 오류 콜백을 발화시켜 창 안 도착을 고정한다.
+    let getCalls = 0;
+    server.getConnections = (() => { getCalls += 1; if (getCalls === 2) closeCallback?.(new Error('late cb boom')); }) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'diag-throw' });
-    await sleep(140);
-    closeCallback?.(new Error('late cb boom'));
     await assert.rejects(() => closePromise, /late cb boom/, 'a throwing diagnostic must not replace the real close error or leave the wait pending');
   } finally {
     server.getConnections = originalGetConnections;
@@ -228,11 +227,11 @@ test('closeHttpServer reports a successful close callback that arrives after aba
   try {
     // close 콜백은 가로채 두고 연결 수 콜백은 영원히 오지 않는 최악 — 마감 뒤에 '정상' 콜백이 늦게 도착한다.
     server.close = ((callback?: (error?: Error) => void) => { closeCallback = callback; return server; }) as Server['close'];
-    server.getConnections = (() => server) as unknown as Server['getConnections'];
+    // abandon 귀결의 잔여 조회가 두 번째 getConnections 호출이다 — 그 시점에 정상 콜백을 발화시켜
+    // 타이머 지터와 무관하게 창 안 도착을 결정적으로 고정한다.
+    let getCalls = 0;
+    server.getConnections = (() => { getCalls += 1; if (getCalls === 2) closeCallback?.(); }) as unknown as Server['getConnections'];
     const closePromise = closeHttpServer(server, { deadlineMs: 60, settleMs: 30, label: 'late-ok' });
-    // abandon(90ms) 발화 뒤 창 한가운데(±50ms 여유)에 정상 콜백을 도착시킨다 — 타이머 지터에 창 밖으로 밀리지 않게 한다.
-    await sleep(140);
-    closeCallback?.();
     await closePromise;
     await sleep(150);
     // 오류 없는 늦은 도착도 진단으로 남아 소켓 추적 유실과 단순 지연을 구분할 수 있다 — 결과에 실어 오므로 항상 마지막에 찍힌다.

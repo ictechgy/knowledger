@@ -207,19 +207,20 @@ function describeConnections(count: number): string {
 
 /** 강제 해제 사실을 stderr에 남긴다 — close 오류로 reject되는 경로에서도 같은 진단이 남게 두 지점이 공유한다. */
 function reportForcedRelease(label: string, connections: number): void {
-  emitDiagnostic(`[${label}] HTTP 종료가 마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(connections)}`);
+  emitDiagnostic(label, `가 마감을 넘겨 잔여 연결을 강제 해제했다 — 해제 시점 연결 ${describeConnections(connections)}`);
 }
 
 /** settle 이후에 도착한 close 콜백 — 오류든 정상이든 버리지 않고 진단으로 남긴다. */
 function reportLateClose(label: string, lateError: Error | null | undefined): void {
-  if (lateError) emitDiagnostic(`[${label}] HTTP 종료 마감 후 close 오류가 도착했다: ${lateError.message}`);
-  else emitDiagnostic(`[${label}] HTTP 종료 마감 후 close 콜백이 늦게 도착했다`);
+  if (lateError) emitDiagnostic(label, ` 마감 후 close 오류가 도착했다: ${lateError.message}`);
+  else emitDiagnostic(label, ' 마감 후 close 콜백이 늦게 도착했다');
 }
 
-/** 진단 출력은 best-effort다 — stderr 실패가 종료 귀결이나 실제 오류 보고를 대체하지 못하게 삼킨다. */
-function emitDiagnostic(message: string): void {
+/** 종료 진단 한 줄을 stderr에 남긴다 — 식별자·주어 접두어는 여기서만 붙여 진단 문구가 갈라지지 않게 한다. */
+function emitDiagnostic(label: string, message: string): void {
+  // 진단 출력은 best-effort다 — stderr 실패가 종료 귀결이나 실제 오류 보고를 대체하지 못하게 삼킨다.
   try {
-    console.error(message);
+    console.error(`[${label}] HTTP 종료${message}`);
   } catch {
     // stderr가 닫혀도 종료 진행은 계속된다 — 진단 실패를 오류로 번지게 하지 않는다.
   }
@@ -245,7 +246,7 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   const reportSweepFailure = (error: unknown) => {
     if (hasSweepWarned) return;
     hasSweepWarned = true;
-    emitDiagnostic(`[${label}] HTTP 종료 중 유휴 연결 스윕에 실패했다: ${error instanceof Error ? error.message : String(error)}`);
+    emitDiagnostic(label, ` 중 유휴 연결 스윕에 실패했다: ${error instanceof Error ? error.message : String(error)}`);
   };
   const sweep = setInterval(() => {
     try {
@@ -268,7 +269,7 @@ export async function closeHttpServer(server: Server, options: CloseHttpServerOp
   }
   // 콜백 미도착 경로는 마감이든 폴백이든 강제 해제가 반드시 실행됐다 — 해제 사실과 포착 수를 버리지 않는다.
   reportForcedRelease(label, result.connections);
-  emitDiagnostic(`[${label}] HTTP 종료 close 콜백이 마감까지 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
+  emitDiagnostic(label, ` close 콜백이 마감까지 도착하지 않아 마감했다 — 미해제 연결 ${describeConnections(result.remaining)}`);
   // 마감 창 안에 도착한 정상 콜백은 결과에 실어 왔다 — 강제 해제·마감 진단 뒤에 찍어 인과 순서를 유지한다.
   if (result.lateClose) reportLateClose(label, null);
 }

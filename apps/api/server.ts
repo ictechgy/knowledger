@@ -65,6 +65,9 @@ export interface AppOptions {
   shutdownDeadlineMs?: number;
 }
 
+/** 여러 해제 단계의 실패를 묶은 오류 — 실패한 단계 이름을 errors와 같은 순서로 실어 둔다. */
+type TeardownAggregateError = AggregateError & { stages: string[] };
+
 export async function createApp(options: AppOptions) {
   let ledger: ApplicationLedger | undefined = options.ledger;
   let vault: PrivateStore | undefined;
@@ -384,11 +387,16 @@ export async function createApp(options: AppOptions) {
       await attempt('ledger', () => ledger.close());
       await attempt('vault', () => vault.close());
       await attempt('authentication', () => authentication?.close());
-      if (errors.length === 1) throw errors[0].error;
+      if (errors.length === 1) {
+        // 단일 실패는 원오류를 그대로 던지되 단계 이름을 달아 둔다 — 복수 실패의 stages와 같은 정보를 잃지 않게 한다.
+        const [{ stage, error }] = errors;
+        if (error instanceof Error) (error as Error & { stage?: string }).stage = stage;
+        throw error;
+      }
       if (errors.length > 1) {
-        const aggregate = new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`);
         // 단계 이름은 메시지에만 두지 않고 집계 오류에도 실어 둔다 — 로그 수집기가 문자열 파싱 없이 단계를 집계할 수 있다.
-        (aggregate as AggregateError & { stages?: string[] }).stages = errors.map(entry => entry.stage);
+        const aggregate = new AggregateError(errors.map(entry => entry.error), `app.close failed in ${errors.length} teardown stages: ${errors.map(entry => entry.stage).join(', ')}`) as TeardownAggregateError;
+        aggregate.stages = errors.map(entry => entry.stage);
         throw aggregate;
       }
     },

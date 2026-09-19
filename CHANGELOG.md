@@ -133,6 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   development OIDC issuer share the same `closeHttpServer` implementation
   (`packages/http`), resource teardown still runs when shutdown fails, and
   the deadline is tunable via `shutdownDeadlineMs` on both apps.
+  `app.close()` now runs each teardown stage independently and reports
+  failures together — a single failure rethrows the original error, and
+  multiple failures surface as one `AggregateError` naming the failed
+  stages.
 
 ## [0.2.0] — 2026-09-18
 
