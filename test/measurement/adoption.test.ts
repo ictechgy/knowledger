@@ -135,6 +135,21 @@ test('measurement deduplicates immutable records and counts status transitions o
   assert.equal(measurement.derived.review_effort.withdrawals, 2);
 });
 
+test('an invalid first activation record does not burn the agreement timing slot', () => {
+  // activated_at이 proposed_at보다 이른 첫 기록은 샘플이 아니다 — 이후 유효한 활성화는 센다.
+  const proposal = { record_type: 'AgreementProposal', proposal_id: 'p-1', created_at: '2026-09-16T00:10:00Z' };
+  const early = { agreement_id: 'ag-1', proposal_id: 'p-1', status: 'active', activated_at: '2026-09-16T00:05:00Z', revision_digest: 'r1' };
+  const valid = { agreement_id: 'ag-1', proposal_id: 'p-1', status: 'active', activated_at: '2026-09-16T00:20:00Z', revision_digest: 'r1' };
+  const events: any[] = [
+    { timestamp: '2026-09-16T00:10:00Z', writes: [['kcl:v1:proposal:p-1', proposal]] },
+    { timestamp: '2026-09-16T00:05:00Z', writes: [['kcl:v1:agreement:ag-1', early]] },
+    { timestamp: '2026-09-16T00:20:00Z', writes: [['kcl:v1:agreement:ag-1', valid]] },
+  ];
+  const measurement = measureAdoption({ events, log });
+  assert.equal(measurement.derived.time_to_agreement.count, 1);
+  assert.equal(measurement.derived.time_to_agreement.samples[0].seconds, 600);
+});
+
 test('writeArtifact enforces mode 0600 and rejects non-regular targets', t => {
   const root = mkdtempSync(join(tmpdir(), 'knowledger-artifact-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

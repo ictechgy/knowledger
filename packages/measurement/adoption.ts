@@ -136,12 +136,14 @@ export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObserv
         const previous = agreementStatus.get(value.agreement_id);
         agreementStatus.set(value.agreement_id, value.status);
         if (value.status === 'active' && !agreementsSeen.has(value.agreement_id)) {
-          agreementsSeen.add(value.agreement_id);
           const proposal = proposals.get(value.proposal_id);
           const proposedAt = proposal?.created_at ?? event.timestamp;
           const activatedAt = typeof value.activated_at === 'string' ? value.activated_at : event.timestamp;
           const seconds = (Date.parse(activatedAt) - Date.parse(proposedAt)) / 1000;
+          // 유효한 샘플을 수용할 때만 활성화 슬롯을 소모한다 — 시각이 없는 레코드가
+          // 이후 유효한 활성화 기록을 억제하지 않는다.
           if (Number.isFinite(seconds) && seconds >= 0) {
+            agreementsSeen.add(value.agreement_id);
             timings.push({ agreement_id: value.agreement_id, proposal_id: value.proposal_id, revision_digest: value.revision_digest, proposed_at: proposedAt, activated_at: activatedAt, seconds });
           }
         // 철회·중지는 상태 스냅샷이 아니라 전이로 센다 — 같은 상태의 재기록은 새 철회가 아니다.

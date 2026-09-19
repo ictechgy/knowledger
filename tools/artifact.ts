@@ -42,11 +42,13 @@ function inodeOf(p: string): string | undefined {
  * 같은 inode로 풀리면 접는 파일시스템이다. 조사가 불가능하면 접은 것으로 취급해
  * 별칭 우회를 닫는다(대소문자 구분 시스템에서는 다른 파일을 넓게 거부할 뿐이다).
  */
+const swapCase = (name: string): string => name.replace(/[a-zA-Z]/g, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
+
 function foldsCase(dir: string): boolean {
   const stat = lstatSync(dir, { throwIfNoEntry: false });
   const name = basename(dir);
   if (!stat || !name) return true;
-  const swapped = name.replace(/[a-zA-Z]/g, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
+  const swapped = swapCase(name);
   if (swapped === name) return true;
   const alt = lstatSync(join(dirname(dir), swapped), { throwIfNoEntry: false });
   return Boolean(alt && alt.dev === stat.dev && alt.ino === stat.ino);
@@ -92,7 +94,9 @@ export function assertWritableTarget(path: string, protectedPaths: string[]): vo
 export function writeArtifact(path: string, output: string, guard?: ArtifactGuard): void {
   const realDir = realpathSync(dirname(path));
   const fileName = basename(path);
-  const tmp = `.${fileName}.${randomUUID()}.tmp`;
+  // 임시 이름은 대상 이름 길이와 무관하게 짧게 둔다 — 긴 --out 이름이 임시 생성에서
+  // 실패해 검증 없이 끝나지 않게 한다.
+  const tmp = `.kcl-artifact-${randomUUID()}.tmp`;
   const cwd = process.cwd();
   const cwdStat = statSync(cwd);
   // realpath와 chdir 사이의 네임스페이스 변경은 고정된 inode와의 비교로 잡는다 — 하나의
@@ -103,11 +107,6 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
   try {
     const pinned = statSync('.');
     if (pinned.dev !== expected.dev || pinned.ino !== expected.ino) throw new Error('--out directory changed during open');
-    const dest = lstatSync(fileName, { throwIfNoEntry: false });
-    if (guard?.protectedPaths?.length) {
-      const fold = foldsCase(realDir) ? (p: string) => p.normalize('NFC').toLowerCase() : (p: string) => p;
-      assertNotProtected(join(realDir, fileName), dest ? `${dest.dev}:${dest.ino}` : undefined, guard.protectedPaths, fold);
-    }
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
     try {
       // 생성 모드는 umask가 비트를 지울 수 있으므로 명시적으로 되돌린다 — 0600 보장은 계약이다.
@@ -116,6 +115,19 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
       fsyncSync(fd);
     } finally {
       closeSync(fd);
+    }
+    // 대상 파일시스템의 자식 조회가 대소문자를 접는지 임시 파일로 조사한다 — 다른 철자가
+    // 같은 inode로 풀리면 접는 파일시스템이다(부모 디렉터리 조회가 아닌 실제 쓰기 위치).
+    const tmpStat = statSync(tmp);
+    const tmpAlt = lstatSync(swapCase(tmp), { throwIfNoEntry: false });
+    const fold = tmpAlt && tmpAlt.dev === tmpStat.dev && tmpAlt.ino === tmpStat.ino
+      ? (p: string) => p.normalize('NFC').toLowerCase()
+      : (p: string) => p;
+    const dest = lstatSync(fileName, { throwIfNoEntry: false });
+    if (guard?.protectedPaths?.length) {
+      // 고정된 inode의 현재 경로로 검증한다 — 붙든 뒤 디렉터리가 옮겨져도 검증 대상이
+      // 옛 경로 문자열에 남지 않는다.
+      assertNotProtected(join(realpathSync('.'), fileName), dest ? `${dest.dev}:${dest.ino}` : undefined, guard.protectedPaths, fold);
     }
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
     renameSync(tmp, fileName);
@@ -128,7 +140,8 @@ export function writeArtifact(path: string, output: string, guard?: ArtifactGuar
     }
   } catch (error) {
     failure = error;
-    rmSync(tmp, { force: true });
+    // 정리 실패는 원 오류를 가리지 않는다 — 임시 파일만 남을 수 있다.
+    try { rmSync(tmp, { force: true }); } catch { /* 복귀와 원 오류를 우선한다 */ }
   }
   // 원래 inode로 복귀했는지 확인한다 — 대체된 디렉터리로의 복귀나 조용한 실패를 표면화한다.
   try { process.chdir(cwd); } catch { try { process.chdir(realpathSync(cwd)); } catch { /* 복귀 시도 계속 */ } }

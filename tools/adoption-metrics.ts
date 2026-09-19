@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { lstatSync, readFileSync, mkdirSync } from 'node:fs';
+import { lstatSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -85,9 +85,10 @@ if (isMain()) {
         // 안에서 수행돼 검증과 쓰기가 같은 디렉터리를 본다.
         const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
         // 아무것도 만들지 않는 선검사로 충돌을 먼저 거부한다 — 거부된 출력이 보호 경로
-        // 위에 디렉터리를 남기지 않는다. writeArtifact는 고정 안에서 다시 검증한다.
+        // 위에 디렉터리를 남기지 않는다. 출력 디렉터리는 기존에 있어야 한다 — 재귀
+        // 생성은 네임스페이스 변경이 만든 곳에 디렉터리를 남길 수 있다.
         assertWritableTarget(target, inputs);
-        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+        if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw new Error('invalid option');
         writeArtifact(target, output, { protectedPaths: inputs });
       }
       process.stdout.write(`${output}\n`);
