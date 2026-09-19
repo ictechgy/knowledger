@@ -1,9 +1,10 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { closeHttpServer } from '../http/graceful-close.ts';
 
 import { exportJWK, generateKeyPair } from 'jose';
 import Provider, { type Account, type ErrorOut, type KoaContextWithOIDC } from 'oidc-provider';
+
+import { closeHttpServer } from '../http/graceful-close.ts';
 
 const MAX_FORM_BYTES = 16 * 1024;
 const CSRF_COOKIE = 'knowledger_development_interaction_csrf';
