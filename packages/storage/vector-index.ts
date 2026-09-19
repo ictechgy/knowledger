@@ -39,6 +39,11 @@ export interface VectorIndexWriter {
   upsert(entry: VectorIndexEntry): void | Promise<void>;
   remove(revisionDigest: string): void | Promise<void>;
   clear(): void | Promise<void>;
+  /**
+   * Atomically replace every row of this index version — readers never
+   * observe an empty or partially populated index during a rebuild.
+   */
+  replaceAll(entries: readonly VectorIndexEntry[]): void | Promise<void>;
 }
 
 export interface VectorIndexEntry {
@@ -73,7 +78,7 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
  * index rebuild cannot resurrect a superseded revision.
  */
 export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
-  private readonly entries = new Map<string, VectorIndexEntry>();
+  private entries = new Map<string, VectorIndexEntry>();
 
   upsert(entry: VectorIndexEntry): void {
     if (!finite(entry.embedding)) throw new TypeError('Vector index entry requires a finite embedding');
@@ -81,6 +86,15 @@ export class LocalVectorIndex implements VectorCandidateIndex, VectorIndexWriter
   }
   remove(revisionDigest: string): void { this.entries.delete(revisionDigest); }
   clear(): void { this.entries.clear(); }
+  /** Validates every row first, then swaps the whole map so readers never see a partial index. */
+  replaceAll(entries: readonly VectorIndexEntry[]): void {
+    const next = new Map<string, VectorIndexEntry>();
+    for (const entry of entries) {
+      if (!finite(entry.embedding)) throw new TypeError('Vector index entry requires a finite embedding');
+      next.set(entry.revision_digest, entry);
+    }
+    this.entries = next;
+  }
   get size(): number { return this.entries.size; }
 
   candidates(query: VectorCandidateQuery): readonly VectorCandidate[] {

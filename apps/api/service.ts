@@ -4,7 +4,7 @@ import * as domain from '../../packages/domain/index.ts';
 import type { ApplicationLedger } from '../../packages/storage/ledger-port.ts';
 import type { BrowseQuery, BrowseResult, RevisionBrowseRef, ProposalBrowseRef, AgreementBrowseRef, RevisionBrowseAnnotation } from '../../packages/storage/browse-contract.ts';
 import { ScanningBrowseQueries } from '../../packages/storage/scanning-browse.ts';
-import { cosineSimilarity, developmentEmbedding } from '../../packages/storage/vector-index.ts';
+import { cosineSimilarity, developmentEmbedding, isFiniteEmbedding } from '../../packages/storage/vector-index.ts';
 import type { VectorCandidateIndex, VectorIndexWriter } from '../../packages/storage/vector-index.ts';
 import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
@@ -18,12 +18,16 @@ import type { ApplicationDefinition, Persona } from '../../packages/config/types
 
 const P = 'kcl:v1:';
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const VECTOR_CANDIDATE_LIMIT = 200;
+const ANNOTATION_BATCH_LIMIT = 1000;
+const EMBEDDING_CACHE_LIMIT = 1000;
 const newId = (prefix: string) => `${prefix}-${randomUUID()}`;
 const stableId = (prefix: string, actor: Actor, commandId: string) => `${prefix}-${createHash('sha256').update(`${actor.org_id}:${actor.actor_id}:${commandId}`).digest('hex').slice(0,32)}`;
 const sameSlot = (a: any, b: any) => ['channel_id', 'document_id', 'context_id', 'scope_id', 'usage_scope'].every(field => a[field] === b[field]);
 const slotKey = (payload: any) => JSON.stringify(slotFields(payload));
 interface PageInput { limit?: number; cursor?: string }
-interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string }
+interface PageContext { limit: number; offset: number; checkpoint: Checkpoint; binding: string; set?: string }
 interface OverviewInput extends PageInput { proposal_limit?: number; proposal_cursor?: string }
 interface BrowseRequestContext {
   checkpoint: Checkpoint;
@@ -69,9 +73,10 @@ export class KnowledgerService {
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[]; embedRevision?: (title: string, body: string) => readonly number[] } = {}) {
-    // 외부 색인에는 색인을 채운 것과 같은 차원의 질의 임베더가 필요하다 — 기본 개발 임베더로 조용히 오설정되면 안 된다.
+    // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
+    // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
+    if ((options.embedQuery === undefined) !== (options.embedRevision === undefined)) throw new TypeError('embedQuery and embedRevision must be configured together');
     if (options.vectorIndex && !options.embedQuery) throw new TypeError('An external vector index requires an explicit embedQuery matching the indexed embeddings');
-    if (options.embedRevision && !options.embedQuery) throw new TypeError('embedRevision requires a matching embedQuery');
     this.definition = definition;
     this.ledger = ledger;
     this.vault = vault;
@@ -85,7 +90,8 @@ export class KnowledgerService {
     const cached = this.embeddingCache.get(digest);
     if (cached) return cached;
     const embedded = this.embedRevision(title, body);
-    if (this.embeddingCache.size >= 1000) this.embeddingCache.delete(this.embeddingCache.keys().next().value!);
+    if (!isFiniteEmbedding(embedded)) throw new TypeError('embedRevision returned an invalid embedding');
+    if (this.embeddingCache.size >= EMBEDDING_CACHE_LIMIT) this.embeddingCache.delete(this.embeddingCache.keys().next().value!);
     this.embeddingCache.set(digest, embedded);
     return embedded;
   }
@@ -221,6 +227,7 @@ export class KnowledgerService {
     const binding = createHash('sha256').update(domain.canonicalize([actor.org_id, actor.actor_id, actor.kind, kind, filter])).digest('hex');
     let checkpoint = at ?? this.ledger.checkpoint()!;
     let offset = 0;
+    let set: string | undefined;
     if (input.cursor !== undefined) {
       try {
         if (typeof input.cursor !== 'string' || input.cursor.length > 2048 || !/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(input.cursor)) throw new Error('format');
@@ -229,18 +236,19 @@ export class KnowledgerService {
         if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) throw new Error('signature');
         const cursor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
         if (cursor.version !== 1 || cursor.binding !== binding || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new Error('binding');
+        if (cursor.set !== undefined && typeof cursor.set !== 'string') throw new Error('binding');
         this.ledger.assertCheckpoint(cursor.checkpoint);
         if (at && domain.canonicalize(cursor.checkpoint) !== domain.canonicalize(at)) throw new Error('snapshot');
-        checkpoint = cursor.checkpoint; offset = cursor.offset;
+        checkpoint = cursor.checkpoint; offset = cursor.offset; set = cursor.set;
       } catch { throw new ApiError('INVALID_CURSOR', '목록 조건이나 계정이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.'); }
     }
-    return { limit, offset, checkpoint, binding };
+    return { limit, offset, checkpoint, binding, set };
   }
 
-  private nextCursor(page: PageContext, total: number): string | null {
+  private nextCursor(page: PageContext, total: number, set?: string): string | null {
     const offset = page.offset + page.limit;
     if (offset >= total) return null;
-    const encoded = Buffer.from(JSON.stringify({ version: 1, binding: page.binding, checkpoint: page.checkpoint, offset })).toString('base64url');
+    const encoded = Buffer.from(JSON.stringify({ version: 1, binding: page.binding, checkpoint: page.checkpoint, offset, set })).toString('base64url');
     return `${encoded}.${createHmac('sha256', this.cursorKey).update(encoded).digest('hex')}`;
   }
 
@@ -875,6 +883,9 @@ export class KnowledgerService {
    * 모든 후보는 요청 체크포인트의 검증된 원장 상태로 재검증되고,
    * document_ids로 지정된 필수 참조는 색인과 무관하게 항상 원장에서 해상한다.
    * 색인이 비어 있어도 "지식이 없다"는 뜻이 아니다 — complete는 후보 수집 범위만 알린다.
+   * 외부 색인 모드에서는 상위 VECTOR_CANDIDATE_LIMIT개만 후보가 되고, 커서는
+   * 첫 페이지의 순위 목록 해시에 묶인다 — 페이지 사이 색인이 바뀌면 조용한
+   * 중복·누락 대신 INVALID_CURSOR로 처음부터 다시 받게 한다.
    */
   async vectorSearch(actor: Actor, input: any) {
     onlyFields(input, ['query', 'document_ids', 'context_id', 'scope_id', 'usage_scope', 'limit', 'cursor']);
@@ -887,18 +898,16 @@ export class KnowledgerService {
     const page = this.page(actor, 'vector-search', input, filter);
     const context = this.browseContext(page.checkpoint);
     const embedding = this.embedQuery(input.query);
+    if (!isFiniteEmbedding(embedding)) throw new ApiError('INDEX_MISCONFIGURED', '질의 임베딩이 유효하지 않습니다. 임베딩 설정을 확인해 주세요.', 500);
     const scores = new Map<string, number | null>();
     const required = new Set<string>();
 
-    // 필수 문서 참조는 벡터 색인을 거치지 않고 검증된 브라우즈 색인에서 직접 해상한다.
+    // 필수 문서 참조는 벡터 색인을 거치지 않고 검증된 원장 상태에서 직접 해상한다.
+    // 범위 필터는 필수 참조에도 그대로 적용된다 — 범위 밖 문서를 색인이 요구해도 드러내지 않는다.
     for (const documentId of input.document_ids ?? []) {
-      let offset = 0;
-      while (true) {
-        const found = this.queryBrowse({ kind: 'revisions', mode: 'document', document_id: documentId, at: page.checkpoint, offset, limit: 50 });
-        for (const reference of found.items) { scores.set(reference.revision_digest, scores.get(reference.revision_digest) ?? null); required.add(reference.revision_digest); }
-        offset += found.items.length;
-        if (offset >= found.total) break;
-        if (!found.items.length) throw new ApiError('PROJECTION_INVALID', '검증된 원장 조회를 계속할 수 없습니다.', 503);
+      for (const { reference } of this.verifiedRevisionEntries(page.checkpoint, { document_id: documentId })) {
+        if (!scores.has(reference.revision_digest)) scores.set(reference.revision_digest, null);
+        required.add(reference.revision_digest);
       }
     }
 
@@ -906,38 +915,32 @@ export class KnowledgerService {
       // 외부 색인은 후보 제안기다 — 색인이 놓친 문서를 없다고 단정할 수 없다.
       let candidates: readonly { revision_digest: string; score: number }[];
       try {
-        candidates = await this.vectorIndex.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: 200 });
+        candidates = await this.vectorIndex.candidates({ embedding, context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope, limit: VECTOR_CANDIDATE_LIMIT });
       } catch (error) {
-        const wrapped = new ApiError('INDEX_UNAVAILABLE', '후보 색인을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.', 503, true);
+        // 영구 설정 오류(차원·한도 위반)는 재시도로 해소되지 않는다 — 연결 계열 실패만 503 재시도다.
+        const code = error instanceof TypeError || error instanceof RangeError ? 'INDEX_MISCONFIGURED' : 'INDEX_UNAVAILABLE';
+        const wrapped = new ApiError(code, code === 'INDEX_MISCONFIGURED' ? '후보 색인 설정이 올바르지 않습니다. 배포 설정을 확인해 주세요.' : '후보 색인을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.', code === 'INDEX_MISCONFIGURED' ? 500 : 503, code !== 'INDEX_MISCONFIGURED');
         wrapped.cause = error;
         throw wrapped;
       }
-      for (const candidate of candidates) if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
+      // 형식이 깨진 후보는 어차피 원장에서 검증되지 않으므로 정렬 교란 전에 버린다.
+      for (const candidate of candidates) {
+        if (typeof candidate.revision_digest !== 'string' || !DIGEST.test(candidate.revision_digest) || !Number.isFinite(candidate.score)) continue;
+        if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
+      }
     } else {
       // 외부 색인이 없으면 검증된 개정본을 체크포인트에서 전수 열거해 점수를 매긴다 —
       // 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
-      let offset = 0;
-      while (true) {
-        const batch = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000,
-          context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope });
-        const prefetched = this.ledger.readMany?.(batch.items.map(reference => reference.key), page.checkpoint);
-        for (const reference of batch.items) {
-          const revision = prefetched ? prefetched.get(reference.key) : this.ledger.read(reference.key, page.checkpoint);
-          this.checkIndexedRevision(reference, revision);
-          scores.set(reference.revision_digest, cosineSimilarity(embedding, this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)));
-        }
-        offset += batch.items.length;
-        if (offset >= batch.total) break;
-        if (!batch.items.length) throw new ApiError('PROJECTION_INVALID', '검증된 원장 조회를 계속할 수 없습니다.', 503);
+      for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, { context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope })) {
+        scores.set(reference.revision_digest, cosineSimilarity(embedding, this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)));
       }
     }
 
     // 색인이 제안한 다이제스트 중 체크포인트에서 검증되지 않는 것은 낡은 후보로 버린다.
     // 범위 필터는 색인 태그가 아니라 검증된 개정본의 slot과 대조한다 — 태그가 낡거나
     // 잘못되어도 요청 범위 밖 개정본이 결과에 섞이지 않는다.
-    // annotation 배치 상한(1000)을 넘지 않게 청크로 조회한다.
     const digests = [...scores.keys()];
-    for (let index = 0; index < digests.length; index += 1000) this.annotate(context, digests.slice(index, index + 1000));
+    for (let index = 0; index < digests.length; index += ANNOTATION_BATCH_LIMIT) this.annotate(context, digests.slice(index, index + ANNOTATION_BATCH_LIMIT));
     const ranked: { digest: string; score: number | null }[] = [];
     for (const [digest, score] of scores) {
       const reference = context.annotations.get(digest)?.revision;
@@ -950,45 +953,62 @@ export class KnowledgerService {
     // 필수 참조는 점수와 무관하게 앞에 고정한다 — 후보가 많아도 페이지 밖으로 밀리지 않는다.
     ranked.sort((a, b) => Number(!required.has(a.digest)) - Number(!required.has(b.digest)) || (b.score ?? -1) - (a.score ?? -1) || a.digest.localeCompare(b.digest));
 
+    // 커서는 첫 페이지의 순위 목록 해시에 묶인다 — 외부 색인이 가변 저장소이므로
+    // 페이지 사이에 색인이 바뀌면 조용한 중복·누락 대신 커서를 무효로 돌린다.
+    const setHash = createHash('sha256').update(ranked.map(item => item.digest).join(',')).digest('hex');
+    if (input.cursor !== undefined && page.set !== undefined && page.set !== setHash) throw new ApiError('INVALID_CURSOR', '후보 색인이 바뀌었습니다. 첫 페이지부터 다시 불러오세요.');
+
     const selected = ranked.slice(page.offset, page.offset + page.limit);
     const refs = selected.map(item => this.revisionRef(item.digest, context));
     this.prefetchRevisionSet(context, refs);
     const results = await Promise.all(refs.map(async (reference, index) => ({ ...(await this.describeRevision(this.pageRevision(reference, context), context)), score: selected[index]!.score })));
     this.actor(actor);
-    return { view: 'summary', results, total: ranked.length, next_cursor: this.nextCursor(page, ranked.length), checkpoint: page.checkpoint,
+    return { view: 'summary', results, total: ranked.length, next_cursor: this.nextCursor(page, ranked.length, setHash), checkpoint: page.checkpoint,
       candidate_source: this.vectorIndex ? 'external-index' : 'derived-scan', complete: this.vectorIndex === undefined };
   }
 
   /**
    * 파생 벡터 색인 재구축 — 검증된 개정본의 전수 스캔만이 색인의 입력이다.
    * 색인은 후보 저장소이며 자격의 근거가 아니므로 재구축은 언제든 안전하다.
-   * clear 후 삽입이므로 낡은 다이제스트가 색인에 남지 않는다.
+   * 새 행을 모두 계산한 뒤 replaceAll로 한 번에 교체해 재구축 도중이나 실패 시에도
+   * 빈·부분 색인이 읽기 경로에 노출되지 않는다.
    */
   async rebuildVectorIndex(actor: Actor) {
     const writer = this.vectorIndex as (VectorCandidateIndex & Partial<VectorIndexWriter>) | undefined;
-    if (!writer || typeof writer.upsert !== 'function' || typeof writer.remove !== 'function' || typeof writer.clear !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '재구축 가능한 벡터 색인이 설정되지 않았습니다.');
-    this.actor(actor);
+    if (!writer || typeof writer.replaceAll !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '원자적 재구축을 지원하는 벡터 색인이 설정되지 않았습니다.');
     await this.refresh();
+    this.actor(actor);
     const page = this.page(actor, 'vector-index-rebuild', {}, {});
-    await writer.clear();
-    let indexed = 0;
+    const entries: { document_id: string; revision_digest: string; context_id: string; scope_id: string; usage_scope: string; embedding: readonly number[] }[] = [];
+    for (const { reference, revision } of this.verifiedRevisionEntries(page.checkpoint, {})) {
+      entries.push({ document_id: reference.slot.document_id, revision_digest: reference.revision_digest,
+        context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope,
+        embedding: this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown) });
+    }
+    await writer.replaceAll(entries);
+    return { indexed: entries.length, checkpoint: page.checkpoint };
+  }
+
+  /**
+   * 체크포인트에서 검증된 개정본을 브라우즈 색인 순서대로 열거한다.
+   * 각 항목은 참조와 canonical 개정본이 checkIndexedRevision으로 대조된 쌍이다 —
+   * 벡터 검색의 derived-scan·필수 참조 해상·색인 재구축이 같은 검증 경로를 공유한다.
+   */
+  private *verifiedRevisionEntries(at: Checkpoint, filter: { document_id?: string; context_id?: string; scope_id?: string; usage_scope?: string }): Generator<{ reference: RevisionBrowseRef; revision: any }> {
     let offset = 0;
     while (true) {
-      const batch = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000 });
-      const prefetched = this.ledger.readMany?.(batch.items.map(reference => reference.key), page.checkpoint);
+      const batch = this.queryBrowse({ kind: 'revisions', mode: filter.document_id ? 'document' : 'all', document_id: filter.document_id, at, offset, limit: 1000,
+        context_id: filter.context_id, scope_id: filter.scope_id, usage_scope: filter.usage_scope });
+      const prefetched = this.ledger.readMany?.(batch.items.map(reference => reference.key), at);
       for (const reference of batch.items) {
-        const revision = prefetched ? prefetched.get(reference.key) : this.ledger.read(reference.key, page.checkpoint);
+        const revision = prefetched ? prefetched.get(reference.key) : this.ledger.read(reference.key, at);
         this.checkIndexedRevision(reference, revision);
-        await writer.upsert({ document_id: reference.slot.document_id, revision_digest: reference.revision_digest,
-          context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope,
-          embedding: this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown) });
-        indexed += 1;
+        yield { reference, revision };
       }
       offset += batch.items.length;
       if (offset >= batch.total) break;
       if (!batch.items.length) throw new ApiError('PROJECTION_INVALID', '검증된 원장 조회를 계속할 수 없습니다.', 503);
     }
-    return { indexed, checkpoint: page.checkpoint };
   }
 
   async resolve(actor: Actor, input: any) {

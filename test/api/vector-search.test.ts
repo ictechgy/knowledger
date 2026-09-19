@@ -101,7 +101,7 @@ test('derived-scan mode respects scope filters', async t => {
 
 test('external index proposes candidates that are re-verified at the checkpoint and marks the page incomplete', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   index.upsert(entry(0, [1, 0, 0]));
   index.upsert(entry(1, [0.5, 0.5, 0]));
   index.upsert({ ...entry(2), revision_digest: 'a'.repeat(64) });
@@ -117,7 +117,7 @@ test('external index proposes candidates that are re-verified at the checkpoint 
 
 test('required document refs resolve from verified ledger state even when the index is empty', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'unrelated', document_ids: ['doc-sales-order-definition-001'] });
   assert.equal(result.total, 1);
   assert.equal(result.results[0].revision_digest, sales.revision_digest);
@@ -127,7 +127,7 @@ test('required document refs resolve from verified ledger state even when the in
 
 test('an empty index page is not proof that no knowledge exists', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'anything' });
   assert.equal(result.total, 0);
   assert.equal(result.complete, false);
@@ -136,7 +136,7 @@ test('an empty index page is not proof that no knowledge exists', async t => {
 
 test('eligibility is re-verified: an index candidate whose agreement was withdrawn is reported ineligible', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   index.upsert(entry(0));
   await f.service.changeAgreement(actor, 'agreement-sales-001', 'withdraw', { reason: 'vector test withdrawal', command_id: 'withdraw-vector-1' });
   const result = await f.service.vectorSearch(actor, { query: '주문' });
@@ -164,7 +164,7 @@ test('scope filters are re-verified against the revision slot, not the index tag
   // 색인 태그가 요청 범위에 맞게 붙었어도, 검증된 개정본의 slot이 다르면 결과에서 버린다.
   const index = new LocalVectorIndex();
   index.upsert({ ...entry(0), context_id: 'context-fulfillment' });
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'anything', context_id: 'context-fulfillment' });
   assert.equal(result.total, 0, 'a mistagged index entry must not leak an out-of-scope revision');
 });
@@ -173,7 +173,7 @@ test('required refs stay pinned ahead of scored candidates on small pages', asyn
   const index = new LocalVectorIndex();
   index.upsert(entry(1, [1, 0, 0]));
   index.upsert(entry(2, [0.9, 0.1, 0]));
-  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'anything', document_ids: ['doc-sales-order-definition-001'], limit: 1 });
   assert.equal(result.results.length, 1);
   assert.equal(result.results[0].revision_digest, sales.revision_digest, 'the required ref must not sink off the first page');
@@ -182,7 +182,7 @@ test('required refs stay pinned ahead of scored candidates on small pages', asyn
 
 test('an unavailable external index fails closed with INDEX_UNAVAILABLE', async t => {
   const down = { candidates: () => { throw new Error('connection refused'); } };
-  const f = await fixture(t, { vectorIndex: down, embedQuery: () => [1, 0, 0] });
+  const f = await fixture(t, { vectorIndex: down, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
   await assert.rejects(f.service.vectorSearch(actor, { query: 'q' }), (error: any) => error.code === 'INDEX_UNAVAILABLE' && error.status === 503);
 });
 
@@ -192,6 +192,8 @@ test('the service refuses an external index without a matching query embedder', 
   t.after(() => { ledger.close(); vault.close(); });
   assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { vectorIndex: new LocalVectorIndex() }), /embedQuery/);
   assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { embedRevision: () => [1] }), /embedQuery/);
+  // embedQuery만 주어지면 embedRevision이 개발용 64차원으로 조용히 채워진다 — 쌍으로만 받는다.
+  assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { embedQuery: () => [1, 0, 0] }), /together/);
 });
 
 test('rebuildVectorIndex repopulates the index only from verified revisions', async t => {
@@ -200,8 +202,115 @@ test('rebuildVectorIndex repopulates the index only from verified revisions', as
   index.upsert({ ...entry(0), revision_digest: 'b'.repeat(64) }); // 원장에 없는 낡은 행
   const rebuilt = await f.service.rebuildVectorIndex(actor);
   assert.equal(rebuilt.indexed, fixtures.revisions.length);
-  assert.equal(index.size, fixtures.revisions.length, 'clear must drop the stale digest before reinsertion');
+  assert.equal(index.size, fixtures.revisions.length, 'replaceAll must drop the stale digest atomically');
   const ranked = index.candidates({ embedding: [1, 0, 0], limit: 50 });
   assert.ok(ranked.every(candidate => fixtures.revisions.some((revision: any) => revision.revision_digest === candidate.revision_digest)));
   await assert.rejects(fixture(t).then(f2 => f2.service.rebuildVectorIndex(actor)), (error: any) => error.code === 'UNSUPPORTED_ACTION');
+});
+
+test('index configuration errors are reported non-retryable, not as retryable 503', async t => {
+  const misconfigured = { candidates: () => { throw new TypeError('Embedding dimensions do not match'); } };
+  const f = await fixture(t, { vectorIndex: misconfigured, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  await assert.rejects(f.service.vectorSearch(actor, { query: 'q' }), (error: any) => error.code === 'INDEX_MISCONFIGURED' && error.status === 500 && !error.retryable);
+  const invalidEmbedding = await fixture(t, { vectorIndex: new LocalVectorIndex(), embedQuery: () => [Number.NaN], embedRevision: () => [1] });
+  await assert.rejects(invalidEmbedding.service.vectorSearch(actor, { query: 'q' }), (error: any) => error.code === 'INDEX_MISCONFIGURED' && !error.retryable);
+});
+
+test('malformed index rows are dropped before they can disturb ranking', async t => {
+  const messy = { candidates: () => ([
+    { revision_digest: 'not-a-digest', score: 0.9 },
+    { revision_digest: sales.revision_digest, score: Number.NaN },
+    { revision_digest: sales.revision_digest, score: 0.5 },
+  ]) };
+  const f = await fixture(t, { vectorIndex: messy, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const result = await f.service.vectorSearch(actor, { query: 'q' });
+  assert.equal(result.total, 1);
+  assert.equal(result.results[0].revision_digest, sales.revision_digest);
+  assert.equal(result.results[0].score, 0.5);
+});
+
+test('an index change between pages invalidates the cursor instead of skipping rows', async t => {
+  const index = new LocalVectorIndex();
+  index.upsert(entry(0, [1, 0, 0]));
+  index.upsert(entry(1, [0.9, 0.1, 0]));
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const first = await f.service.vectorSearch(actor, { query: 'anything', limit: 1 });
+  assert.equal(first.results.length, 1);
+  assert.ok(first.next_cursor);
+  index.upsert(entry(2, [0.8, 0.2, 0])); // 페이지 사이의 색인 변경
+  await assert.rejects(f.service.vectorSearch(actor, { query: 'anything', limit: 1, cursor: first.next_cursor }),
+    (error: any) => error.code === 'INVALID_CURSOR');
+  const stable = await f.service.vectorSearch(actor, { query: 'anything', limit: 1 });
+  const second = await f.service.vectorSearch(actor, { query: 'anything', limit: 1, cursor: stable.next_cursor });
+  assert.equal(second.results.length, 1, 'an unchanged index keeps the cursor valid');
+});
+
+test('a superseded revision stays visible but is reported ineligible', async t => {
+  const index = new LocalVectorIndex();
+  index.upsert(entry(0));
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  const policy = fixtures.policies[0];
+  const draft = await f.service.draft(actor, { document_id: sales.payload.document_id, base_revision_digest: sales.revision_digest,
+    context_id: sales.payload.context_id, scope_id: sales.payload.scope_id, usage_scope: sales.payload.usage_scope,
+    title: '주문 정의 v2', body_markdown: '# superseding revision' });
+  const preview = await f.service.preview(actor, { draft_id: draft.draft_id });
+  await f.service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: 'publish-supersede' });
+  const proposed = await f.service.propose(actor, { revision_digest: preview.revision_digest, policy_id: policy.policy_id, policy_version: 1, command_id: 'propose-supersede' });
+  await f.service.decide(actor, proposed.result.proposal_id, { decision: 'approve', rationale: 'supersede', command_id: 'decide-supersede' });
+  await f.service.activate(actor, proposed.result.proposal_id, { expected_active_agreement_id: 'agreement-sales-001', command_id: 'activate-supersede' });
+  const result = await f.service.vectorSearch(actor, { query: 'anything', document_ids: [sales.payload.document_id] });
+  const stale = result.results.find((item: any) => item.revision_digest === sales.revision_digest);
+  assert.ok(stale, 'the superseded digest is still a verified revision');
+  assert.equal(stale.eligible, false, 'a superseded agreement must not grant eligibility');
+});
+
+test('PgVectorIndex issues version-scoped SQL through an injectable client', async () => {
+  const calls: { text: string; values: unknown[] }[] = [];
+  const client = {
+    on: () => {}, connect: async () => {}, end: async () => {},
+    query: async (text: string, values: unknown[]) => { calls.push({ text, values }); return { rows: [] }; },
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 7,
+    pg: { Client: function () { return client; } } });
+  await index.candidates({ embedding: [1, 0, 0], limit: 5, context_id: 'context-sales' });
+  const select = calls.at(-1)!;
+  assert.match(select.text, /index_version = \$2/);
+  assert.match(select.text, /context_id = \$3/);
+  assert.match(select.text, /LIMIT \$4/);
+  assert.deepEqual(select.values, ['[1,0,0]', 7, 'context-sales', 5]);
+
+  await index.upsert(entry(0));
+  const insert = calls.at(-1)!;
+  assert.match(insert.text, /ON CONFLICT \(revision_digest, index_version\)/);
+  assert.equal(insert.values.at(-1), 7);
+
+  await index.remove(sales.revision_digest);
+  const remove = calls.at(-1)!;
+  assert.match(remove.text, /revision_digest = \$1 AND index_version = \$2/);
+  assert.deepEqual(remove.values, [sales.revision_digest, 7]);
+
+  calls.length = 0;
+  await index.replaceAll([entry(0), entry(1)]);
+  assert.equal(calls[0]!.text, 'BEGIN');
+  assert.match(calls[1]!.text, /DELETE FROM kcl_vector_v1 WHERE index_version = \$1/);
+  assert.equal(calls.at(-1)!.text, 'COMMIT');
+  assert.equal(calls.length, 5, 'begin + delete + two inserts + commit in one transaction');
+
+  await index.close();
+});
+
+test('PgVectorIndex retries after a failed connection attempt', async () => {
+  let attempts = 0;
+  const client = {
+    on: () => {}, end: async () => {},
+    connect: async () => { attempts++; if (attempts === 1) throw new Error('connection refused'); },
+    query: async () => ({ rows: [] }),
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pg: { Client: function () { return client; } } });
+  await assert.rejects(index.candidates({ embedding: [1], limit: 1 }), /connection refused/);
+  // 거부된 연결 프라미스는 남지 않는다 — 다음 호출이 재연결해야 한다.
+  await index.candidates({ embedding: [1], limit: 1 });
+  assert.equal(attempts, 2);
+  await index.close();
 });

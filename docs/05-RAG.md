@@ -105,7 +105,7 @@ Private source가 철회되거나 재전송/실행 권한을 잃으면 그 자�
 
 Doc body, Wiki projection, vector index, source-to-chunk mapping을 독립 재구축할 수 있어야 한다. projector cursor에는 block hash, tx index, reducer schema version을 저장한다. schema 변경·cursor 불일치 때 side-by-side replay 후 hash와 결과를 대조하고 교체한다.
 
-구현된 벡터 검색(`/vector-search`)은 이 규칙을 따른다: 벡터 색인은 후보 제안기일 뿐이며 모든 후보는 요청 체크포인트의 검증된 원장 상태로 재검증되고, 필수 `document_ids`는 색인 없이 직접 해상된다. 응답의 `candidate_source`·`complete`는 후보 수집 범위만 알리므로 빈 색인 페이지를 지식 부재의 증거로 읽지 않는다. 세부 결정은 [구현 결정](10-IMPLEMENTATION-DECISIONS.md)에 기록했다.
+구현된 벡터 검색(`/vector-search`)은 이 규칙을 따른다: 벡터 색인은 후보 제안기일 뿐이며 모든 후보는 요청 체크포인트의 검증된 원장 상태로 재검증되고, 필수 `document_ids`는 색인 없이 직접 해상된다. 응답의 `candidate_source`·`complete`는 후보 수집 범위만 알리므로 빈 색인 페이지를 지식 부재의 증거로 읽지 않는다. 외부 색인 모드에서 후보는 상위 200개로 제한되고, 페이지 커서는 첫 페이지의 순위 다이제스트 해시에 묶인다 — 페이지 사이 색인이 바뀌면 조용한 중복·누락 대신 `INVALID_CURSOR`로 첫 페이지부터 다시 받게 한다. 세부 결정은 [구현 결정](10-IMPLEMENTATION-DECISIONS.md)에 기록했다.
 
 ## AI-DLC 연동
 
