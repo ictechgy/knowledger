@@ -27,17 +27,19 @@ async function compose(page,title,body,{revise=false}={}){
 }
 async function publish(page,title,body,options){await compose(page,title,body,options);await expect(page.locator('#document-title')).toHaveText(title);}
 async function switchActor(page,org){await page.locator('#persona-select').selectOption(JSON.stringify({org_id:org,actor_id:'maintainer'}));await expect(page.locator('#footer-actor')).toContainText(org);}
-// 주기적 개요 재렌더가 fill과 click 사이에 끼어들어 rationale이 지워지면 제출이 조용히 무시된다 — 성공할 때까지 재시도한다.
-async function approve(page){await expect(async()=>{if((await page.locator('#review-inbox-count').innerText())==='0')return;await page.getByRole('textbox',{name:'이번 결정의 근거'}).fill('Browser test human review');await page.getByRole('button',{name:'승인',exact:true}).click();await expect(page.locator('#review-inbox-count')).toHaveText('0',{timeout:2000});}).toPass({timeout:20000});}
+// 주기적 개요 재렌더가 fill과 click 사이에 끼어들어 rationale이 지워지면 제출이 조용히 무시된다.
+// actor 전환 직후 검토함이 이전 actor의 빈 상태를 잠시 보여줄 수 있으므로, 완료 신호는 UI가 아니라 서비스의 커밋된 결정 수로 잡고 성공할 때까지 재시도한다.
+async function approve(page,workspace){const baseline=workspace.app.service.values('decision').length;await expect(async()=>{if(workspace.app.service.values('decision').length>baseline)return;await page.getByRole('textbox',{name:'이번 결정의 근거'}).fill('Browser test human review');await page.getByRole('button',{name:'승인',exact:true}).click();await expect.poll(()=>workspace.app.service.values('decision').length,{timeout:2000}).toBeGreaterThan(baseline);}).toPass({timeout:20000});}
+// 활성화도 같은 이유로 카드 문구 대신 활성화된 제안 수를 완료 신호로 쓴다 — 카드가 이미 '합의 활성'을 보여도 교체 활성화는 새 제안 기준으로 판정한다.
+async function activate(page,workspace){const baseline=workspace.app.service.values('proposal').filter(p=>p.status==='activated').length;await expect(async()=>{if(workspace.app.service.values('proposal').filter(p=>p.status==='activated').length>baseline)return;await page.getByRole('button',{name:'합의 활성화',exact:true}).click();await expect.poll(()=>workspace.app.service.values('proposal').filter(p=>p.status==='activated').length,{timeout:2000}).toBeGreaterThan(baseline);}).toPass({timeout:20000});}
 
 test('two-organization publication, private isolation, approvals, provided context and withdrawal',async({page,workspace})=>{
   const errors=[];page.on('pageerror',error=>errors.push(error.message));await open(page,workspace);
   await publish(page,'Shared guide','# Shared guide\n\nReviewed by two organizations.');
   await expect(page.locator('#revision-compare-content')).toContainText('이전 개정본');
   await page.getByRole('button',{name:'검토 제안 제출',exact:true}).click();await expect(page.locator('#review-inbox-count')).toHaveText('1');
-  await approve(page);await switchActor(page,'BetaMSP');await expect(page.locator('#private-draft-list')).not.toContainText('Shared guide');
-  await approve(page);await page.getByRole('button',{name:'합의 활성화',exact:true}).click();
-  await expect(page.locator('.document-card')).toContainText('합의 활성');
+  await approve(page,workspace);await switchActor(page,'BetaMSP');await expect(page.locator('#private-draft-list')).not.toContainText('Shared guide');
+  await approve(page,workspace);await activate(page,workspace);
   await page.locator('#resolver-form button[type=submit]').click();await expect(page.locator('#resolver-result')).toContainText('권위 있는 컨텍스트');
   await page.getByRole('textbox',{name:'상태 변경 사유'}).fill('Browser test withdrawal');await page.getByRole('button',{name:'사용 철회',exact:true}).click();
   await expect(page.locator('.document-card')).toContainText('철회됨');
@@ -220,19 +222,17 @@ test('replacement activation sends the existing active agreement for the slot',a
   await open(page,workspace);
   await publish(page,'Stable guide','# Stable');
   await page.getByRole('button',{name:'검토 제안 제출',exact:true}).click();
-  await switchActor(page,'BetaMSP');await approve(page);
-  await switchActor(page,'AlphaMSP');await approve(page);
-  await page.getByRole('button',{name:'합의 활성화',exact:true}).click();
-  await expect(page.locator('.document-card')).toContainText('합의 활성');
+  await switchActor(page,'BetaMSP');await approve(page,workspace);
+  await switchActor(page,'AlphaMSP');await approve(page,workspace);
+  await activate(page,workspace);
   const active=workspace.app.service.values('agreement').find((agreement)=>agreement.status==='active');expect(active?.agreement_id).toBeTruthy();
   await compose(page,'Replacement guide','# Replacement',{revise:true});
   await page.getByRole('button',{name:'검토 제안 제출',exact:true}).click();
-  await switchActor(page,'BetaMSP');await approve(page);
-  await switchActor(page,'AlphaMSP');await approve(page);
+  await switchActor(page,'BetaMSP');await approve(page,workspace);
+  await switchActor(page,'AlphaMSP');await approve(page,workspace);
   let body;
   await page.route('**/agreement-proposals/*/activate',async route=>{body=route.request().postDataJSON();await route.continue();});
-  await page.getByRole('button',{name:'합의 활성화',exact:true}).click();
-  await expect(page.locator('.document-card')).toContainText('합의 활성');
+  await activate(page,workspace);
   expect(body.expected_active_agreement_id).toBe(active.agreement_id);
 });
 
