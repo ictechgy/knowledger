@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -101,9 +101,15 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
   for (const sidecar of ['shared-ledger.sqlite-wal', 'shared-ledger.sqlite-shm', 'private-local.sqlite-wal', 'private-local.sqlite-shm']) {
     if (existsSync(join(dataDir, sidecar))) throw new Error(`clean stop left a real sidecar: ${sidecar}`);
   }
-  writeFileSync(join(dataDir, 'shared-ledger.sqlite-wal'), 'not-a-real-wal');
+  const fakeWalPath = join(dataDir, 'shared-ledger.sqlite-wal');
+  // 배타 생성 — 확인과 생성 사이에 진짜 WAL이 생기면 덮어쓰지 않고 실패한다.
+  writeFileSync(fakeWalPath, 'not-a-real-wal', { flag: 'wx' });
+  const fakeWalId = statSync(fakeWalPath);
   expectSnapshotError(() => createRuntimeSnapshot({ dataDir, snapshotDir }), 'offline_required', 'snapshot with WAL sidecar');
-  unlinkSync(join(dataDir, 'shared-ledger.sqlite-wal'));
+  // 삭제 전에 심어둔 파일과 동일한지 확인한다 — 진짜 WAL을 지우는 일은 없어야 한다.
+  const beforeUnlink = statSync(fakeWalPath);
+  if (beforeUnlink.dev !== fakeWalId.dev || beforeUnlink.ino !== fakeWalId.ino) throw new Error('planted WAL sidecar was replaced — refusing to unlink');
+  unlinkSync(fakeWalPath);
 
   const backup = createRuntimeSnapshot({ dataDir, snapshotDir });
   const manifestNames = backup.files.map(file => file.name);
@@ -145,6 +151,21 @@ export async function runBackupRehearsal(rootDir: string): Promise<BackupRehears
   };
 }
 
+/** 증거 아티팩트를 쓴다 — 기존 파일이면 덮어쓰되 권한은 항상 0600으로 맞춘다. */
+function writeArtifact(path: string, output: string): void {
+  if (existsSync(path)) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('--out must be a regular file');
+  }
+  const fd = openSync(path, 'w');
+  try {
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, `${output}\n`);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function isMain(): boolean { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href; }
 
 if (isMain()) {
@@ -166,7 +187,7 @@ if (isMain()) {
     ownedRoot = !root;
     const result = await runBackupRehearsal(rootDir);
     const output = JSON.stringify(result, null, 2);
-    if (out) { mkdirSync(resolve(out, '..'), { recursive: true, mode: 0o700 }); writeFileSync(out, `${output}\n`, { mode: 0o600 }); }
+    if (out) { mkdirSync(resolve(out, '..'), { recursive: true, mode: 0o700 }); writeArtifact(out, output); }
     process.stdout.write(`${output}\n`);
   } catch (error) {
     process.stderr.write(`backup rehearsal failed: ${error instanceof Error ? error.message : String(error)}\n`);

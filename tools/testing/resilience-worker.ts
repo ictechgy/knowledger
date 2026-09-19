@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { LocalLedger } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
@@ -25,6 +26,11 @@ function writeEveryMs(): number {
   return value;
 }
 
+/** 저널·초안 내용을 해시로 고정한다 — 드릴이 개수가 아니라 내용 일치를 검증하게 한다. */
+function contentDigest(rows: unknown[]): string {
+  return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+}
+
 const dataDir = dataPath();
 const writeEvery = writeEveryMs();
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -47,7 +53,14 @@ try {
   const commandId = 'resilience-publish-001';
   const receipt = await service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: commandId });
   if (receipt.status !== 'committed') throw new Error('resilience fixture did not commit');
-  process.stdout.write(`${JSON.stringify({ ready: true, draft_id: draft.draft_id, preview_id: preview.preview_id, command_id: commandId, checkpoint: receipt.checkpoint, event_count: ledger.events(0, 1000).length })}\n`);
+  const journal = ledger.events(0, 1000);
+  const drafts = await service.listDrafts(actor, 50, undefined);
+  process.stdout.write(`${JSON.stringify({
+    ready: true, draft_id: draft.draft_id, preview_id: preview.preview_id, command_id: commandId,
+    checkpoint: receipt.checkpoint, event_count: journal.length,
+    journal_digest: contentDigest(journal),
+    drafts_digest: contentDigest(drafts.drafts.map(row => row.revision_digest).sort()),
+  })}\n`);
   // 쓰기 루프가 켜지면 실제 커밋이 진행 중인 상태로 강제 종료될 수 있게 계속 발행한다.
   let loopBusy = false;
   let loopWrites = 0;
@@ -63,7 +76,9 @@ try {
         document_id: `doc-resilience-loop-${tag}`,
       });
       const loopPreview = await service.preview(actor, { draft_id: loopDraft.draft_id });
-      await service.publish(actor, { preview_id: loopPreview.preview_id, confirm_shared: true, command_id: `resilience-loop-publish-${tag}` });
+      const loopReceipt = await service.publish(actor, { preview_id: loopPreview.preview_id, confirm_shared: true, command_id: `resilience-loop-publish-${tag}` });
+      // 확정된 커밋을 부모가 수집하게 한다 — 복구 검증이 추정이 아니라 승인된 트랜잭션 목록에 근거한다.
+      if (loopReceipt.status === 'committed') process.stdout.write(`${JSON.stringify({ commit: loopReceipt.checkpoint.transaction_id })}\n`);
     })().catch((error: unknown) => {
       process.stderr.write(`resilience loop write failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }).finally(() => { loopBusy = false; });
