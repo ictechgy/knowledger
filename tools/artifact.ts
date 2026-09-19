@@ -21,6 +21,13 @@ export function writeArtifact(path: string, output: string): void {
     const dest = lstatSync(path, { throwIfNoEntry: false });
     if (dest && (!dest.isFile() || dest.isSymbolicLink() || dest.nlink !== 1)) throw new Error('--out must be a regular file');
     renameSync(tmp, path);
+    try {
+      // rename 자체의 크래시 내구성은 디렉터리 fsync가 준다 — 미지원 플랫폼은 원자적 가시성까지만 보장한다.
+      const dirFd = openSync(dirname(path), constants.O_RDONLY);
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    } catch {
+      // 디렉터리 fsync 미지원(Windows 등)이면 rename의 원자적 교체만으로 진행한다.
+    }
   } catch (error) {
     rmSync(tmp, { force: true });
     throw error;

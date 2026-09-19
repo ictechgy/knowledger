@@ -85,9 +85,17 @@ test('git connector rejects ambiguous refs, pseudorefs and nested roots', { skip
   }
   // refs/heads/<pseudoref 이름>이 실제로 있어도 짧은 철자는 거부한다 — 명시할 때만 해석된다.
   execFileSync('git', ['-C', item.repo, 'update-ref', 'refs/heads/MERGE_HEAD', item.head], { stdio: 'ignore' });
-  await assert.rejects(() => readGitSource({ root: item.repo, ref: 'MERGE_HEAD', manifest: item.manifest }));
+  for (const ref of ['HEAD', 'MERGE_HEAD', 'AUTO_MERGE', 'MERGE_AUTOSTASH']) {
+    await assert.rejects(() => readGitSource({ root: item.repo, ref, manifest: item.manifest }));
+  }
   const qualifiedPseudo = await readGitSource({ root: item.repo, ref: 'refs/heads/MERGE_HEAD', manifest: item.manifest });
   assert.equal(qualifiedPseudo.commit, item.head);
+  // 16진 오브젝트 ID 형태의 브랜치가 있으면 짧은 철자는 모호하다 — 명시할 때만 해석된다.
+  const hexName = 'a'.repeat(40);
+  execFileSync('git', ['-C', item.repo, 'update-ref', `refs/heads/${hexName}`, item.head], { stdio: 'ignore' });
+  await assert.rejects(() => readGitSource({ root: item.repo, ref: hexName, manifest: item.manifest }), /모호|ref/);
+  const qualifiedHex = await readGitSource({ root: item.repo, ref: `refs/heads/${hexName}`, manifest: item.manifest });
+  assert.equal(qualifiedHex.commit, item.head);
   // 저장소 안의 일반 하위 디렉터리는 root로 받지 않는다 — worktree top만 허용한다.
   await assert.rejects(() => readGitSource({ root: join(item.repo, 'docs'), ref: item.head, manifest: item.manifest }));
 });

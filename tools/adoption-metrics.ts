@@ -32,10 +32,10 @@ export function readPilotMeasurement(input: { path: string; channelId: string; o
   try {
     // 검증과 페이지네이션을 한 읽기 트랜잭션에 묶는다 — autocommit 스냅샷 사이의
     // 동시 변경이 해시 체인 검증 없이 측정에 섞이는 것을 막는다.
+    const events: LedgerEvent[] = [];
     db.exec('BEGIN');
     try {
       verifyJournalDb(db, input?.channelId);
-      const events: LedgerEvent[] = [];
       const page = db.prepare('SELECT sequence, record_json FROM ledger_transactions WHERE sequence > ? ORDER BY sequence LIMIT 1000');
       for (let after = 0;;) {
         const rows = page.all(after) as any[];
@@ -44,11 +44,11 @@ export function readPilotMeasurement(input: { path: string; channelId: string; o
         after = rows[rows.length - 1].sequence;
       }
       db.exec('COMMIT');
-      return measureAdoption({ events, log });
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
     }
+    return measureAdoption({ events, log });
   } finally {
     db.close();
   }
@@ -89,7 +89,9 @@ if (isMain()) {
           const stat = lstatSync(p, { throwIfNoEntry: false });
           return stat ? `${stat.dev}:${stat.ino}` : undefined;
         };
-        const inputs = [ledgerPath, resolve(values.get('--observations')!)];
+        // 저널 sidecar(-wal/-shm/-journal)도 보호 대상이다 — WAL 안의 커밋된 상태를
+        // 측정 출력이 덮어쓰는 것을 막는다.
+        const inputs = [ledgerPath, `${ledgerPath}-wal`, `${ledgerPath}-shm`, `${ledgerPath}-journal`, resolve(values.get('--observations')!)];
         const targetInode = inodeOf(target);
         if (inputs.some(input => canonical(input) === canonical(target)) || (targetInode && inputs.some(input => inodeOf(input) === targetInode))) {
           throw new Error('invalid option');

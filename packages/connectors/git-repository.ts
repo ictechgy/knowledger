@@ -12,6 +12,8 @@ const COMMIT_PATTERN = /^[a-f0-9]+$/u;
 const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u;
 // HEAD·ORIG_HEAD·MERGE_HEAD 같은 작업 트리 종속 pseudoref 철자는 짧은 이름으로 받지 않는다.
 const PSEUDOREF_PATTERN = /^(?:HEAD|[A-Z][A-Z0-9_]*_HEAD)$/u;
+// _HEAD로 끝나지 않는 불규칙 최상위 ref도 같은 취급이다.
+const PSEUDOREF_NAMES = new Set(['AUTO_MERGE', 'MERGE_AUTOSTASH']);
 const REGULAR_BLOB = '100644';
 
 /** 고정 커밋에서 읽은 source snapshot. files/missing_paths 계약은 filesystem connector와 같다. */
@@ -32,7 +34,8 @@ function invalid(message = '원본 Git 저장소를 읽을 수 없습니다.'): 
 function gitEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('GIT_')) env[key] = value;
+    // 대소문자를 구분하지 않는 환경(Windows)에서도 Git 변수는 모두 제거한다.
+    if (!key.toUpperCase().startsWith('GIT_')) env[key] = value;
   }
   env.GIT_NO_LAZY_FETCH = '1';
   env.GIT_NO_REPLACE_OBJECTS = '1';
@@ -81,6 +84,8 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
   if (!top || realpathSync(top) !== realpathSync(root)) invalid();
   let commit: string | undefined;
   if (ref.length === idLength && COMMIT_PATTERN.test(ref)) {
+    // 16진 오브젝트 ID 형태의 브랜치·태그가 있으면 의도가 모호하다 — 명시할 때만 해석된다.
+    if (tryVerify(root, `refs/heads/${ref}`) || tryVerify(root, `refs/tags/${ref}`)) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
     commit = tryVerify(root, ref);
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   } else if (ref.startsWith('refs/')) {
@@ -89,7 +94,7 @@ function resolveCommit(root: string, ref: string, idLength: number): string {
     if (!commit) invalid('Git ref를 고정 커밋으로 확인할 수 없습니다.');
   } else {
     // refs/heads/HEAD가 실제로 있어도 짧은 pseudoref 철자는 받지 않는다 — 명시할 때만 유효하다.
-    if (PSEUDOREF_PATTERN.test(ref)) invalid('올바른 Git ref가 필요합니다.');
+    if (PSEUDOREF_PATTERN.test(ref) || PSEUDOREF_NAMES.has(ref)) invalid('올바른 Git ref가 필요합니다.');
     const head = tryVerify(root, `refs/heads/${ref}`);
     const tag = tryVerify(root, `refs/tags/${ref}`);
     if (head && tag) invalid('Git ref가 모호합니다 — refs/heads/ 또는 refs/tags/를 명시하세요.');
