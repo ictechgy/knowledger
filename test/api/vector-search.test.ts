@@ -55,7 +55,8 @@ test('LocalVectorIndex drops removed entries and rejects malformed input', () =>
   assert.throws(() => index.upsert(entry(0, [Number.NaN])), TypeError);
   assert.throws(() => index.candidates({ embedding: [], limit: 10 }), TypeError);
   assert.throws(() => index.candidates({ embedding: [1], limit: 0 }), TypeError);
-  assert.equal(cosineSimilarity([1, 0], [0]), 0);
+  // 차원 불일치는 조용한 0점이 아니라 설정 오류다.
+  assert.throws(() => cosineSimilarity([1, 0], [0]), TypeError);
   assert.equal(cosineSimilarity([0, 0], [1, 0]), 0);
   assert.equal(developmentEmbedding('주문 완료 기준').length, 64);
 });
@@ -116,7 +117,7 @@ test('external index proposes candidates that are re-verified at the checkpoint 
 
 test('required document refs resolve from verified ledger state even when the index is empty', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'unrelated', document_ids: ['doc-sales-order-definition-001'] });
   assert.equal(result.total, 1);
   assert.equal(result.results[0].revision_digest, sales.revision_digest);
@@ -126,7 +127,7 @@ test('required document refs resolve from verified ledger state even when the in
 
 test('an empty index page is not proof that no knowledge exists', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
   const result = await f.service.vectorSearch(actor, { query: 'anything' });
   assert.equal(result.total, 0);
   assert.equal(result.complete, false);
@@ -135,7 +136,7 @@ test('an empty index page is not proof that no knowledge exists', async t => {
 
 test('eligibility is re-verified: an index candidate whose agreement was withdrawn is reported ineligible', async t => {
   const index = new LocalVectorIndex();
-  const f = await fixture(t, { vectorIndex: index });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
   index.upsert(entry(0));
   await f.service.changeAgreement(actor, 'agreement-sales-001', 'withdraw', { reason: 'vector test withdrawal', command_id: 'withdraw-vector-1' });
   const result = await f.service.vectorSearch(actor, { query: '주문' });
@@ -156,4 +157,51 @@ test('vector search pages follow the cursor and reject invalid input', async t =
   await assert.rejects(f.service.vectorSearch(actor, { query: 'q', document_ids: ['bad id!'] }), (error: any) => error.code === 'INVALID_INPUT');
   await assert.rejects(f.service.vectorSearch(actor, { query: 'q', context_id: 'x'.repeat(101) }), (error: any) => error.code === 'INVALID_INPUT');
   await assert.rejects(f.service.vectorSearch(actor, { query: 'q', cursor: 'forged' }), (error: any) => error.code === 'INVALID_CURSOR');
+  await assert.rejects(f.service.vectorSearch(actor, { query: 'q', context_id: '' }), (error: any) => error.code === 'INVALID_INPUT');
+});
+
+test('scope filters are re-verified against the revision slot, not the index tag', async t => {
+  // 색인 태그가 요청 범위에 맞게 붙었어도, 검증된 개정본의 slot이 다르면 결과에서 버린다.
+  const index = new LocalVectorIndex();
+  index.upsert({ ...entry(0), context_id: 'context-fulfillment' });
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const result = await f.service.vectorSearch(actor, { query: 'anything', context_id: 'context-fulfillment' });
+  assert.equal(result.total, 0, 'a mistagged index entry must not leak an out-of-scope revision');
+});
+
+test('required refs stay pinned ahead of scored candidates on small pages', async t => {
+  const index = new LocalVectorIndex();
+  index.upsert(entry(1, [1, 0, 0]));
+  index.upsert(entry(2, [0.9, 0.1, 0]));
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0] });
+  const result = await f.service.vectorSearch(actor, { query: 'anything', document_ids: ['doc-sales-order-definition-001'], limit: 1 });
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0].revision_digest, sales.revision_digest, 'the required ref must not sink off the first page');
+  assert.equal(result.results[0].score, null);
+});
+
+test('an unavailable external index fails closed with INDEX_UNAVAILABLE', async t => {
+  const down = { candidates: () => { throw new Error('connection refused'); } };
+  const f = await fixture(t, { vectorIndex: down, embedQuery: () => [1, 0, 0] });
+  await assert.rejects(f.service.vectorSearch(actor, { query: 'q' }), (error: any) => error.code === 'INDEX_UNAVAILABLE' && error.status === 503);
+});
+
+test('the service refuses an external index without a matching query embedder', async t => {
+  const ledger = new LocalLedger(':memory:', 'kcl-demo');
+  const vault = new PrivateStore(':memory:');
+  t.after(() => { ledger.close(); vault.close(); });
+  assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { vectorIndex: new LocalVectorIndex() }), /embedQuery/);
+  assert.throws(() => new KnowledgerService(ledger, vault, demoDefinition(), undefined, { embedRevision: () => [1] }), /embedQuery/);
+});
+
+test('rebuildVectorIndex repopulates the index only from verified revisions', async t => {
+  const index = new LocalVectorIndex();
+  const f = await fixture(t, { vectorIndex: index, embedQuery: () => [1, 0, 0], embedRevision: () => [1, 0, 0] });
+  index.upsert({ ...entry(0), revision_digest: 'b'.repeat(64) }); // 원장에 없는 낡은 행
+  const rebuilt = await f.service.rebuildVectorIndex(actor);
+  assert.equal(rebuilt.indexed, fixtures.revisions.length);
+  assert.equal(index.size, fixtures.revisions.length, 'clear must drop the stale digest before reinsertion');
+  const ranked = index.candidates({ embedding: [1, 0, 0], limit: 50 });
+  assert.ok(ranked.every(candidate => fixtures.revisions.some((revision: any) => revision.revision_digest === candidate.revision_digest)));
+  await assert.rejects(fixture(t).then(f2 => f2.service.rebuildVectorIndex(actor)), (error: any) => error.code === 'UNSUPPORTED_ACTION');
 });

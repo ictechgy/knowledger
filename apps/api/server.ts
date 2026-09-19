@@ -83,7 +83,7 @@ export async function createApp(options: AppOptions) {
     service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision });
     await service.initialize();
   } catch (error) {
-    try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } }
+    try { await options.vectorIndex?.close?.(); } finally { try { await ledger?.close(); } finally { try { vault?.close(); } finally { await authentication?.close(); } } }
     throw error;
   }
   const sessions = new Map<string, Session>();
@@ -350,7 +350,7 @@ export async function createApp(options: AppOptions) {
     async close() {
       readiness.close();
       if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } }
+      try { await options.vectorIndex?.close?.(); } finally { try { await ledger.close(); } finally { try { vault.close(); } finally { await authentication?.close(); } } }
     },
   };
 }
