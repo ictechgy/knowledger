@@ -579,3 +579,41 @@ test('a whitespace-only query is rejected before any index work', async t => {
   await assert.rejects(f.service.vectorSearch(actor, { query: '   ' }),
     (error: any) => error.code === 'INVALID_INPUT');
 });
+
+test('PgVectorIndex discards a dead client and reconnects on the next call', async () => {
+  const clients: { ended: number; onError?: () => void }[] = [];
+  const pg = { Client: function () {
+    const client = { ended: 0, onError: undefined as (() => void) | undefined,
+      on: (_: string, handler: () => void) => { client.onError = handler; },
+      connect: async () => {}, end: async () => { client.ended++; },
+      query: async () => ({ rows: [] }) };
+    clients.push(client);
+    return client;
+  } };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1, pg });
+  await index.candidates({ embedding: [1], limit: 1 });
+  assert.equal(clients.length, 1);
+  // 유휴 연결 손실 — 자신의 연결만 비우고 다음 호출이 재연결해야 한다.
+  clients[0]!.onError!();
+  assert.equal(clients[0]!.ended, 1, 'the dead client is released');
+  await index.candidates({ embedding: [1], limit: 1 });
+  assert.equal(clients.length, 2, 'the next call opens a fresh client');
+  await index.close();
+});
+
+test('PgVectorIndex replaceAll merges duplicate digests like the local index', async () => {
+  const calls: { text: string; values: unknown[] }[] = [];
+  const client = {
+    on: () => {}, connect: async () => {}, end: async () => {},
+    query: async (text: string, values: unknown[]) => { calls.push({ text, values }); return { rows: [] }; },
+  };
+  const index = new PgVectorIndex({ connection: {}, table: 'kcl_vector_v1', indexVersion: 1,
+    pg: { Client: function () { return client; } } });
+  // 같은 다이제스트 두 번 — Local은 Map 병합으로 마지막이 이기고,
+  // pg도 다중행 INSERT 안의 중복을 먼저 병합해 23505로 실패하지 않아야 한다.
+  await index.replaceAll([entry(0, [1, 0, 0]), entry(0, [0, 1, 0])]);
+  const insert = calls.find(call => /INSERT/.test(call.text))!;
+  assert.equal(insert.values.filter(value => value === entry(0).revision_digest).length, 1,
+    'one row survives per digest — last write wins');
+  await index.close();
+});

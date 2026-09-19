@@ -91,8 +91,8 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
 
   /**
    * 차원·형 불일치·스키마 부재 같은 pg 거부는 재시도로 해소되지 않는 영구 설정
-   * 오류다 — SQLSTATE 42클래스(테이블·컬럼·권한 부재)와 3D000(카탈로그 부재),
-   * 22000/42804(데이터·형 예외)를 TypeError로 변환해 서비스가 INDEX_MISCONFIGURED로
+   * 오류다 — SQLSTATE 42클래스(테이블·컬럼·권한 부재)·22클래스(데이터 예외)와
+   * 3D000(카탈로그 부재)를 TypeError로 변환해 서비스가 INDEX_MISCONFIGURED로
    * 분류하게 한다. 그 외 연결·일시 오류는 그대로 전파해 재시도 가능으로 남긴다.
    */
   private async run(client: any, text: string, values: unknown[]) {
@@ -162,34 +162,34 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1000) throw new TypeError('Vector candidate query limit is invalid');
     const literal = `[${query.embedding.join(',')}]`;
     return this.exclusive(async () => {
-    const client = await this.connect();
-    const clauses = ['index_version = $2'];
-    const values: unknown[] = [literal, this.indexVersion];
-    for (const [field, column] of [['context_id', 'context_id'], ['scope_id', 'scope_id'], ['usage_scope', 'usage_scope']] as const) {
-      const value = query[field];
-      if (value !== undefined) { values.push(value); clauses.push(`${column} = $${values.length}`); }
-    }
-    values.push(query.limit);
-    // HNSW 인덱스는 ef_search(기본 40)까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면
-    // 올려야 하는데, 세션 전역 설정은 한도가 다른 동시 호출끼리 섞일 수 있다.
-    // 트랜잭션 안의 LOCAL 설정으로 묶어 이 호출에만 적용한다.
-    let result: any;
-    await this.run(client, 'BEGIN', []);
-    try {
-      await this.run(client, `SELECT set_config('hnsw.ef_search', $1, true)`, [String(query.limit)]);
-      result = await this.run(client,
-        `SELECT revision_digest, document_id, context_id, scope_id, usage_scope,
-                1 - (embedding <=> $1::vector) AS score
-           FROM ${this.table} WHERE ${clauses.join(' AND ')}
-          ORDER BY embedding <=> $1::vector LIMIT $${values.length}`, values);
-      await this.run(client, 'COMMIT', []);
-    } catch (error) {
-      try { await client.query('ROLLBACK'); }
-      catch (rollbackError) { (error as any).rollback = rollbackError; }
-      throw error;
-    }
-    return result.rows.map((row: any) => ({ revision_digest: row.revision_digest, document_id: row.document_id,
-      context_id: row.context_id, scope_id: row.scope_id, usage_scope: row.usage_scope, score: Number(row.score) }));
+      const client = await this.connect();
+      const clauses = ['index_version = $2'];
+      const values: unknown[] = [literal, this.indexVersion];
+      for (const [field, column] of [['context_id', 'context_id'], ['scope_id', 'scope_id'], ['usage_scope', 'usage_scope']] as const) {
+        const value = query[field];
+        if (value !== undefined) { values.push(value); clauses.push(`${column} = $${values.length}`); }
+      }
+      values.push(query.limit);
+      // HNSW 인덱스는 ef_search(기본 40)까지만 후보를 훑는다 — 요청 한도까지 돌려받으려면
+      // 올려야 하는데, 세션 전역 설정은 한도가 다른 동시 호출끼리 섞일 수 있다.
+      // 트랜잭션 안의 LOCAL 설정으로 묶어 이 호출에만 적용한다.
+      let result: any;
+      await this.run(client, 'BEGIN', []);
+      try {
+        await this.run(client, `SELECT set_config('hnsw.ef_search', $1, true)`, [String(query.limit)]);
+        result = await this.run(client,
+          `SELECT revision_digest, document_id, context_id, scope_id, usage_scope,
+                  1 - (embedding <=> $1::vector) AS score
+             FROM ${this.table} WHERE ${clauses.join(' AND ')}
+            ORDER BY embedding <=> $1::vector LIMIT $${values.length}`, values);
+        await this.run(client, 'COMMIT', []);
+      } catch (error) {
+        try { await client.query('ROLLBACK'); }
+        catch (rollbackError) { (error as any).rollback = rollbackError; }
+        throw error;
+      }
+      return result.rows.map((row: any) => ({ revision_digest: row.revision_digest, document_id: row.document_id,
+        context_id: row.context_id, scope_id: row.scope_id, usage_scope: row.usage_scope, score: Number(row.score) }));
     });
   }
 
@@ -198,30 +198,30 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
     const literal = `[${entry.embedding.join(',')}]`;
     return this.exclusive(async () => {
-    const client = await this.connect();
-    await this.run(client,
-      `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
-       VALUES ($1,$2,$3,$4,$5,$6::vector,$7)
-       ON CONFLICT (revision_digest, index_version) DO UPDATE SET
-         document_id = EXCLUDED.document_id, context_id = EXCLUDED.context_id, scope_id = EXCLUDED.scope_id,
-         usage_scope = EXCLUDED.usage_scope, embedding = EXCLUDED.embedding`,
-      [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, literal, this.indexVersion]);
+      const client = await this.connect();
+      await this.run(client,
+        `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version)
+         VALUES ($1,$2,$3,$4,$5,$6::vector,$7)
+         ON CONFLICT (revision_digest, index_version) DO UPDATE SET
+           document_id = EXCLUDED.document_id, context_id = EXCLUDED.context_id, scope_id = EXCLUDED.scope_id,
+           usage_scope = EXCLUDED.usage_scope, embedding = EXCLUDED.embedding`,
+        [entry.revision_digest, entry.document_id, entry.context_id, entry.scope_id, entry.usage_scope, literal, this.indexVersion]);
     });
   }
 
   /** 이 색인 버전에서 한 다이제스트의 행을 지운다. */
   async remove(revisionDigest: string): Promise<void> {
     return this.exclusive(async () => {
-    const client = await this.connect();
-    await this.run(client, `DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
+      const client = await this.connect();
+      await this.run(client, `DELETE FROM ${this.table} WHERE revision_digest = $1 AND index_version = $2`, [revisionDigest, this.indexVersion]);
     });
   }
 
   /** 이 색인 버전의 모든 행을 지운다 — 재구축 경로는 검증된 상태에서 다시 채운다. */
   async clear(): Promise<void> {
     return this.exclusive(async () => {
-    const client = await this.connect();
-    await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
+      const client = await this.connect();
+      await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
     });
   }
 
@@ -232,6 +232,9 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
    */
   async replaceAll(entries: readonly VectorIndexEntry[]): Promise<void> {
     for (const entry of entries) if (!isFiniteEmbedding(entry.embedding)) throw new TypeError('Vector index entry embedding is invalid');
+    // LocalVectorIndex와 같은 마지막-wins 의미 — 같은 다이제스트의 중복 행이
+    // 다중행 INSERT에서 23505로 전체를 거절하지 않게 먼저 병합한다.
+    const deduped = [...new Map(entries.map(entry => [entry.revision_digest, entry])).values()];
     const pg = await this.loadPg();
     const client = new pg.Client(this.connection);
     // 전용 연결의 error 이벤트를 삼키지 않으면 프로세스가 죽는다 — 실패는 아래 await에서 잡힌다.
@@ -243,8 +246,8 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
       await this.run(client, `DELETE FROM ${this.table} WHERE index_version = $1`, [this.indexVersion]);
       // 행 단위 왕복을 피해 200행씩 다중행 INSERT로 묶는다 — 대규모 원장의
       // 재구축 트랜잭션과 트랜잭션을 여는 HTTP 요청이 지나치게 길어지지 않게 한다.
-      for (let start = 0; start < entries.length; start += 200) {
-        const batch = entries.slice(start, start + 200);
+      for (let start = 0; start < deduped.length; start += 200) {
+        const batch = deduped.slice(start, start + 200);
         const placeholders = batch.map((_, row) => `($${row * 7 + 1},$${row * 7 + 2},$${row * 7 + 3},$${row * 7 + 4},$${row * 7 + 5},$${row * 7 + 6}::vector,$${row * 7 + 7})`).join(',');
         await this.run(client,
           `INSERT INTO ${this.table} (revision_digest, document_id, context_id, scope_id, usage_scope, embedding, index_version) VALUES ${placeholders}`,
@@ -261,13 +264,15 @@ export class PgVectorIndex implements VectorCandidateIndex, VectorIndexWriter {
     }
   }
 
-  /** 큐 작업을 드레인한 뒤 공유 클라이언트를 닫고 이후 호출이 재연결하게 둔다. */
+  /** 큐 작업을 드레인한 뒤 공유 클라이언트를 닫는다 — 이후 호출은 재연결한다. */
   async close(): Promise<void> {
-    // 진행 중인 큐 작업이 끝날 때까지 기다린다 — 닫힌 클라이언트 위의 문장 실행을 막는다.
-    await this.queue;
-    const opening = this.opening;
-    this.opening = undefined;
-    // 거부된 연결 시도는 닫을 대상이 없다 — 삼키지 않고 결과만 무시한다.
-    await opening?.then(client => client.end(), () => undefined);
+    // 드레인과 해제를 한 큐 슬롯에서 처리한다 — 사이에 들어온 연산이
+    // 곧 닫힐 클라이언트를 받는 경합을 막는다.
+    await this.exclusive(async () => {
+      const opening = this.opening;
+      this.opening = undefined;
+      // 거부된 연결 시도는 닫을 대상이 없다 — 삼키지 않고 결과만 무시한다.
+      await opening?.then(client => client.end(), () => undefined);
+    });
   }
 }

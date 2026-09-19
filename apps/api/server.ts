@@ -47,7 +47,7 @@ export interface AppOptions {
   dataDir: string; definition: ApplicationDefinition; ledger?: ApplicationLedger; personas?: Persona[];
   authentication?: ApplicationAuthentication; organization?: RuntimeScopeOrganization;
   binding?: ConfiguredRuntimeBinding; publicOrigin?: string;
-  /** Ownership transfers to the app — createApp closes it on shutdown and on initialization failure. */
+  /** 소유권은 앱으로 넘어간다 — createApp이 종료와 초기화 실패 시 색인을 닫는다. */
   vectorIndex?: VectorCandidateIndex;
   /**
    * 외부 색인과 같은 임베딩 공간의 질의 임베더 — 같은 입력에 같은 출력을
