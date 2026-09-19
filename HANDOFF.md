@@ -20,7 +20,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
   문서 커밋 포함 최신 상태는 `git log -1 --oneline`과 `git status --short`로 확인한다.
-- main HEAD `f3fd4a2` — **PR #6 조직 signing gateway 머지 완료(rebase, 27커밋)**.
+- `f3fd4a2` — **PR #6 조직 signing gateway 머지 완료(rebase, 27커밋)**.
   원격 서명 서비스(Unix 소켓·조직 바인딩 키·attestation 영수증·JSONL 감사 로그)와
   게이트웨이 측 소비형 attestation 슬롯·직렬화·builder 출력 검증을 도입했다.
   20라운드 독립 리뷰(claude·codex·grok·agy)의 유효 findings를 모두 해소했고,
@@ -119,6 +119,16 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
+
+2026-09-20 Track C(PR #13, squash `4aad9ea`) 머지 시점 검증 근거:
+
+- `npm run check`: **489 tests / 488 passed / 0 failed / 1 GC 전용 skipped**. `npm run check:types` 통과.
+- 집중 테스트: `test/connectors/git-repository.test.ts`·`test/measurement/adoption.test.ts` 전부 통과.
+- 드릴 재검증: `tools/backup-rehearsal.ts` `rehearsal_pass: true`, `tools/multi-host-drill.ts` `drill_pass: true`.
+- `tools/adoption-metrics.ts` e2e: 시드 저널+예제 관찰 로그로 `--out` 아티팩트(mode 0600)·측정 필드 확인.
+- `python3 -B tools/check_docs.py` 오류 없음(markdown 80·링크 373·mermaid 11).
+- PR #13 원격 CI 전 통과(head `d5ec1c8`): local-runtime Node24·26, fabric-boundaries, browser-and-experiments.
+- 리뷰 루프 총 22라운드(codex×2 — claude 주간 쿼터 소진 기간)로 수렴, 최종 라운드 APPROVE×2·빈 findings.
 
 2026-09-18 성능 도구 개선 — 리뷰·보완 후 재검증 근거(`feature/perf-baseline-compare` 브랜치):
 
@@ -294,7 +304,8 @@ python3 -B tools/check_docs.py
 1. 공개 준비·게시·첫 릴리스 `v0.1.0` 완료. 이후 원격 CI는 push/PR마다 자동 실행된다.
 2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
    런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
-3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress, SaaS connector·벡터 검색·파일럿.
+3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress 연동과 실제 파일럿 실행.
+   벡터 검색 read model(PR #8)·Git 소스 커넥터·채택 측정(PR #13) 코드는 main 반영 완료.
    운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
    알려진 잔여 한계(차단 아님, [검증 기록](docs/VALIDATION.md) 참조): 상주 대형 캐시 항목은
