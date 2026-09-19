@@ -58,10 +58,10 @@ export function assertOptionalCloseBound(value: number | undefined, name: string
 /**
  * close가 deadlineMs + settleMs를 넘기지 않게 감시한다 — deadlineMs까지는 진행 중 요청이
  * 끝나길 기다리고, 그 뒤에는 잔여 연결을 강제 해제하며, 추적이 끊긴 소켓으로 close 콜백이
- * 오지 않는 최악에는 deadlineMs + settleMs에 'abandoned'로 돌아온다. 마감·정착 타이머는
- * finish 경로에서 정리하고(개수 포착의 짧은 상한 타이머는 스스로 해제된다), settle 후
- * 도착한 close 오류는 버리지 않고 진단으로 남긴다. 포착·조회 진단 대기는 두 경로를 합쳐
- * 최대 REMAINING_LOOKUP_MS만 더한다.
+ * 오지 않는 최악에는 deadlineMs + settleMs에 'abandoned'로 돌아온다. 마감·정착 타이머와
+ * 진행 중인 진단 대기의 상한 타이머는 finish 경로에서 정리하고(경주 종료 시 각자도 해제된다),
+ * settle 후 도착한 close 오류는 버리지 않고 진단으로 남긴다. 포착·조회 진단 대기는 두 경로를
+ * 합쳐 최대 REMAINING_LOOKUP_MS만 더한다.
  */
 function waitForServerClose(server: Server, deadlineMs: number, settleMs: number, label: string, onSweepFailure: (error: unknown) => void): Promise<CloseWaitResult> {
   return new Promise<CloseWaitResult>((resolve, reject) => {
@@ -75,6 +75,10 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     let closeError: Error | null = null;
     let forceTimer: NodeJS.Timeout;
     let abandonTimer: NodeJS.Timeout;
+    // 진단 대기(boundedWait·잔여 조회)가 만드는 상한 타이머들 — 경주 패자의 타이머가 settle 뒤에도
+    // ref 상태로 남아 이벤트 루프를 붙잡지 않게 finish가 함께 해제한다. 발화·해제된 타이머를 다시
+    // clear하는 것은 무해하다.
+    const diagnosticTimers = new Set<NodeJS.Timeout>();
     // 모든 settle 경로가 거치는 단일 출구 — 중복 settle을 막고 두 타이머를 반드시 해제한다.
     // settle 안의 진단 출력이 던져도 귀결을 막지 못하게 한다 — 그대로 올라가면 isSettled만 선 채
     // 대기 promise가 영구 pending + 미처리 거절이 된다.
@@ -83,6 +87,8 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
       isSettled = true;
       clearTimeout(forceTimer);
       clearTimeout(abandonTimer);
+      for (const timer of diagnosticTimers) clearTimeout(timer);
+      diagnosticTimers.clear();
       try {
         settle();
       } catch (error) {
@@ -93,11 +99,18 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
     // 현재 소스(포착·타이머)는 거절하지 않지만 promise 계약상 거절될 수 있다 — 소비 측의 거절 귀결이
     // 미처리 거절을 막는 방어선이다.
     // 상한 타이머는 의도적으로 ref다 — abandon 상황(서버 핸들 소실)에서 진단 창 도중 프로세스가
-    // 종료되면 진단 출력과 호출자 측 finally 자원 해제가 건너뛰어진다. 경주 종료 시 .finally가 해제한다.
+    // 종료되면 진단 출력과 호출자 측 finally 자원 해제가 건너뛰어진다. 경주 종료 시 .finally가 해제하고
+    // finish도 레지스트리로 정리해 settle 뒤 패자 타이머가 이벤트 루프를 붙잡지 않게 한다.
     const boundedWait = (pending: Promise<void>, timeoutMs: number): Promise<void> => {
       let boundTimer: NodeJS.Timeout | undefined;
-      return Promise.race([pending, new Promise<void>(resolve => { boundTimer = setTimeout(resolve, timeoutMs); })])
-        .finally(() => clearTimeout(boundTimer));
+      return Promise.race([pending, new Promise<void>(resolve => {
+        boundTimer = setTimeout(resolve, timeoutMs);
+        diagnosticTimers.add(boundTimer);
+      })])
+        .finally(() => {
+          clearTimeout(boundTimer);
+          if (boundTimer) diagnosticTimers.delete(boundTimer);
+        });
     };
     // 마감 도달 시 잔여 연결을 끊는다 — 시점의 연결 수를 포착해 두는 이유는 close 콜백 도착 뒤에는 항상 0이라 진단이 빈 값이 되기 때문이다.
     // getConnections 콜백은 nextTick 이후 도착해 비클러스터 경로에서는 소켓 파괴 전 값을 읽는다 — 클러스터 primary의 IPC 왕복에서는 늦어질 수 있다.
@@ -125,7 +138,7 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
         void boundedWait(counting, Math.max(0, budgetEnd - performance.now()))
           // 다른 경로가 먼저 settle했거나 close 오류·마감 전 콜백이 이미 도착했으면 잔여 조회를 건너뛴다 —
           // 'forced' 귀결에서는 조회 결과를 버리므로 닫힌 서버에 조회를 걸지도, 귀결을 늦추지도 않게 한다.
-          .then(() => (isSettled || closeError || hasCloseArrived) ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now())))
+          .then(() => (isSettled || closeError || hasCloseArrived) ? UNKNOWN_CONNECTION_COUNT : connectionCountBounded(server, Math.max(0, budgetEnd - performance.now()), timer => diagnosticTimers.add(timer)))
           .then(
             remaining => finish(() => {
               // 마감 창 안에 도착한 close 오류는 '마감' 결과보다 우선한다 — 실제 close 실패를 성공으로 보고하지 않는다.
@@ -143,9 +156,10 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
               resolve({ outcome: 'abandoned', connections, remaining, lateClose: hasLateClose });
             }),
             // 조회 실패로 거절돼도 강제 해제는 이미 실행됐다 — 해제 사실을 진단으로 남겨 closeError 분기와 대칭을 맞춘다.
+            // 조회 사이 도착한 실제 close 오류가 있으면 그것을 우선한다 — 진단 조회의 실패가 원오류를 가리지 않게 한다.
             lookupError => finish(() => {
               reportForcedRelease(label, connections);
-              reject(lookupError);
+              reject(closeError ?? lookupError);
             }),
           );
       } catch (error) {
@@ -181,8 +195,9 @@ function waitForServerClose(server: Server, deadlineMs: number, settleMs: number
           finish(() => error ? reject(error) : resolve(isForced ? { outcome: 'forced', connections } : { outcome: 'closed' }));
         };
         // close 콜백이 개수 포착보다 먼저 도착할 수 있다 — 진단이 항상 '알 수 없음'이 되지 않게 유한하게 기다린다.
+        // 대기 거절 시에도 콜백이 실어 온 실제 close 오류를 우선한다 — 방어적 거절이 원오류를 가리지 않게 한다.
         if (isForced && pendingCount) {
-          void boundedWait(pendingCount, REMAINING_LOOKUP_MS).then(settleClose, waitError => finish(() => reject(waitError)));
+          void boundedWait(pendingCount, REMAINING_LOOKUP_MS).then(settleClose, waitError => finish(() => reject(closeError ?? waitError)));
         } else {
           settleClose();
         }
@@ -209,12 +224,15 @@ function connectionCount(server: Server): Promise<number> {
   });
 }
 
-/** 연결 수를 주어진 상한 안에 읽는다 — 클러스터 IPC 같은 느린 조회는 '알 수 없음'으로 강등해 진단 예산을 지킨다. */
-function connectionCountBounded(server: Server, timeoutMs: number): Promise<number> {
+/** 연결 수를 주어진 상한 안에 읽는다 — 클러스터 IPC 같은 느린 조회는 '알 수 없음'으로 강등해 진단 예산을 지킨다. 상한 타이머는 onTimer로 노출해 호출자가 귀결 시 함께 해제할 수 있게 한다. */
+function connectionCountBounded(server: Server, timeoutMs: number, onTimer?: (timer: NodeJS.Timeout) => void): Promise<number> {
   let lookupTimer: NodeJS.Timeout | undefined;
   return Promise.race([
     connectionCount(server),
-    new Promise<number>(resolve => { lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs); }),
+    new Promise<number>(resolve => {
+      lookupTimer = setTimeout(() => resolve(UNKNOWN_CONNECTION_COUNT), timeoutMs);
+      onTimer?.(lookupTimer);
+    }),
   ]).finally(() => clearTimeout(lookupTimer));
 }
 
