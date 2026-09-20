@@ -229,3 +229,17 @@ Fabric durable ingest는 `fork()`의 전체 상태 Map 복사를 `prepareBlock`�
 대기 중인 쓰기 객체와 분리한다. SQL 실패 시 준비 상태를 버리고 같은 블록을 재시도한다.
 일반 `applyBlock`은 준비와 커밋을 즉시 실행하고, 명시적 `fork()`의 독립 복사 계약은 유지한다.
 원장·snapshot 형식이나 프로토콜 전이에는 변경이 없다.
+
+### Fabric 파일럿의 오프라인 측정 — 2026-09-20
+
+측정을 위해 일반 `SqliteFabricProjection`을 기동하면 파생 테이블을 재구축하므로,
+별도의 읽기 전용 SQLite 연결과 한 읽기 트랜잭션으로 원시 블록만 순차 재생한다.
+durable replay와 측정은 `journal-verification.ts`의 바인딩/원시 블록 대조와 같은
+`FabricBlockProjector`를 사용한다. SQL transaction cache나 projection state를 지표의
+권위로 삼지 않으며, 로컬·Fabric 이벤트는 같은 스트리밍 집계기로 전달한다.
+
+schema1의 기존 지표 의미는 유지하고 Fabric 출력에만 배포 바인딩·전체 블록 tip·
+원시 저널 누적 digest를 담는 `source`와 정확한 VALID 거래 checkpoint를 추가한다.
+입력은 인증된 peer 경로에서 보존한 신뢰할 수 있는 스냅샷이라는 경계를 유지한다.
+오프라인 재생으로 MSP 서명이나 현재 네트워크 신선도를 증명한다고 주장하지 않는다.
+선택 의존성은 Fabric 모드에서만 로드하며 CLI는 키·네트워크를 열지 않는다.

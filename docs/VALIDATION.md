@@ -1,5 +1,46 @@
 # 검증 기록
 
+## Fabric 파일럿 측정 지원 — 2026-09-20
+
+`pilot:metrics --mode fabric`에 명시적 channel/chaincode/version/public genesis
+바인딩과 읽기 전용 projection 재생 경로를 추가했다. durable replay와 같은 원시 블록
+검증기·projector로 블록0부터 전체를 검증하고 VALID 거래만 스트리밍 집계한다.
+한 SQLite 읽기 트랜잭션에서 바인딩·원시 블록·말단 cursor를 확인하며 파생 테이블을
+읽어 지표를 만들거나 재구축하지 않는다. 로컬 출력 schema1·CLI 기본 경로는 유지했다.
+
+- Node24.18.0 `npm run check`: **504 tests / 503 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo` 통과.
+- 신규 Fabric 집중10개: block0·동일 블록 다중 거래·INVALID 제외·빈/INVALID 말단,
+  파생 테이블 변조 무시와 입력 DB 보존, 바인딩/원시 바이트/hash/filter/cursor/잘린
+  저널 거부, 동시 append와 읽기 스냅샷 격리, 1,002블록 재생, genesis 포함 출력
+  충돌 거부, 잘못된 입력에서 부분 결과·본문 노출 없음.
+- validation metadata만 일관되게 바꾸면 헤더 해시는 같아도 원시 저널 digest가
+  달라지는 것을 검사했다. 이 검사는 오프라인 입력 식별 범위이며 서명 인증 증명이 아니다.
+- Fabric 선택 의존성이 없는 별도 소스 사본에서 로컬 측정11개 통과.
+  새 Fabric 테스트는 기존 CI `fabric-boundaries`의 `test/fabric/*.test.ts`에 포함된다.
+
+### 기존 실제 Fabric 스냅샷 사본 측정
+
+이전 통과한 configured smoke의 정지 상태 스냅샷
+`.data/configured-smoke-XaPSPf/snapshot/fabric-projection.sqlite`를 새 아티팩트
+디렉터리에 복사했다. 관찰은 빈 가상 로그, public genesis는 같은 예제 배포 설정이다.
+앱·signer·키·실행 중인 네트워크에는 접근하지 않았으며 원본과 측정 사본의 DB
+SHA-256이 전후 모두 동일함을 확인했다.
+
+- 전체 **331블록(block0–330)**, **VALID332건 / INVALID2건**.
+- 합의 시간 표본30개, 제안30개·승인31개·철회/중지 전이27개·공유 개정45개.
+  의존성 참조 개정1개, 참조3개를 집계했다. 실제 조직의 도입 효과 측정값은 아니다.
+- source tip: block330,
+  `ae6930bf28efae422578b8558f7bb0b29ebdc3bdf5742caa7e91048b01ddc971`.
+- 원시 저널 digest:
+  `f043abe0d53f9de671f63f69d8a55d891e8be5053a6ceb00ba92ef5c87030571`.
+- 근거: Git 제외 `.artifacts/fabric-pilot-20260920/`의 `measurement.json`,
+  `snapshot-input.json`, `check.log`, `types.log`, `demo.log`, `no-optional.log`.
+
+새 peer 조회나 MSP/endorsement 서명·최신 tip 인증은 수행하지 않는다. 획득 경로가
+신뢰된 저장 블록의 재측정이며, 실제 파일럿·독립 호스트 시험은 여전히 별도다.
+이번 변경은 로컬 검증까지 완료했으며 새 PR·원격 CI·릴리스는 실행하지 않았다.
+
 ## v0.3.0 릴리스 — 실제 Fabric 재검증 — 2026-09-20
 
 [PR #14](https://github.com/ictechgy/knowledger/pull/14)를 merge commit `bdb55fb`로

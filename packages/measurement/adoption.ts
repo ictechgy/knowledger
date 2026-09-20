@@ -1,5 +1,5 @@
 import { KEY_PREFIXES } from '../domain/index.ts';
-import type { LedgerEvent } from '../storage/local-ledger.ts';
+import type { Checkpoint, LedgerEvent } from '../storage/local-ledger.ts';
 
 export const ADOPTION_MEASUREMENT_SCHEMA = 1;
 const MAX_OBSERVATIONS = 1000;
@@ -38,6 +38,16 @@ export interface AdoptionMeasurement {
   window: {
     event_count: number; first_event_at?: string; last_event_at?: string;
     channel_id?: string; first_sequence?: number; last_sequence?: number; tip_hash?: string;
+    /** Exact VALID transaction bounds in Fabric mode; the full journal tip is source.checkpoint. */
+    first_checkpoint?: Checkpoint; last_checkpoint?: Checkpoint;
+  };
+  /** Present only for offline Fabric projection measurements; this is not live peer authentication. */
+  source?: {
+    kind: 'fabric-projection'; verification: 'offline-full-block-replay';
+    channel_id: string; chaincode_name: string; chaincode_version: string; genesis_digest: string;
+    block_count: number; valid_transaction_count: number; invalid_transaction_count: number;
+    journal_digest: string;
+    checkpoint: { channel_id: string; block_number: number; block_hash: string; data_hash: string };
   };
   // evidence는 집계에 쓴 관찰 입력의 신원이다 — 같은 건수라도 다른 로그면 구별된다.
   evidence?: { observations_sha256?: string; observations_bytes?: number };
@@ -121,13 +131,16 @@ function median(sorted: number[]): number | undefined {
  * 사람 관찰분(해석 혼합·공개 부담)은 관찰 로그의 건수만 집계한다.
  * 이 결과는 한 파일럿의 측정 기록이며 일반화된 운영 지표나 SLA가 아니다.
  * 주의: 저널 이벤트에는 파일럿 식별자가 없어 전달된 범위 전체를 이 파일럿의 기록으로
- * 집계한다 — 파일럿 전용 채널이나 기간이 제한된 저널을 준비하는 것이 계약이며,
+ * 집계한다 — 파일럿 전용으로 처음부터 기록한 저널을 준비하는 것이 계약이며,
  * 결과의 window 필드가 실제 집계 범위를 보고한다.
  */
-export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObservationLog; channel_id?: string; evidence?: AdoptionMeasurement['evidence'] }): AdoptionMeasurement {
+export function measureAdoption(input: { events: Iterable<LedgerEvent>; log: PilotObservationLog; channel_id?: string; evidence?: AdoptionMeasurement['evidence'] }): AdoptionMeasurement {
   const log = validateObservationLog(input?.log);
   const events = input?.events;
-  if (!Array.isArray(events)) throw new AdoptionInputError();
+  if (!events || typeof events[Symbol.iterator] !== 'function') throw new AdoptionInputError();
+  let first: LedgerEvent | undefined;
+  let last: LedgerEvent | undefined;
+  let eventCount = 0;
   const proposals = new Map<string, any>();
   const timings: AgreementTiming[] = [];
   const agreementsSeen = new Set<string>();
@@ -140,6 +153,9 @@ export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObserv
   let decisions = 0, approvals = 0, objections = 0, retractions = 0, withdrawals = 0;
   for (const event of events) {
     if (!event || typeof event !== 'object' || !Array.isArray(event.writes)) throw new AdoptionInputError();
+    first ??= event;
+    last = event;
+    eventCount += 1;
     for (const write of event.writes) {
       const { key, value } = recordOf(write as [string, unknown]);
       if (key.startsWith(`${KEY_PREFIXES.proposal}:`) && value.record_type === 'AgreementProposal' && typeof value.proposal_id === 'string' && !proposals.has(value.proposal_id)) {
@@ -192,19 +208,19 @@ export function measureAdoption(input: { events: LedgerEvent[]; log: PilotObserv
     else observed.disclosure_burden_notes += 1;
   }
   // 채널은 이벤트 유무와 무관하게 남긴다 — 빈 측정도 어떤 채널의 것인지 구별된다.
-  const channelId = input.channel_id ?? events[0]?.checkpoint?.channel_id;
+  const channelId = input.channel_id ?? first?.checkpoint?.channel_id;
   return {
     schema_version: ADOPTION_MEASUREMENT_SCHEMA,
     pilot: { pilot_id: log.pilot_id, concept: log.concept, workflow: log.workflow },
     window: {
-      event_count: events.length,
+      event_count: eventCount,
       ...(channelId !== undefined ? { channel_id: channelId } : {}),
-      ...(events.length ? {
-        first_event_at: events[0].timestamp, last_event_at: events[events.length - 1].timestamp,
+      ...(first && last ? {
+        first_event_at: first.timestamp, last_event_at: last.timestamp,
         // 검증된 저널 범위의 신원 — 시퀀스 경계와 말단 블록 해시를 그대로 보고한다.
-        first_sequence: events[0].checkpoint?.block_number,
-        last_sequence: events[events.length - 1].checkpoint?.block_number,
-        tip_hash: events[events.length - 1].checkpoint?.block_hash,
+        first_sequence: first.checkpoint?.block_number,
+        last_sequence: last.checkpoint?.block_number,
+        tip_hash: last.checkpoint?.block_hash,
       } : {}),
     },
     ...(input.evidence ? { evidence: input.evidence } : {}),

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Fabric adoption measurement: `pilot:metrics --mode fabric` reads a stopped
+  projection in one read-only SQLite snapshot, replays the raw full blocks
+  through the shared verifier, and aggregates only transactions marked VALID.
+  Explicit channel, chaincode/version and public genesis bindings are required.
+  Output includes exact VALID transaction bounds, the full block tip and a
+  raw-journal digest; derived SQL rows never supply measurement events. This is
+  offline replay of a caller-trusted projection, not live peer authentication.
+  Local mode and its schema-version-1 result remain compatible and do not
+  require optional Fabric dependencies. Both modes stream events into the
+  shared metric aggregator.
+
 ## [0.3.0] — 2026-09-20
 
 ### Added
