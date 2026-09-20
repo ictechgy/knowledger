@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (운영 보강 완료·v0.9.0 게시 후보 검증)_
+_Last updated: 2026-09-20 KST (운영 보강·v0.9.0 게시 완료)_
 
 ## Goal
 
@@ -14,6 +14,19 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **1번 게시·2번 운영 보강 완료 — [v0.9.0](https://github.com/ictechgy/knowledger/releases/tag/v0.9.0)**:
+  [PR #20](https://github.com/ictechgy/knowledger/pull/20), 후보 `f3c9df5`의 push/PR CI8개 통과
+  뒤 동일 tree인 merge `889c7cf7b16e521647428b9fdf6d7939e565510d`에 annotated tag·Latest
+  릴리스를 게시했다. 원격 태그 commit·본문·공개/Latest 상태를 readback해 일치했다.
+  [CI](https://github.com/ictechgy/knowledger/actions/runs/35517455679)는 Node24/26,
+  Fabric/auth 경계·Chromium38개·성능·백업/복구 검사를 포함한다. 현재 branch는 `main`,
+  제품 버전0.9.0, 배포 chaincode0.1.0과 의존성 graph는 유지했다.
+  임베딩·Confluence·Slack adapter와 OAuth 갱신/정기 수집·Slack 본인 확인/재처리까지
+  공개됐다. 실계정·최초 OAuth 동의·보호된 grant backend·반출 정책·실자료 검색 품질·
+  실제 조직/호스트 파일럿은 별도 입력/검증 과제다. 실제 공급자 키 조회·전송은 하지 않았다.
+  근거 `.artifacts/integration-operations-20260920/`의 `pr-ci.json`, `browser-ci.log`,
+  `published-release.json`, `remote-tag.txt`. 기존 Fabric·키·genesis는 그대로다.
+
 - **사용자 요청: 1번 게시·2번 운영 보강까지 승인**. 실제 계정 연결·실데이터 전송은
   범위 밖이다. `feature/pilot-integrations`에서 회전 OAuth 갱신(CAS secret backend 계약),
   Confluence 정기 수집(영속 간격/lease·현재 owner 인가·종료 취소), Slack 본인 확인/종료/
@@ -24,7 +37,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   작업용 캐시에 잠긴 버전을 설치한 뒤 **38개 모두 통과**했다.
   근거 `.artifacts/integration-operations-20260920/`. `docs/37`, `docs/38`에 운영 계약과
   schema/복원 경계를 갱신했다. 실제 공급자 요청·키 조회·메시지는 없고 fake fetch만 사용했다.
-  다음 단계: 커밋/PR → 원격 CI → 머지/태그/릴리스/readback.
+  이후 위 PR #20·CI8개·태그/릴리스/readback까지 완료했다.
 
 - **선정한 adapter3종 구현·로컬 검증 완료**: 현재 branch `feature/pilot-integrations`.
   임베딩 `bdd5a67`, Confluence `5495774`에 이어 선택형 Slack 개인 DM 기한 알림을 구현했다.
@@ -592,22 +605,24 @@ python3 -B tools/check_docs.py
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 최신 게시 릴리스는 v0.8.0(PR #19,
-merge 21780da), main/origin main 기준은78d5049다. 현재 로컬 branch는
-`feature/pilot-integrations`이며 제품 버전0.8.0, 배포 chaincode0.1.0을 유지한다.
-공개 공식 문서 조회 승인을 받아 c696b20에서 Confluence Cloud·Slack Bot DM·OpenAI
-text-embedding-3-small/1536을 첫 구현 조합으로 권고 선정했다. 임베딩 전송 정책과
-OpenAI adapter(bdd5a67), Confluence private source(5495774), Slack 최소 기한 알림까지
-구현·로컬 검증했다. 상세는 docs/35–38, 최신 커밋은 git log로 확인해.
-598개 중597 통과·1 GC 생략, 타입·Chromium35개·합의/peer 전달 demo 통과.
-근거는 .artifacts/slack-notifications-20260920/와 앞선 embedding-egress/confluence 디렉터리다.
-신규 코드는 아직 원격 미게시다. 별도 명시적 게시 요청 없이 push/PR/릴리스를 진행하지 마.
-실제 SaaS/token/model 호출·메시지 발송은 하지 않았다. fake fetch와 임시 앱으로 검증했다.
-Confluence token lifecycle/scheduler는 caller 소유, Slack unknown은 자동 재발송 없이 보류하며
-이력 확인/운영자 조정 UI는 미구현이다. 공급자 접수는 peer receipt·열람·승인이 아니다.
-실계정/조직/호스트/반출 정책 입력, 실제 연결·한국어 검색 평가·독립 호스트 시험은 남았다.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스는 v0.9.0이다.
+사용자가 1번 게시·2번 운영 보강을 승인해 PR #20을 머지하고 같은 merge
+889c7cf7b16e521647428b9fdf6d7939e565510d에 태그/Latest 릴리스를 게시했다.
+후보 f3c9df5의 원격 push/PR CI8개 성공, 머지 tree 일치, 태그/본문/공개 상태 readback을
+확인했다. 현재 main, 제품0.9.0이며 배포 chaincode0.1.0과 의존성 graph는 바꾸지 않았다.
+임베딩 전송 정책/OpenAI adapter, Confluence private source, Slack 최소 기한 DM,
+OAuth rotating token refresh(CAS secret backend 계약), 영속 수집 scheduler,
+Slack 본인 수신 확인·종료·중복 위험 확인 후 재시도 API/UI를 구현·게시했다.
+상세는 docs/35–38. 로컬618개 중617 통과·1 GC 생략, 타입·Chromium38개,
+합의/KB/peer 전달 demo·백업/별도 프로세스 복구 드릴 통과. 원격 CI도 통과했다.
+근거는 .artifacts/integration-operations-20260920/. 실제 provider 호출은 fake fetch뿐이다.
+남은 것은 실제 조직/계정/호스트/반출 정책과 최초 OAuth 동의·secret backend 배포,
+한국어 검색 품질 평가·실제 파일럿·독립 물리 호스트 시험이다. 실제 키/토큰을 채팅이나
+Git에 넣지 말고, 승인된 배포 환경 참조로 연결해. 현재는 실계정 연결/전송 승인이 없다.
+Slack user_confirmed는 본인 보고이고 provider receipt/열람/승인 증명이 아니다.
+unknown은 자동 재발송하지 않으며 현재 수신자가 UI에서 명시적으로 재시도할 수 있다.
+OAuth refreshing이 남으면 옛 refresh token을 재사용하지 말고 최초 동의를 다시 연결해.
 거버넌스 변경은 docs/32의 설계 단계다. 다음 수동 테스트 인증서 점검은2027-01-01 KST다.
-기존 Fabric은 마지막 검증에서 세 peer block399(height400), 시험 합의 철회 완료였다.
+기존 Fabric은 마지막 실제 검증에서 세 peer block399(height400), 시험 합의 철회 완료였다.
 완료된 fixture에 fresh fabric:smoke를 실행하지 마. 기존 데이터·키·genesis·.serena·
-scorpionfish를 보존하고 kcl persisted contracts와 fixture 이름을 바꾸지 마.
-실제로 실행하지 않은 외부 연결·Fabric VALID·장애 시험을 완료로 표시하지 마.
+scorpionfish와 kcl persisted contracts를 보존해. 새 릴리스는 새 게시 요청 뒤 진행해.

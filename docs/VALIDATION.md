@@ -1,5 +1,22 @@
 # 검증 기록
 
+## v0.9.0 게시 — 2026-09-20
+
+[PR #20](https://github.com/ictechgy/knowledger/pull/20), 후보 `f3c9df5`의 push/PR CI8개 성공을
+확인했다. merge `889c7cf7b16e521647428b9fdf6d7939e565510d`의 tree가 후보와 같음을 대조한 뒤
+동일 commit에 annotated tag와 [v0.9.0 Latest](https://github.com/ictechgy/knowledger/releases/tag/v0.9.0)를
+게시했다. 원격 태그 대상·릴리스 본문·draft=false·prerelease=false·Latest 상태 readback 일치.
+[원격 CI](https://github.com/ictechgy/knowledger/actions/runs/35517455679)는 Node24/26,
+Fabric/auth 경계, Chromium38개, 성능·이력/복구·백업·별도 프로세스 드릴을 통과했다.
+로컬618개 중617 통과·1 GC 생략, 타입과 합의/KB/peer 전달 demo 근거도 아래 보존했다.
+
+제품 버전0.9.0과6개 manifest/lockfile의 루트 버전을 대조했고 dependency graph와
+배포 chaincode0.1.0은 유지했다. provider 요청은 fake fetch이며 실계정/실키·실제 공급자
+전송/검색 품질 검증은 아니다. Fabric commit/signing/OIDC 프로토콜 변경은 없고 기존
+network fixture를 재실행하지 않았다. 이전 실제 Fabric block399/height400 근거와 구분한다.
+게시 근거는 `.artifacts/integration-operations-20260920/`의 `pr-ci.json`, `browser-ci.log`,
+`published-release.json`, `remote-tag.txt`다.
+
 ## 통합 운영 보강·v0.9.0 후보 — 2026-09-20
 
 사용자가 원격 게시와 운영 보강을 승인했다. OAuth 회전 토큰 갱신과 Confluence 정기 수집,

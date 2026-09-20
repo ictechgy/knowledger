@@ -22,7 +22,8 @@ verified, or still planned. Items are grouped by track, not by promised date.
   [`v0.5.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0) (2026-09-20),
   [`v0.6.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0) (2026-09-20),
   [`v0.7.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0) (2026-09-20),
-  [`v0.8.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0) (2026-09-20)
+  [`v0.8.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0) (2026-09-20),
+  [`v0.9.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.9.0) (2026-09-20)
 
 ## Track A — Protocol completeness
 
@@ -35,7 +36,7 @@ HTTPS/HMAC transport with a two-app simulation.
 [Local automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) shipped in v0.8.0:
 current-recipient notices, durable deduplication, stale-schedule suppression and
 visible-tab refresh.
-The v0.9.0 release candidate adds guarded embeddings, Confluence private collection
+Released in v0.9.0: guarded embeddings, Confluence private collection
 with OAuth refresh/scheduling, and minimal Slack DMs with recipient resolution.
 Live peer deployment and customer tenant/model/data-egress configuration remain open.
 The [first integration recommendation](docs/35-PILOT-INTEGRATION-SELECTION.md)
