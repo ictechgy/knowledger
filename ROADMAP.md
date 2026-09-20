@@ -29,7 +29,7 @@ application-local comments/mentions, deadlines, recurring reviews, notifications
 reverse dependencies, starter templates, sync preview/retries and retrieval evaluation.
 The subsequent working branch implements [selected comment delivery](docs/33-REVIEW-DELIVERY.md):
 explicit recipient confirmation, durable leased retries, a recipient-only inbox and
-HTTPS/HMAC transport with a two-app simulation. This addition is unreleased.
+HTTPS/HMAC transport with a two-app simulation. This forms the v0.7.0 release candidate.
 Live peer deployment, vendor notifications and automatic deadline reminders,
 a selected customer KB connector and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate

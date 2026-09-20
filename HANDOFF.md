@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (선택적 댓글 전달·재시도 큐·가상 연동 구현/검증 완료 — 미게시)_
+_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0 게시 준비 — 이후 자동 리마인더 진행 승인)_
 
 ## Goal
 
@@ -13,6 +13,11 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
+
+- **후속 일괄 진행 승인**: 댓글 전달을 v0.7.0으로 게시한 뒤 앱 내부 자동 기한 리마인더를
+  구현·검증한다. 외부 알림 제품과 실제 조직 연결 입력은 아직 미정이다. GitHub 게시 및
+  기존 Fabric의 HTTP/configured 연속 검증을 진행하며 새 네트워크를 초기화하지 않는다.
+  릴리스 metadata는0.7.0 후보이며, 아직 게시 완료로 표시하지 않는다.
 
 - **댓글 전달 구현·로컬 검증 완료**: 현재 branch는 `feature/review-delivery`다.
   작성자가 확인한 본인 댓글을 구성된 사람 수신자에게 보내는 API/UI, 영속 outbox/inbox,
