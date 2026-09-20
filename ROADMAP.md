@@ -68,6 +68,10 @@ Design contracts in `docs/` and their implementation status:
     burden; a plan/results template and empty observation log are available
     ([pilot guide](docs/28-ADOPTION-PILOT.md)). Running an actual pilot still
     requires participating organizations, a deployment and human reviewers.
+    Draft dependency authoring now supports selecting, editing and removing
+    pinned shared-revision references in the API and browser. The
+    [deployment preparation guide](docs/30-PILOT-DEPLOYMENT.md) lists the real
+    environment inputs and evidence needed for the remaining integration work.
 
 ## Track D — Project operations
 

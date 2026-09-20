@@ -1,6 +1,6 @@
 # 06. API 계약
 
-이 문서는 런타임 API의 설계 계약이다. 서버/OpenAPI 실행 구현은 없다. JSON payload의 기본 구조는 [schemas](../schemas/)에 두며 endpoint별 서명·현재 정책·transaction 검증은 런타임 책임이다.
+이 문서는 API의 설계 계약이다. 구현된 개발 알파의 지원 범위는 [실행 가이드](11-RUNTIME.md)에 구분한다. JSON payload의 기본 구조는 [schemas](../schemas/)에 두며 endpoint별 서명·현재 정책·transaction 검증은 런타임 책임이다.
 
 ## 공통 규약
 
@@ -29,6 +29,10 @@
 | `POST /fences` | epoch 확인 transaction | 무작위 nonce, query/문서 목록 제외 |
 
 `retract`는 `retracts_decision_id`로 자신의 이전 decision ID를 정확히 지정한다. 활성 합의의 필수 승인을 철회하면 사용 eligibility도 바뀐다. 철회한 객체의 bytes를 삭제하지 않는다.
+
+개발 알파의 draft 생성·수정·Markdown 가져오기는 [공유 개정 참조](15-PRIVATE-DRAFTS.md)를
+선택할 수 있다. 호출자는 digest·관계·사용 조건을 보내고 서버가 canonical 개정에서 전체
+slot을 채운다. 새 참조는 새 revision digest에 결속되며 지식 사용 판정과 사람 승인은 별도다.
 
 ## 질의와 RAG
 

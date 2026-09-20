@@ -1,5 +1,74 @@
 # 검증 기록
 
+## 의존관계 작성 API·UI와 도입 준비 — 2026-09-20
+
+구현 `9b0148c`는 새 초안·수정·Markdown 가져오기에 shared revision selector를 받고,
+서버가 canonical 개정에서 전체 slot을 채운다. 브라우저에서 고정 개정 검색·추가·관계/
+사용 조건 변경·제거와 미리보기 검토를 지원한다. 참조를 생략한 기존 요청은 유지되고
+명시적 빈 배열은 제거다. 활성화·승인·withdrawal의 공통 domain 규칙은 바꾸지 않았다.
+
+- Node24.18.0 `npm run check`: **510 tests / 509 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo` 통과.
+- 신규 API6개: canonical 전체 slot·private/미존재·형태/중복/개수 거절, 원본 보존,
+  수정/가져오기 멱등·재시작, 기존 참조 유지/명시적 교체, fresh dependency eligibility,
+  변경된 개정의 새 승인 요구와 잘못된 ledger key 바인딩 거절.
+- Chromium **23개 통과**, 신규5개 포함: 검색·paging·immutable preview, HTML 문자 처리,
+  참조만 수정/제거·원본 보존, 실패한 기존 참조 조회 재시도, 계정 전환 뒤 늦은 응답 폐기,
+  overview 갱신 뒤에도 Markdown import의 기준 개정과 편집 중 참조 유지.
+  잠긴 Playwright Chromium을 설치해 로컬에서도 실행했다. 데스크톱/모바일 화면을 확인했다.
+- 실제 `fabric:http-smoke` 통과: 게시332·승인334·활성335·철회339·최종341.
+  실제 `configured:smoke` 최종 통과: 게시358·승인360·활성361·철회370·최종373.
+  새 dependency edit의 canonical slot·동일 요청 재시도·원본 초안 보존과 복원 후 참조
+  일치를 확인했다. 반복 시험에서 참조 깊이가 계속 자라지 않게 안정된 초기 fixture
+  개정을 informational 참조로 선택한다. signer 감사510개·egress/권한·복원 검증도 통과했다.
+- 세 peer가 **height374 / block373**에 일치한다. 시험 합의는 철회됐으며 genesis
+  SHA-256과 crypto132개 파일의 크기·mtime·inode를 보존했다. 실제 근거는
+  `.data/fabric-http-smoke-S5K5z4/http-evidence.json`, `.data/configured-smoke-pXapEd/evidence.json`.
+- 새 가상 리허설은 **24개 단언 통과**: 문서5개 모두 HTTP draft→preview→publish로
+  작성했다. 의존 문서3개를 위한 직접 domain publish fixture 우회를 제거했다.
+  가상 승인10·합의5·철회1, 의존성 참조4개. 복원 직후 저널51·private 초안7개와
+  측정 JSON이 일치했고, 최신 조회가 fence를 더한56건에서도 파생 지표는 동일했다.
+  데이터 `.data/pilot-rehearsal-ts4XGZ/`, 근거 `.artifacts/dependency-authoring-rehearsal-20260920/`.
+
+실행 로그·화면·키/genesis 보존 비교는 `.artifacts/dependency-authoring-20260920/`에 있다.
+제품 변경 검증에는 기존 로컬 검사와 정확한 PR head의 CI를 사용한다. 실환경 작업은
+[도입 준비서](30-PILOT-DEPLOYMENT.md)로 정리했고 configured signer 문서의 org/attestation/
+audit 설정 누락도 수정했다. 실제 조직·독립 호스트·SSO/KMS/모델 공급자는 지정되지 않아
+해당 통합·파일럿·독립 호스트 시험은 실행하지 않았다. 2027-01-01 인증서 점검용 `.ics`는
+로컬 아티팩트로 준비했으며 자동 예약·갱신은 설치하지 않았다.
+
+## 격리된 가상 파일럿 리허설 — 2026-09-20
+
+사용자가 가상 리허설을 선택해 v0.4.0 코드(`5ccb41e`)로 새 로컬 workspace를 만들었다.
+가상 개발팀·운영팀, 개발/운영/조율 관점3개, 공유 문서5개와 초안 agent fixture를
+사용했다. 루프백 임시 포트의 앱만 실행하고 정상 종료했다. 기존 workspace·Fabric
+네트워크·키·genesis는 사용하지 않았다. 제품 코드 변경은 없다.
+
+- **기능 단언22개 전부 통과.** 비공개 초안 격리, agent 초안 허용/승인 거절,
+  게시 확인, 중복 게시·승인의 원래 receipt, 두 조직의 가상 승인 요구를 확인했다.
+- 제안5·가상 승인10·활성 합의5·철회1·공유 개정5. 의존성 참조 개정3개,
+  참조4개로 구조적 재사용 비율은60%다. 합의 시간 중앙값0.015초는 자동 실행
+  fixture의 시간이며 사람의 검토 수고나 도입 효과가 아니다.
+- 개발 기준을 철회하면 직접 의존한 배포 기준과 간접 의존한 점검표가 withheld이고,
+  독립된 운영 기준과 복구 안내는 provided였다. 생성 도중 철회와 오래된 run도
+  차단됐으며 미허용 모델은 generate가 호출되지 않았다.
+- 정상 종료 후 WAL/SHM이 남지 않은 상태에서 configured-local snapshot을 만들었다.
+  새 디렉터리 복원 직후 checkpoint·전체 저널51건·비공개 초안4개·측정 JSON이 일치했다.
+  복원 앱의 최신 resolve 검사5회가 fence를 추가해 저널은56건이 됐지만 파생 채택
+  지표는 그대로였다. 원본/복원 직후/조회 후 측정의 window를 각각 보존했다.
+- 기본 문서2개는 HTTP draft→preview→publish, 의존 문서3개는 명시적 도메인
+  publish fixture로 생성했다. 현재 새 draft API에는 의존관계 입력이 없으므로
+  의존관계를 UI에서 새로 작성하는 사용자 흐름까지 검증한 것으로 표시하지 않는다.
+- 사람 관찰 로그는 비어 있으며 해석 혼합·질문·공개 부담은 **미측정**이다.
+  가상 승인·로컬 callback은 실제 승인·SSO/KMS/모델 공급자 통합을 증명하지 않는다.
+
+실행 자료는 Git 제외 `.artifacts/pilot-rehearsal-20260920/`의 `REPORT.md`, `run.mjs`,
+`evidence.json`, `measurement.json`, `measurement-restored.json`,
+`measurement-after-readback.json`이다. 데이터·구성·fixture·snapshot·복원본은
+`.data/pilot-rehearsal-UivsQz/`에 보존했다. 실제 파일럿은 참여 조직·업무·검토자·환경과
+의존 문서 작성 경로를 확정한 뒤 진행한다. 실행은 로컬 시뮬레이션이며 Fabric VALID
+커밋, 실제 조직의 효과 비교나 독립 호스트 재해 복구 검증은 아니다.
+
 ## Fabric 파일럿 측정 지원 — 2026-09-20
 
 [PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로

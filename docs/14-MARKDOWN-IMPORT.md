@@ -7,7 +7,7 @@
 ## 화면에서 사용하기
 
 1. 새 지식 문서를 작성하거나 기존 문서의 새 개정본 작성을 연다.
-2. 제목·Context ID·Scope ID·Usage scope를 확인한다. 기존 문서 개정은 원래 slot과 의존성을 유지한다.
+2. 제목·Context ID·Scope ID·Usage scope와 **참조하는 공유 개정**을 확인한다. 기존 문서 개정은 원래 slot을 유지하며 참조는 명시적으로 편집할 수 있다.
 3. **Markdown 파일 가져오기**에서 `.md` 또는 `.markdown` 파일 한 개를 선택한다.
 4. **파일로 비공개 초안 저장**을 누른다. 가져온 본문이 작성창에 표시된다.
 5. 원문을 검토하고 **공유 게시 미리보기 생성**으로 수신 조직·본문을 확인한다.
@@ -53,6 +53,7 @@ private 저장소는 공용 원장과 분리되어 있지만, 현재 로컬 개�
 | `context_id`, `scope_id`, `usage_scope` | 새 문서의 slot. 기존 개정에서는 원래 값을 유지 |
 | `document_id` | 선택. 새 문서 ID; 생략하면 서버가 생성 |
 | `base_revision_digest` | 선택. 기존 공유 개정본으로부터 새 초안을 작성 |
+| `dependencies` | 선택. [공유 개정 참조](15-PRIVATE-DRAFTS.md) 배열로 교체. 생략하면 기존 참조 유지, `[]`는 제거 |
 
 응답은 `{ draft_id, revision, import }`다. `import`에는 `kind: local_markdown`,
 `filename`, `byte_length`, `sha256`이 들어간다. 이는 private draft 응답에만 포함된다.

@@ -196,6 +196,16 @@ input, textarea, select { width: 100%; border: 1px solid var(--line-strong); bor
 textarea { resize: vertical; min-height: 10rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.6; }
 input::placeholder, textarea::placeholder { color: #596475; }
 .draft-form, .resolver-form { display: grid; gap: .85rem; }
+.draft-dependencies { border: 1px solid var(--line); border-radius: 8px; padding: .85rem; min-width: 0; }
+.draft-dependencies fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dependency-list { list-style: none; padding: 0; margin: .5rem 0; display: grid; gap: .65rem; }
+.dependency-list li { border: 1px solid var(--line); border-radius: 6px; padding: .7rem; min-width: 0; overflow-wrap: anywhere; }
+.dependency-heading { display: grid; gap: .25rem; margin-bottom: .5rem; }
+.dependency-conditions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin: .6rem 0; }
+.draft-dependency-search { display: grid; gap: .5rem; }
+.dependency-list button { white-space: normal; }
+#dependency-results { max-height: 24rem; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 600px) { .dependency-conditions { grid-template-columns: 1fr; } }
 .advanced-fields { display: grid; gap: .75rem; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.015); }
 .advanced-fields summary { cursor: pointer; color: var(--muted); font-size: .72rem; font-weight: 700; }
 .markdown-import { display: grid; gap: .65rem; min-width: 0; padding: 1rem; border: 1px dashed var(--line-strong); border-radius: 8px; }

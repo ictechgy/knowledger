@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDevelopmentIssuer } from '../packages/auth/development-issuer.ts';
-import { demoDefinition } from '../examples/order-workflow/config.ts';
+import { demoDefinition, demoFixtures } from '../examples/order-workflow/config.ts';
 import { createConfiguredApp } from '../apps/api/configured-runtime.ts';
 import { loadProjectConfiguration } from '../packages/config/project.ts';
 import type { ProjectConfiguration } from '../packages/config/types.ts';
@@ -85,7 +85,18 @@ try {
   const base=candidates.find((doc:any)=>doc.eligible)??candidates.at(-1);assert.ok(base);
   const sourceInput={operation_id:`source-import-${run}`,expected_version:0,path:`guides/private-source-${run}.md`,policy_id:'policy-sales-v1',policy_version:1,title:`Configured runtime ${run}`,content_base64:Buffer.from(`# Configured shared knowledge ${run}`).toString('base64')};
   const imported=await post('/sources/configured-kb/markdown',sourceInput);
-  const draft=await get(`/drafts/${imported.draft_id}`);
+  const importedDraft=await get(`/drafts/${imported.draft_id}`);
+  // Pin a stable fixture revision so repeated continuation runs do not grow a
+  // previous-revision dependency chain until the domain depth limit is hit.
+  const dependencySource=await get(`/revisions/${demoFixtures().revisions[0].revision_digest}`);
+  const dependencyEdit={edit_id:`config-dependency-${run}`,title:importedDraft.revision.payload.title,body_markdown:importedDraft.revision.payload.body_markdown,
+    dependencies:[{revision_digest:dependencySource.revision_digest,relationship:'original_definition',enforcement:'informational'}]};
+  const draft=await post(`/drafts/${imported.draft_id}/edits`,dependencyEdit);
+  assert.deepEqual(await post(`/drafts/${imported.draft_id}/edits`,dependencyEdit),draft);
+  assert.deepEqual(draft.revision.payload.dependencies,[{...dependencyEdit.dependencies[0],channel_id:dependencySource.payload.channel_id,
+    document_id:dependencySource.payload.document_id,context_id:dependencySource.payload.context_id,scope_id:dependencySource.payload.scope_id,usage_scope:dependencySource.payload.usage_scope}]);
+  assert.deepEqual((await get(`/drafts/${imported.draft_id}`)).revision,importedDraft.revision);
+  evidence.dependency_authoring={canonical_slot_bound:true,edit_retry_identical:true,original_draft_preserved:true};
   assert.equal((await post('/sources/configured-kb/markdown',sourceInput)).draft_id,imported.draft_id);
   const unchanged=await post('/sources/configured-kb/markdown',{...sourceInput,operation_id:`source-unchanged-${run}`,expected_version:imported.source.version});assert.equal(unchanged.status,'unchanged');
   evidence.source_private_import=true;
@@ -131,7 +142,8 @@ try {
   app=await createConfiguredApp(config,{dataDir:restoredDir,port,organization:actor.org_id,modelEgress});await app.listen(port);await login();
   assert.equal((await get('/commands')).commands.some((item:any)=>item.command_id===`config-publish-${run}`&&item.status==='committed'),true);
   assert.equal((await get('/sources/configured-kb')).entries[0].draft_id,imported.draft_id);
-  assert.equal((await get('/drafts')).total,1);assert.equal((await post('/resolve',scope)).status,'withheld');
+  assert.equal((await get('/drafts')).total,2);assert.equal((await post('/resolve',scope)).status,'withheld');
+  assert.deepEqual((await get(`/drafts/${draft.draft_id}`)).revision.payload.dependencies,draft.revision.payload.dependencies);
   assert.ok(readdirSync(restoredDir).includes(configuredOutboxFile(actor.org_id,actor.actor_id)));
   evidence.snapshot_restore_verified=true;
   phase='signing gateway audit';

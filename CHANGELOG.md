@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-20
+
+### Added
+
+- Dependency authoring for new drafts, private draft edits and Markdown imports:
+  callers select shared revision digests, relationships and enforcement, and
+  the server derives the full slot from the verified canonical revision. Omitted
+  references preserve the existing set; an explicit empty array removes it.
+  Reference changes create a new immutable revision and require fresh approvals.
+- A browser reference picker with paginated shared-revision search, condition
+  editing/removal, inherited-reference loading and publication-preview display.
+  Selected parents and references stay pinned across overview refreshes.
+- Deployment preparation guide covering actual pilot inputs, independent-host
+  fault evidence and SSO/signing/model integration boundaries. Correct the
+  configured signer example to include its organization, required attestation
+  and audit log.
+
 ## [0.4.0] — 2026-09-20
 
 ### Added
@@ -240,7 +257,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ictechgy/knowledger/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ictechgy/knowledger/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ictechgy/knowledger/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ictechgy/knowledger/compare/v0.1.0...v0.2.0

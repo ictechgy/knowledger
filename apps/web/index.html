@@ -176,6 +176,23 @@
                   </div>
                   <label>사용 목적<input id="draft-usage" name="usage_scope" type="text" required placeholder="정책에서 자동 설정"></label>
                 </details>
+                <section class="draft-dependencies" aria-labelledby="draft-dependencies-title">
+                  <h3 id="draft-dependencies-title" class="subheading">참조하는 공유 개정</h3>
+                  <p class="form-hint">선택한 개정본을 고정해 참조합니다. ‘활성 합의가 필요함’은 참조 합의가 철회되면 이 문서의 사용도 차단하며, ‘참고만 함’은 사용 조건에 영향을 주지 않습니다.</p>
+                  <p id="dependency-status" class="form-hint" role="status"></p>
+                  <button id="retry-dependencies" class="outline-button" type="button" hidden>기존 참조 다시 불러오기</button>
+                  <fieldset id="dependency-controls">
+                    <legend class="sr-only">공유 개정 선택과 참조 조건</legend>
+                    <ul id="draft-dependency-list" class="dependency-list"></ul>
+                    <div class="draft-dependency-search">
+                      <label>공유 개정 검색<input id="dependency-query" type="search" maxlength="1000" placeholder="제목이나 본문으로 찾기"></label>
+                      <button id="search-dependencies" class="outline-button" type="button">공유 개정 찾기</button>
+                      <p id="dependency-search-status" class="form-hint" role="status"></p>
+                      <ul id="dependency-results" class="dependency-list"></ul>
+                      <button id="more-dependencies" class="outline-button" type="button" hidden>검색 결과 더 보기</button>
+                    </div>
+                  </fieldset>
+                </section>
                 <div class="markdown-import">
                   <label for="markdown-file">Markdown 파일 가져오기</label>
                   <input id="markdown-file" type="file" accept=".md,.markdown,text/markdown" aria-describedby="markdown-import-help">
@@ -224,7 +241,7 @@
           </section>
         </section>
       </main>
-      <footer class="app-footer"><span>Knowledger v0.1 · 문서 본문과 합의 이력은 원장 정본에 귀속됩니다.</span><span id="footer-actor">세션 확인 중…</span></footer>
+      <footer class="app-footer"><span>Knowledger v0.5 · 문서 본문과 합의 이력은 원장 정본에 귀속됩니다.</span><span id="footer-actor">세션 확인 중…</span></footer>
     </div>
     <script type="module" src="/app.js"></script>
   </body>

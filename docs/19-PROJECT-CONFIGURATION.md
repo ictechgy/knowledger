@@ -84,6 +84,8 @@ local-simulation은 선택한 설정의 단일 개발 프로세스로 실행하�
 [
   {
     "key_id": "example-owner",
+    "org_id": "ExampleOneMSP",
+    "require_attestation": true,
     "certificate_path": "/secure/msp/signcerts/owner.pem",
     "private_key_path": "/secure/msp/keystore/owner.key"
   }
@@ -95,10 +97,17 @@ local-simulation은 선택한 설정의 단일 개발 프로세스로 실행하�
 ```sh
 node infra/fabric/signing-service.ts \
   --config /secure/config/signing-keys.json \
-  --socket /run/knowledger/example-owner.sock
+  --socket /run/knowledger/example-owner.sock \
+  --audit-log /var/log/knowledger/signing-audit.jsonl
 ```
 
 signer 설정은 앱 프로젝트 JSON에 inline private key를 넣지 않는다. Unix socket은 절대 경로와 제한된 파일 권한을 사용한다. 이 개발 프로세스 분리는 HSM, cloud KMS, 독립 OS 계정 또는 조직 간 운영 격리를 제공하지 않는다.
+
+`org_id`는 실제 프로젝트의 조직 ID와 같아야 한다. configured Fabric 앱은 항상
+attestation을 보내므로 signer에도 조직 바인딩과 감사 로그가 필요하다. 예제는
+`require_attestation: true`로 미증명 요청을 거절한다. 감사 로그 경로는 키·인증서·
+설정·socket과 분리하고, signer가 소유한 제한된 디렉터리에 둔다.
+실제 공급자·호스트에 대한 연결과 검증 순서는 [실환경 실행 준비](30-PILOT-DEPLOYMENT.md)를 따른다.
 
 ## Chaincode package
 

@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (Fabric 파일럿 측정 PR #15 머지·원격 CI 통과·v0.4.0 게시 완료)_
+_Last updated: 2026-09-20 KST (의존관계 작성 API·UI·실망 검증·HTTP 리허설24개 완료 — v0.5.0 원격 반영 준비)_
 
 ## Goal
 
@@ -14,6 +14,29 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **의존관계 작성 API·UI 구현 완료(`9b0148c`)**: 새 draft·edit·Markdown import에서
+  공유 개정 digest/관계/사용 조건을 선택하면 서버가 canonical 전체 slot을 채운다.
+  UI는 검색·paging·참조 추가/변경/제거·미리보기를 지원하며 기준 개정을 고정한다.
+  로컬510개 중509 통과·1 GC 생략, 타입·demo·Chromium23개 통과. 실제 Fabric
+  HTTP/configured smoke도 통과했고 세 peer tip은 block373(height374)이다.
+  가상 문서5개를 모두 HTTP 작성 경로로 재리허설해24개 검증을 통과했다.
+  이전 의존 문서3개의 domain publish fixture 우회는 해소됐다. 새 결과는
+  `.artifacts/dependency-authoring-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-ts4XGZ/`.
+  `feature/dependency-authoring`에서 v0.5.0 PR·CI·릴리스 반영을 준비한다.
+- **실환경 준비**: [도입 실행서](docs/30-PILOT-DEPLOYMENT.md)와 signer 설정 예제를
+  보완했다. 사용자에게 조직·업무·호스트·공급자 정보를 요청했으나 아직 지정되지
+  않았으므로 실제 파일럿·독립 호스트·외부 SSO/KMS/모델 연동은 미실행이다.
+  2027-01-01 수동 인증서 점검 일정 파일은 `.artifacts/dependency-authoring-20260920/`에
+  준비했으며 자동 예약은 설치하지 않았다.
+- **가상 파일럿 리허설 완료**: 사용자의 선택에 따라 v0.4.0(`5ccb41e`)로
+  가상 개발팀·운영팀, 관점3개·문서5개·가상 승인10개의 로컬 시나리오를 실행했다.
+  비공개 격리·agent 승인 거절·필수 승인·재사용·egress·의존성 철회·백업 복원
+  단언22개 통과. 실제 사람의 관찰·승인이나 Fabric VALID 커밋 증명은 아니다.
+  새 데이터는 `.data/pilot-rehearsal-UivsQz/`, 보고서·측정·실행 코드는
+  `.artifacts/pilot-rehearsal-20260920/`에 보존했다. 앱은 모두 정상 종료했다.
+  당시 기본 문서2개는 HTTP 게시, 의존 문서3개는 도메인 fixture였다.
+  이 작성 경로 제약은 후속 의존관계 API·UI와 새 HTTP 리허설에서 해소했다.
+  제품 코드 변경·원격 게시 없이 실행 결과와 이력을 기록했다.
 - **[v0.4.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0)**:
   [PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로
   main에 반영하고 같은 커밋에 태그·GitHub Latest 릴리스를 게시했다. head `0bdf96e`의
@@ -94,7 +117,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 - 실제 장애 시험 완료: peer 중단 503→복구(`fabric:http-smoke`), orderer1 중지 중 게시6건 커밋·
   재기동 추월·복구 후 block288, 인증서 적용 중 실제 SIGKILL 후 같은 plan 재개, `.data/fabric-login`
   백업→새 폴더 복원→기동 확인. 2026-09-20 검증 후 세 peer의 원장 tip은
-  모두 block331(height332)이며 시험 합의는 철회됐다.
+  최신 후속 검증까지 모두 block373(height374)이며 시험 합의는 철회됐다.
 - Colima context `colima`, Compose project `kcl-fabric-smoke`:3 peer·3 Raft orderer running.
   chaincode0.1.0/sequence2, package `kcl_0.1.0:319e44ab23841645ed9c46f8f33448c9beb43807780b97518ab9f4792bea4157` 유지.
 - User1 인증서3개는 2026-09-16에 재갱신해 **2027-01-14T14:41:57Z 만료**다(plan
@@ -158,6 +181,25 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
+
+2026-09-20 의존관계 작성 후속 변경:
+
+- `npm run check`510개 중509 통과·1 GC 생략, 타입·demo·Chromium23개 통과.
+- 실제 HTTP 최종341, configured 최종373. dependency edit·canonical slot·멱등·원본
+  초안 보존·복원 일치 확인. 세 peer height374, genesis/crypto132개 메타데이터 보존.
+- 가상 HTTP 리허설24개 통과. 문서5개 전부 HTTP 작성, 가상 승인10·활성 합의5.
+  백업/복원 직후51개 이벤트·private 초안7개·지표 일치, 조회 후56개에서도 지표 동일.
+- 상세 [검증 기록](docs/VALIDATION.md). 로그/화면은 `.artifacts/dependency-authoring-20260920/`.
+
+2026-09-20 가상 파일럿 리허설:
+
+- 단언22개 통과. 제안/활성 합의5개·가상 승인10개·철회1개, 의존성 참조 개정3/5.
+- 원천 기준 철회 후 직접/간접 의존 문서 제공 차단, 독립 문서 제공 유지.
+  생성 중 철회·stale run·미허용 모델 차단과 agent 승인 거절 확인.
+- 백업·복원 직후 저널51건·private 초안4개·checkpoint·내용 digest·측정 JSON 일치.
+  복원 후 최신 조회5회는 fence를 더해56건이 됐고 파생 채택 지표는 동일하다.
+- 원장·관찰은 가상이며 실제 도입 효과는 미측정. 근거 `.artifacts/pilot-rehearsal-20260920/`.
+  런타임 코드는 바꾸지 않았으므로 통과한 기존 검사는 재사용하고 실행 자료·문서 구조를 검증했다.
 
 2026-09-20 v0.4.0 릴리스 검증:
 
@@ -390,6 +432,9 @@ python3 -B tools/check_docs.py
 2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
    런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
 3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress 연동과 실제 파일럿 실행.
+   가상 파일럿 리허설은 완료했다(로컬 단언22개). 실제 참여 조직·업무·검토자·환경과
+   실제 환경은 미정이며, 가상 리허설을 실제 파일럿 완료로 표시하지 않는다.
+   의존 문서 작성 경로는 새 API·UI와 HTTP 리허설로 해소했다.
    벡터 검색 read model(PR #8)·Git 소스 커넥터·채택 측정(PR #13) 코드는 main 반영 완료.
    운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
@@ -429,7 +474,7 @@ main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과
 파일럿 계획/관찰 템플릿을 PR #14(merge `bdb55fb`)로 main에 반영하고 v0.3.0으로
 게시했다(493개 중492 통과·1 GC 생략). 실제 Fabric HTTP/configured smoke와
 백업·장애 드릴, 원격 Node24·26/Fabric/Chromium18개 CI까지 통과했다.
-공개 인증서81개는 정상이고, 세 peer tip은 block331(height332)이다.
+공개 인증서81개는 앞선 점검에서 정상이었고, 후속 검증의 세 peer tip은 block373(height374)이다.
 남은 작업은 2027-01-01 수동 인증서 점검, 대상 조직·환경이 필요한 실제 파일럿,
 독립 물리 호스트/Fabric 채널 장애 검증이다. 후속 작업으로 파일럿 CLI의
 `--mode fabric` 원시 블록 재검증·VALID 집계를 PR #15(merge `0eea4be`)로 main에
@@ -437,6 +482,11 @@ main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과
 source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 기존 로컬 모드도
 유지한다. 현재 branch는 main이다. 실제 조직 파일럿·독립 호스트 검증·외부 공급자
 연동과 2027-01-01 수동 인증서 점검은 남아 있다.
+이후 사용자가 가상 리허설을 선택해 2개 가상 조직·5개 문서의 로컬 시나리오22개를
+통과했다. 자료는 `.artifacts/pilot-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-UivsQz/`다.
+이후 의존관계 API·UI(`9b0148c`)와 새 HTTP 리허설24개로 문서5개 전부 작성하는
+경로를 검증했다. 현재 feature/dependency-authoring에서 v0.5.0 원격 반영 준비 중이다.
+실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
