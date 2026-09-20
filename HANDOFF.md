@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (검토 협업·영향 조회·도입 편의 보강, 로컬 검증 완료 — 미게시)_
+_Last updated: 2026-09-20 KST (검토 협업 v0.6.0 릴리스 후보 — 원격 CI·게시 진행)_
 
 ## Goal
 
@@ -14,6 +14,12 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **v0.6.0 게시 승인·준비 중**: 사용자 지시에 따라 `80a556d`의 검토 협업·영향 조회·
+  도입 편의를 다음 minor 릴리스로 게시한다. 제품 manifest/lockfile·README·웹 버전·
+  changelog를0.6.0으로 맞췄다. 아래 로컬 검증은 같은 runtime 코드의 근거로 재사용하고
+  PR head의 원격 CI를 확인한 뒤 merge·태그·릴리스를 게시한다. chaincode0.1.0과
+  기존 Fabric 네트워크는 유지한다. 현재는 아직 게시 완료가 아니다.
+
 - **경쟁력 보강 구현·로컬 검증 완료**: 현재 branch는 `feature/review-collaboration`이다.
   exact shared revision에 연결된 댓글·멘션·수신자별 알림·기한·반복 검토와 역방향 의존
   영향을 API/UI에 추가했다. 검토 완료는 합의 승인이 아니다. 기록은 앱 설치 단위이며
@@ -23,8 +29,8 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   주입과 검색 정답 평가 함수도 추가했다. [운영 안내](docs/31-REVIEW-WORKSPACE.md).
   Node24 검사 **525개 중524 통과·1 GC 생략**, 타입·demo·Chromium **28개 통과**.
   근거와 390/1440px 화면은 `.artifacts/review-collaboration-20260920/`.
-  실제 Fabric fixture·키·genesis는 이번 변경에서 조작하지 않았다. 새로운 원격 push/PR/
-  릴리스는 수행하지 않았고 패키지 버전은0.5.0, 변경 내역은 Unreleased에 기록했다.
+  실제 Fabric fixture·키·genesis는 이번 변경에서 조작하지 않았다. 구현 당시 원격 게시를
+  하지 않았으며, 현재는 위 v0.6.0 릴리스 준비로 이어졌다.
 - **남은 제품/배포 입력**: 실제 KB 제품(Confluence/SharePoint 등), 임베딩 공급자·모델과
   전송 정책이 지정되지 않았다. Git/Markdown부터 보강했고 외부 공급자 문서 조회는 하지 않았다.
   runtime 조직/정책 변경은 [관리 권한·migration 설계](docs/32-GOVERNANCE-EVOLUTION.md)만

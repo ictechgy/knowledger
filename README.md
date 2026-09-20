@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-**v0.5 development alpha · MIT · Node.js 24+**
+**v0.6 development alpha · MIT · Node.js 24+**
 
 Each organization keeps its own knowledge and secrets while agreeing on the interpretations used for shared work. Shared knowledge documents — including body, revisions, proposals, and agreement history — are stored on a permissioned distributed ledger, and the KB/LLM wiki and RAG serve views derived from that canonical record.
 
