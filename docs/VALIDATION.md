@@ -1,5 +1,41 @@
 # 검증 기록
 
+## v0.3.0 후보 — 실제 Fabric 재검증 — 2026-09-20
+
+중지된 기존 Colima VM과 `kcl-fabric-smoke` 컨테이너를 재가동했다. 새 네트워크
+초기화·chaincode 배포·인증서 갱신은 실행하지 않았다. 시작 높이는290(block289),
+종료 후 세 peer는 모두 **height332 / block331**과 같은 해시
+`a671a99fc2dd2747dc7fcf73b234716caceb7f33644e8698149be1bfcee50982`를 반환했다.
+기존 genesis의 SHA-256과 crypto 파일132개의 크기·mtime·inode가 전후 일치한다.
+검증 앱·issuer·signer는 격리된 디렉터리와 포트에서 실행 후 정상 종료했다.
+
+- `npm run fabric:http-smoke` 통과: 게시290·승인292·활성293·철회297,
+  최종299. 중복 게시의 동일 VALID receipt, private 경계, peer 중단503·복구,
+  재시작 뒤 원래 receipt, stale run과 철회된 지식 제공 차단을 확인했다.
+- `npm run configured:smoke` 통과: 게시316·승인318·활성319·철회328,
+  최종331. OIDC 미바인딩 주체 거절·계정 비활성화, 조직 경계, 원래 command retry,
+  SDK exact revision, 생성 후 철회 차단, v3 스냅샷·새 디렉터리 복원을 확인했다.
+- 설정형 도구의 옛 설정을 새 계약에 맞췄다. `org_id`·`require_attestation`과
+  감사 파일을 지정하고, 부팅·복원 모두 테스트용 모델 egress 정책을 주입한다.
+  미증명 서명은 실제 signer에서 거절됐으며, 감사 기록463개의 조직·사람 actor와
+  `proposal`/`submit`/`query` phase를 확인했다. 미승인 모델은
+  `EGRESS_POLICY_DENIED`, generate 호출0회다. 모델 콜백은 로컬 stub이다.
+- 첫 설정형 실행은 새 감사 단언이 SDK 호출명(`endorse`/`status`)을 감사 phase와
+  혼동해 마지막에 실패했다. 단언을 계약의 phase로 수정하고 전체 설정형 검증을
+  다시 통과시켰다. 실패·성공 실행 모두 시험 합의를 철회했다.
+- Node24.18.0의 `npm run check`: **493 tests / 492 passed / 0 failed / 1 GC skipped**.
+  타입 검사·`demo`·`demo:kb`, 백업 리허설(`rehearsal_pass: true`),
+  두 프로세스 장애 드릴(`drill_pass: true`) 통과.
+- 로컬 `test:browser`는 Playwright의 Chromium headless shell1243 실행 파일이
+  없어 테스트 본문 시작 전에 실패했다. 브라우저 검증은 정확한 후보 커밋의
+  기존 원격 CI `browser-and-experiments` 결과를 릴리스 게이트로 확인한다.
+
+실제 네트워크 근거는 Git 제외 `.data/fabric-http-smoke-6yDcmN/http-evidence.json`,
+`.data/configured-smoke-XaPSPf/evidence.json`이다. 실패 실행의 감사 단언 근거는
+`.data/configured-smoke-tBaJjj/evidence.json`에 보존했다. 실행 로그·보존 비교는
+`.artifacts/release-v0.3.0/`에 있다. 이 시험은 한 호스트의 실제 Fabric 네트워크이며,
+독립 물리 호스트 재해 복구나 실제 조직·외부 모델 공급자 파일럿 검증은 아니다.
+
 ## 잔여 로드맵 B7·B8·D와 파일럿 준비 — 2026-09-20
 
 B8의 대형 질의 교대 시 재계산과 Fabric ingest의 블록당 상태 Map 복사를 수정했다.

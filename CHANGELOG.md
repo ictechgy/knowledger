@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-20
+
 ### Added
 
 - Release and dependency maintenance policy, with exact pins, upgrade
@@ -160,6 +162,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Configured Fabric smoke now uses an organization-bound key with required
+  attestation and an audit log, injects the explicit local model egress policy
+  at startup and restore, and checks that unattested signing and an unapproved
+  model adapter are rejected before generation.
 - HTTP shutdown now sweeps idle keep-alive connections immediately and
   keeps re-sweeping while close waits, still waits for in-flight requests to
   finish, and force-releases any remaining sockets after a five-second
@@ -219,5 +225,7 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ictechgy/knowledger/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ictechgy/knowledger/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ictechgy/knowledger/releases/tag/v0.1.0

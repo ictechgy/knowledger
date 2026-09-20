@@ -17,6 +17,8 @@ import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../packages/stora
 import { OidcTestBrowser } from './oidc-test-browser.ts';
 import { KnowledgerClient } from '../packages/client/knowledge-client.ts';
 import { guardedGeneration } from '../packages/client/guarded-generation.ts';
+import { createRemoteSigner } from '../packages/fabric/remote-signer.ts';
+import type { ModelEgressPolicy } from '../apps/api/service.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 mkdirSync(join(root,'.data'),{recursive:true});
@@ -42,9 +44,13 @@ try {
   const cert=join(msp,'signcerts',`User1@${domain}-cert.pem`);
   const keyFiles=readdirSync(join(msp,'keystore')).filter(name=>name.endsWith('_sk'));assert.equal(keyFiles.length,1);
   const signingConfig=join(directory,'signing-references.json');
-  writeFileSync(signingConfig,JSON.stringify({keys:[{key_id:'configured-reviewer-key',certificate_path:cert,private_key_path:join(msp,'keystore',keyFiles[0])}]}),{mode:0o600});
-  signer=spawn(process.execPath,['infra/fabric/signing-service.ts','--config',signingConfig,'--socket',socketPath],{cwd:root,stdio:'ignore'});
+  const auditLog=join(directory,'signing-audit.jsonl');
+  writeFileSync(signingConfig,JSON.stringify({keys:[{key_id:'configured-reviewer-key',certificate_path:cert,private_key_path:join(msp,'keystore',keyFiles[0]),org_id:actor.org_id,require_attestation:true}]}),{mode:0o600});
+  signer=spawn(process.execPath,['infra/fabric/signing-service.ts','--config',signingConfig,'--socket',socketPath,'--audit-log',auditLog],{cwd:root,stdio:'ignore'});
   for(let attempt=0;!existsSync(socketPath);attempt++){if(signer.exitCode!==null||attempt>50)throw new Error('Signer did not start');await delay(100);}
+  const unattested=createRemoteSigner({socketPath,keyId:'configured-reviewer-key',certificate:readFileSync(cert)});
+  await assert.rejects(unattested(Buffer.alloc(32)),(error:any)=>error.code==='rejected');
+  const modelEgress:ModelEgressPolicy={policy_version:1,allows:input=>input.adapter_id==='configured-local-stub'&&input.actor.org_id===actor.org_id&&input.actor.actor_id===actor.actor_id};
   const configuration:ProjectConfiguration={version:1,workspace:{...definition.workspace,id:'configured-knowledge',label:'Configured knowledge'},organizations:definition.organizations,
     identities:definition.personas.map(({org_id,actor_id,kind,label})=>({org_id,actor_id,kind,label})),genesis:definition.genesis,bootstrap_actor:definition.bootstrap_actor,
     ledger:{mode:'fabric',channel_id:definition.genesis.channel_id},authentication:{mode:'oidc',issuer:issuer.issuer,client_id:'configured-client',allow_insecure_loopback:true,authorization_version_claim:'account_version',bindings:[{subject:'configured-reviewer',org_id:actor.org_id,actor_id:actor.actor_id}]},
@@ -53,7 +59,7 @@ try {
       signer_socket_path:socketPath,peer_endpoint:'127.0.0.1:17051',peer_host_alias:`peer0.${domain}`,key_id:'configured-reviewer-key'}))}};
   const configPath=join(directory,'project.json');writeFileSync(configPath,JSON.stringify(configuration,null,2),{mode:0o600});
   const config=loadProjectConfiguration(configPath);
-  app=await createConfiguredApp(config,{dataDir,port,organization:actor.org_id});await app.listen(port);
+  app=await createConfiguredApp(config,{dataDir,port,organization:actor.org_id,modelEgress});await app.listen(port);
   const browser=new OidcTestBrowser([origin,issuer.issuer]);let csrf='';
   const login=async()=>{assert.equal((await browser.login(origin,'configured-reviewer')).status,200);const session=await(await browser.request(`${origin}/api/session`)).json();assert.equal(session.actor.org_id,actor.org_id);assert.equal(session.demo,false);assert.equal(session.mode,'fabric');assert.deepEqual(session.personas,[]);csrf=session.csrf_token;};
   const get=async(path:string)=>{const response=await browser.request(`${origin}/v1/workspaces/configured-knowledge${path}`);assert.equal(response.status,200);return response.json();};
@@ -100,7 +106,11 @@ try {
   const client=new KnowledgerClient({baseUrl:origin,workspaceId:config.workspace.id,fetch:async(input,init)=>browser.request(String(input),init),headers:()=>({Origin:origin,'X-KNOWLEDGER-CSRF':csrf})});
   const selection={...scope,document_ids:[base.payload.document_id] as [string]};
   const validated=await client.resolve(selection);assert.equal(validated.status,'provided');assert.equal(JSON.stringify(validated).includes('private-source-'),false);
+  let deniedCalls=0;
+  const denied=await guardedGeneration({client,selection,adapterId:'configured-denied-stub',authorize:async()=>true,generate:async()=>{deniedCalls++;return 'must not run';}});
+  assert.deepEqual(denied,{status:'withheld',reason:'EGRESS_POLICY_DENIED'});assert.equal(deniedCalls,0);
   const generated=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async()=>true,generate:async()=>({draft:'local stub output'})});assert.equal(generated.status,'provided');
+  evidence.model_egress={allowed_adapter_provided:true,denied_adapter_withheld:true,denied_generation_calls:deniedCalls};
   let generatedCalls=0;
   const withheld=await guardedGeneration({client,selection,adapterId:'configured-local-stub',authorize:async({phase})=>{
     if(phase==='release'){
@@ -118,12 +128,21 @@ try {
   const snapshotDir=join(directory,'snapshot');const restoredDir=join(directory,'restored');
   const snapshot=createRuntimeSnapshot({dataDir,snapshotDir});assert.equal(JSON.parse(readFileSync(join(snapshotDir,'manifest.json'),'utf8')).version,3);assert.equal(snapshot.mode,'configured-fabric');
   restoreRuntimeSnapshot({snapshotDir,dataDir:restoredDir});
-  app=await createConfiguredApp(config,{dataDir:restoredDir,port,organization:actor.org_id});await app.listen(port);await login();
+  app=await createConfiguredApp(config,{dataDir:restoredDir,port,organization:actor.org_id,modelEgress});await app.listen(port);await login();
   assert.equal((await get('/commands')).commands.some((item:any)=>item.command_id===`config-publish-${run}`&&item.status==='committed'),true);
   assert.equal((await get('/sources/configured-kb')).entries[0].draft_id,imported.draft_id);
   assert.equal((await get('/drafts')).total,1);assert.equal((await post('/resolve',scope)).status,'withheld');
   assert.ok(readdirSync(restoredDir).includes(configuredOutboxFile(actor.org_id,actor.actor_id)));
-  evidence.checks=['private-source-sync','SDK-exact-revision','generation-release-revalidation','private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','generic-key-id-separate-signer','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
+  evidence.snapshot_restore_verified=true;
+  phase='signing gateway audit';
+  const auditRecords=readFileSync(auditLog,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  const attested=auditRecords.filter(record=>record.record_type==='signing_attestation');
+  assert.ok(attested.length>0);
+  assert.ok(attested.every(record=>record.attestation.org_id===actor.org_id&&record.attestation.actor_id===actor.actor_id&&record.attestation.actor_kind==='human'&&typeof record.attestation_signature==='string'&&record.attestation_signature.length>0));
+  for(const phase of ['query','proposal','submit'])assert.ok(attested.some(record=>record.phase===phase),`Missing attested ${phase} audit`);
+  assert.ok(auditRecords.some(record=>record.record_type==='signing_rejected'&&record.reason==='attestation_rejected'&&record.attestation===null));
+  evidence.signing_gateway={unattested_rejected:true,attested_records:attested.length,phases:[...new Set(attested.map(record=>record.phase))].sort()};
+  evidence.checks=['private-source-sync','SDK-exact-revision','model-egress-allow-and-deny','generation-release-revalidation','private-command-tracking-and-exact-retry','configured-oidc','unbound-subject-rejected','browser-role-switch-rejected','only-selected-organization-files-opened','organization-bound-attested-signer-and-audit','VALID-publication-and-approval','withdrawal-withholds','version3-snapshot-restore-private-draft'];
   evidence.passed=true;evidence.final_checkpoint=(await get('/overview?limit=1')).checkpoint;
 } catch {evidence.passed=false;evidence.failure_phase=phase;console.error(`Configured Fabric smoke failed during ${phase}. Inspect the isolated evidence file.`);process.exitCode=1;}
 finally {
