@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-20
+
+### Added
+
+- Opt-in delivery of an author's selected review comment to a configured human
+  recipient: explicit browser confirmation, sender outbox and recipient-only inbox.
+- Durable leased retries, exact destination bindings, current authorization and
+  delivery-policy checks, bounded cancellation, idempotent receiver storage and
+  exact payload receipts. Receipt loss retries the same delivery ID; no receipt
+  grants human approval or proves a Fabric commit.
+- Fixed-endpoint HTTPS/HMAC transport with explicit loopback test mode and a
+  disposable two-app demo (`npm run demo:review-delivery`). Credentials stay in
+  runtime options; additive private DB tables use the existing backup contract.
+  Live organization deployment, vendor notifications and automatic reminders
+  remain unconfigured/unimplemented.
+
 ## [0.6.0] — 2026-09-20
 
 ### Added
@@ -276,7 +292,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ictechgy/knowledger/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ictechgy/knowledger/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ictechgy/knowledger/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ictechgy/knowledger/compare/v0.3.0...v0.4.0

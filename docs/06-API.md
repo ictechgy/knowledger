@@ -6,6 +6,9 @@
 [검토 워크스페이스 API](31-REVIEW-WORKSPACE.md)에 정리한다. 이 운영 기록은 원장 명령과
 분리되고, actor별 `operation_id`와 일정 `expected_version`을 사용한다.
 
+선택형 [댓글 전달 API](33-REVIEW-DELIVERY.md)는 작성자 확인·고정 수신자·영속 재시도 큐와
+peer 인증 수신을 제공한다. 전달 상태의202/영수증은 원장 커밋 상태와 구분한다.
+
 ## 공통 규약
 
 - Base path: `/v1/workspaces/{workspace_id}`. workspace와 Fabric channel은 v1에서 1:1로 매핑한다.

@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-**v0.6 development alpha · MIT · Node.js 24+**
+**v0.7 development alpha · MIT · Node.js 24+**
 
 Each organization keeps its own knowledge and secrets while agreeing on the interpretations used for shared work. Shared knowledge documents — including body, revisions, proposals, and agreement history — are stored on a permissioned distributed ledger, and the KB/LLM wiki and RAG serve views derived from that canonical record.
 
@@ -117,6 +117,10 @@ The [browse reference index](docs/26-BROWSE-INDEX.md) picks page candidates from
 comments, mentions, due dates, recurring reviews, recipient inboxes and verified
 reverse dependency views. Starter document templates and retrieval evaluation help
 with adoption. Review completion does not replace human agreement approvals.
+
+[Selected comment delivery](docs/33-REVIEW-DELIVERY.md) adds an opt-in recipient
+transport, durable retry queue and separate inbox. Run `npm run demo:review-delivery`
+for a two-app local simulation with deliberate receipt loss and duplicate suppression.
 
 [Markdown repository connector](docs/23-KB-SOURCE-CONNECTOR.md) syncs only manifest-listed files into private drafts.
 The [knowledge client](docs/24-KNOWLEDGE-CLIENT.md) verifies the exact revision and agreement state,

@@ -129,7 +129,7 @@ function showStatus(message, tone = 'success') {
 function clearStatus() { const node = el('global-status'); if (node) node.hidden = true; }
 
 async function request(path, options = {}) {
-  const { sessionGuard, ...fetchOptions } = options;
+  const { sessionGuard, acceptDeliveryQueue, ...fetchOptions } = options;
   if (sessionGuard && sessionGuard !== state.session) { const error = new Error('이전 계정의 요청 결과를 버렸습니다.'); error.status = 401; error.stale = true; throw error; }
   const headers = new Headers(fetchOptions.headers || {});
   headers.set('Accept', 'application/json');
@@ -159,6 +159,8 @@ async function request(path, options = {}) {
     throw error;
   }
   if (response.status === 202) {
+    const deliveryRoute = /\/review\/deliveries$|\/review-deliveries\/[A-Za-z0-9._:-]+\/retry$/.test(path);
+    if (acceptDeliveryQueue === true && deliveryRoute && body?.status === 'pending' && validId(body.delivery_id) && body.receipt === null) return body;
     const error = new Error(body?.message || '요청이 접수됐지만 아직 VALID 커밋으로 확인되지 않았습니다.');
     error.api = body;
     error.status = response.status;

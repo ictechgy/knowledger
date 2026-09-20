@@ -11,6 +11,8 @@ import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ReviewStoreError, reviewPeople } from '../../packages/storage/review-store.ts';
 import type { ReviewPerson, ReviewSchedule } from '../../packages/storage/review-store.ts';
+import { ReviewDeliveryRuntime } from './review-delivery.ts';
+import type { ReviewDeliveryOptions } from './review-delivery.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
 import { sourceId, sourceMapping, validateSourceManifest } from '../../packages/connectors/source-contract.ts';
@@ -90,6 +92,7 @@ interface StoredRunRecord { boot_id?: string; slot?: any; manifest?: any; model_
 
 /** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KnowledgerService {
+  readonly reviewDelivery: ReviewDeliveryRuntime | undefined;
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
   private personas: Persona[];
@@ -122,7 +125,7 @@ export class KnowledgerService {
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-      modelEgress?: ModelEgressPolicy } = {}) {
+      modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
@@ -134,6 +137,14 @@ export class KnowledgerService {
     this.ledger = ledger;
     this.vault = vault;
     this.personas = personas;
+    if (options.reviewDelivery && (!personas.some(actor => actor.org_id === options.reviewDelivery!.source_org_id)
+      || (options.reviewDelivery.destinations ?? []).some(target => !definition.genesis.identities.some(actor => actor.kind === 'human' && actor.org_id === target.recipient?.org_id && actor.actor_id === target.recipient?.actor_id)))) {
+      throw new TypeError('Review delivery must bind configured local senders and human recipients');
+    }
+    if (options.reviewDelivery) this.reviewDelivery = new ReviewDeliveryRuntime(vault, {
+      workspaceId: definition.workspace.id, channelId: ledger.channelId, refresh: () => this.refresh(), actor: actor => this.actor(actor),
+      currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
+    }, options.reviewDelivery);
     this.vectorIndex = options.vectorIndex;
     this.embedQuery = options.embedQuery ?? (text => developmentEmbedding(text));
     this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));

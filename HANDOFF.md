@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (검토 협업 PR #17 머지·CI 통과·v0.6.0 게시 완료)_
+_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0 게시 준비 — 이후 자동 리마인더 진행 승인)_
 
 ## Goal
 
@@ -14,13 +14,30 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **후속 일괄 진행 승인**: 댓글 전달을 v0.7.0으로 게시한 뒤 앱 내부 자동 기한 리마인더를
+  구현·검증한다. 외부 알림 제품과 실제 조직 연결 입력은 아직 미정이다. GitHub 게시 및
+  기존 Fabric의 HTTP/configured 연속 검증을 진행하며 새 네트워크를 초기화하지 않는다.
+  릴리스 metadata는0.7.0 후보이며, 아직 게시 완료로 표시하지 않는다.
+
+- **댓글 전달 구현·로컬 검증 완료**: 현재 branch는 `feature/review-delivery`다.
+  작성자가 확인한 본인 댓글을 구성된 사람 수신자에게 보내는 API/UI, 영속 outbox/inbox,
+  임대·현재 인가·대상 binding·유한 재시도·HMAC/HTTPS adapter를 추가했다.
+  수신 저장 영수증은 승인/읽음/VALID 커밋 증명이 아니다. 기존 댓글 자동 전파는 없고
+  수신 댓글은 본인 inbox에만 보관한다. 설정 미지정 시 비활성이다.
+  `npm run demo:review-delivery`로 로컬 앱2개·메모리 시험 키를 사용해 응답 유실 후
+  동일 전송2회/수신1건·수신자 격리·문서 본문 제외·승인0건을 검증했다.
+  Node24 **543개 중542 통과·1 GC 생략**, 타입·기존 demo·Chromium **30개 통과**.
+  [설정/계약 안내](docs/33-REVIEW-DELIVERY.md), 근거 `.artifacts/review-delivery-20260920/`.
+  원격 게시와 실환경 조직 연결은 하지 않았다. 버전은0.6.0, 변경은 Unreleased다.
+  기존 Fabric fixture·키·genesis와 사용자 폴더는 보존했다.
+
 - **[v0.6.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0)**:
   [PR #17](https://github.com/ictechgy/knowledger/pull/17)을 merge `81964fb`로 main에
   반영하고 같은 commit에 annotated tag·Latest 릴리스를 게시했다. 후보 `f9d5fbf`의
   push/PR CI8개가 모두 통과했고 머지 tree가 후보와 동일하다. Chromium28개·성능·복구
   드릴도 통과([CI](https://github.com/ictechgy/knowledger/actions/runs/35506138145)).
   원격 태그 commit·릴리스 본문·공개/Latest 상태 readback 일치. 제품 버전0.6.0,
-  의존성과 chaincode0.1.0은 유지한다. 현재 branch는 `main`이다.
+  의존성과 chaincode0.1.0은 유지한다. 게시 당시 branch는 `main`이었다.
 
 - **경쟁력 보강 구현·검증 완료(`80a556d`)**:
   exact shared revision에 연결된 댓글·멘션·수신자별 알림·기한·반복 검토와 역방향 의존
@@ -523,6 +540,11 @@ source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 
 (merge `81964fb`)·CI8개·Chromium28개 통과 뒤 v0.6.0으로 게시했다. 로컬525개 중524
 통과·1 GC 생략, 타입·demo 통과. 근거는 `.artifacts/release-v0.6.0-20260920/`.
 댓글은 앱 설치 단위이며 조직 간 전달·외부 알림, 실제 KB/임베딩 공급자 연동은 남아 있다.
+이후 `feature/review-delivery`에서 선택한 본인 댓글의 전달 인터페이스·영속 재시도·수신자
+inbox와 가상 연동을 구현했다. 기본 비활성·고정 수신자·명시 확인이며 source/조직 HMAC,
+현재 인가·대상 변경 차단·수신 중복 제거를 검증했다. 543개 중542 통과·1 GC 생략,
+브라우저30개 통과, 타입·합의/전달 demo 통과. 이 변경은 아직 원격 미게시다.
+실제 peer URL/키/계정 배포와 외부 메일·Slack·Teams adapter, 자동 기한 리마인더는 남았다.
 runtime 관리 정책은 `docs/32-GOVERNANCE-EVOLUTION.md`의 설계 단계이고 구현 완료가 아니다.
 실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.

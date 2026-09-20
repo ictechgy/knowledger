@@ -11,6 +11,8 @@ import type { ApplicationAuthentication, AuthenticatedSession } from '../../pack
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KnowledgerService, onlyFields } from './service.ts';
 import type { ModelEgressPolicy } from './service.ts';
+import type { ReviewDeliveryOptions } from './review-delivery.ts';
+import { DELIVERY_MAX_BYTES } from '../../packages/review/delivery-contract.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
 import type { RuntimeScopeOrganization } from '../../packages/storage/runtime-scope.ts';
@@ -61,6 +63,8 @@ export interface AppOptions {
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
+  /** Explicit operator-configured delivery targets and inbound peer keys; disabled when omitted. */
+  reviewDelivery?: ReviewDeliveryOptions;
   /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
@@ -101,7 +105,8 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress });
+    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress,
+      reviewDelivery: options.reviewDelivery, currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
     await service.initialize();
   } catch (error) {
     // 색인 정리 실패가 원래 초기화 오류를 가리지 않게 원인에 부착한다.
@@ -149,13 +154,13 @@ export async function createApp(options: AppOptions) {
     else { limit.count++; limit.touched = now; if (limit.count > 180) throw new ApiError('RATE_LIMITED', '요청이 많습니다. 잠시 후 다시 시도해 주세요.', 429, true); }
     return session;
   }
-  async function body(req: IncomingMessage): Promise<any> {
+  async function body(req: IncomingMessage, maxBytes = MAX_BODY): Promise<any> {
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) throw new ApiError('CONTENT_TYPE_REQUIRED', 'application/json 요청이 필요합니다.', 415);
-    if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) throw new ApiError('PAYLOAD_TOO_LARGE', '요청 본문이 너무 큽니다.', 413);
+    if (Number(req.headers['content-length'] ?? 0) > maxBytes) throw new ApiError('PAYLOAD_TOO_LARGE', '요청 본문이 너무 큽니다.', 413);
     const parts: Buffer[] = []; let bytes = 0;
     for await (const part of req) {
       bytes += part.length;
-      if (bytes > MAX_BODY) throw new ApiError('PAYLOAD_TOO_LARGE', '요청 본문이 너무 큽니다.', 413);
+      if (bytes > maxBytes) throw new ApiError('PAYLOAD_TOO_LARGE', '요청 본문이 너무 큽니다.', 413);
       parts.push(part);
     }
     try {
@@ -206,6 +211,11 @@ export async function createApp(options: AppOptions) {
       if (url.origin !== origin || (authentication && authPath && url.origin !== authentication.origin)) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
       if (!callbackException && !staticPage && (req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== origin))) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
       if (authentication && authPath && await authentication.handle(req, res, url)) return;
+      if (req.method === 'POST' && path === `${workspaceRoot}/review-deliveries/receive`) {
+        if (!service.reviewDelivery) throw new ApiError('NOT_FOUND', '전달 수신 경로가 설정되지 않았습니다.', 404);
+        // This machine endpoint authenticates a configured peer HMAC, never a browser cookie.
+        json(res, 200, await service.reviewDelivery.receive(await body(req, DELIVERY_MAX_BYTES), req.headers)); return;
+      }
       if (staticPage) {
         const file = path === '/' ? 'index.html' : path.slice(1);
         const contents = await readFile(new URL(`../web/${file}`, import.meta.url));
@@ -275,6 +285,13 @@ export async function createApp(options: AppOptions) {
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
+        const deliveryWrite = /^\/revisions\/([^/]+)\/review\/deliveries$/.exec(resourcePath);
+        const deliveryRetry = /^\/review-deliveries\/([^/]+)\/retry$/.exec(resourcePath);
+        if (deliveryWrite || deliveryRetry) {
+          if (!service.reviewDelivery) throw new ApiError('NOT_FOUND', '전달 경로가 설정되지 않았습니다.', 404);
+          respond(await run(() => deliveryWrite ? service.reviewDelivery!.enqueue(actor, decodeResourceId(deliveryWrite[1]), input)
+            : service.reviewDelivery!.retry(actor, decodeResourceId(deliveryRetry![1]), input))); return;
+        }
         const reviewWrite = /^\/revisions\/([^/]+)\/review\/(comments|schedule|complete)$/.exec(resourcePath);
         if (reviewWrite) {
           const digest = decodeResourceId(reviewWrite[1]);
@@ -297,6 +314,19 @@ export async function createApp(options: AppOptions) {
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if (resourcePath === '/review-delivery-targets') {
+          pageQuery(url, []);
+          json(res, 200, await run(async () => {
+            if (service.reviewDelivery) return service.reviewDelivery.targets(actor);
+            await service.refresh(); service.actor(actor); return { enabled: false, targets: [] };
+          })); return;
+        }
+        if (resourcePath === '/review-deliveries' || resourcePath === '/review-deliveries/received') {
+          if (!service.reviewDelivery) throw new ApiError('NOT_FOUND', '전달 경로가 설정되지 않았습니다.', 404);
+          const input = pageQuery(url);
+          const result = resourcePath.endsWith('/received') ? await run(() => service.reviewDelivery!.inbox(actor, input)) : await run(() => service.reviewDelivery!.list(actor, input));
+          json(res, 200, result); return;
+        }
         if (path === `${workspaceRoot}/review-notifications`) { json(res, 200, await run(() => service.reviewNotifications(actor, pageQuery(url)))); return; }
         if (path === `${workspaceRoot}/review-due`) { json(res, 200, await run(() => service.dueReviews(actor, pageQuery(url, ['limit'])))); return; }
         const reviewRead = /^\/revisions\/([^/]+)\/review$/.exec(resourcePath);
@@ -381,6 +411,7 @@ export async function createApp(options: AppOptions) {
         server.once('error', onError);
         server.listen(port, '127.0.0.1', () => {
           server.off('error', onError);
+          service.reviewDelivery?.worker.start();
           const address = server.address() as { port: number };
           resolve(publicOrigin ?? `http://127.0.0.1:${address.port}`);
         });
@@ -398,6 +429,7 @@ export async function createApp(options: AppOptions) {
         }
       };
       await attempt('readiness', () => readiness.close());
+      await attempt('review-delivery', () => service.reviewDelivery?.close());
       await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
       // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
       await attempt('vectorIndex', () => options.vectorIndex?.close?.());

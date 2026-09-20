@@ -1,5 +1,39 @@
 # 검증 기록
 
+## 선택적 댓글 전달·재시도 큐·가상 연동 — 2026-09-20
+
+`feature/review-delivery`에서 작성자의 명시 확인·서버 고정 수신자 기반 댓글 전달과
+별도 수신함을 구현했다. 기존 private DB에 영속 큐/수신 테이블을 추가하고 운영 옵션으로
+HTTPS/HMAC adapter를 주입한다. 기본 비활성이고 공유 원장 프로토콜·승인/사용 판정은
+바꾸지 않았다. 계약과 운영 한계는 [전달 안내](33-REVIEW-DELIVERY.md).
+
+- Node24.18.0 `npm run check`: **543 tests / 542 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo`, `npm run demo:review-delivery`, 문서/구조 검사와
+  `git diff --check` 통과. 선택 의존성은 추가하지 않았다.
+- 새 API10개: 작성자·고정 대상·명시 확인, 멱등 충돌·원문 범위, 응답 유실과 중복 제거,
+  snapshot 복원·대상 변경 차단, 현재 계정 회수/serving freeze, 전송 정책 거절/수동 재시도,
+  HMAC 위조·시각·scope·ID 내용 충돌, 잘못된 영수증/재시도 상한, HTTP CSRF,
+  늦은 권한 훅의 전송 방지, 수신 중 종료 뒤 늦은 DB 쓰기 방지.
+- 큐/worker6개: 두 DB 연결의 임대 경합·오래된 완료 차단, 최종 시도 유실 후 확인 실패,
+  abort 무시/늦은 영수증·단일 flight, 종료 후 자원 해제, 원자 쓰기 실패·오염 패킷 거절,
+  선택형 자동 poller의 실행/종료. HTTP adapter2개는 고정 URL/redirect·정확한 MAC과
+  제한된 오류 코드·영수증/바이트 상한을 검증했다.
+- Chromium **30개 통과**: 기존28개와 새2개. 작성자 원문 전달 확인→대기→수신 저장 확인,
+  본인 수신함과 공통 검토함 분리, HTML 문자 안전 표시, 계정 전환 뒤 늦은 수신 응답 폐기.
+  전달 HTTP202가 기존 원장 pending 처리로 들어가던 화면 경로를 전달 큐에 한정해 수정하고,
+  기존 원장 미확정 UI 회귀도 전체 브라우저 검사에서 통과했다.
+- 가상 데모: 새 로컬 앱2개와 메모리 시험 키로 HTTP 수신 후 첫 응답을 유실시켰다.
+  **전송2회·수신1건**, 동일 payload/ID 재시도, 수신자 격리, 공유 문서 본문 제외,
+  승인0건·전달에 의한 원장 변경 없음. 실제 사람 승인이나 Fabric VALID 근거가 아니다.
+- 390/1440px 가로 넘침 검사와 전달 확인/상태 화면 screenshot을 확인했다.
+  근거는 `.artifacts/review-delivery-20260920/`의 `check-final.log`, `types.log`,
+  `browser.log`, `demo.log`, `relay-demo.log`, `transfer-desktop.png`, `transfer-mobile.png`,
+  `delivery-panel.png`. 생성한 시험 앱은 정상 종료했다.
+
+실제 외부 조직으로 전송하거나 원격 게시/CI를 수행하지 않았다. 기존 Fabric fixture·
+인증서·키·genesis를 조작하지 않았다. 실제 peer 설정, 메일/Slack/Teams adapter와
+자동 리마인더는 완료 항목이 아니다.
+
 ## v0.6.0 게시 — 2026-09-20
 
 [PR #17](https://github.com/ictechgy/knowledger/pull/17)을 merge commit `81964fb`로
