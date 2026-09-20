@@ -1,5 +1,21 @@
 # 검증 기록
 
+## v0.6.0 게시 — 2026-09-20
+
+[PR #17](https://github.com/ictechgy/knowledger/pull/17)을 merge commit `81964fb`로
+main에 반영하고 같은 commit에 [v0.6.0](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0)을
+게시했다. 릴리스 head `f9d5fbf`의 push/PR CI8개가 모두 통과했고, 머지 파일 tree가
+그 head와 동일한지 확인했다. [PR CI](https://github.com/ictechgy/knowledger/actions/runs/35506138145)는
+Node24/26, Fabric/auth 경계, Chromium28개, 성능·이력·복구·다중 프로세스 드릴을 포함한다.
+기존 코드의 로컬 검증 근거는 아래 기록을 재사용했다. 제품 manifest와 lockfile의 루트 버전,
+README·웹 표기를0.6.0으로 맞추고 의존성 graph·chaincode0.1.0 보존을 구조 비교했다.
+
+원격 annotated tag의 commit은 `81964fb7ba907455e28d06c5d9e2aa8b4913a65b`이며
+릴리스 본문·공개 상태·Latest가 readback과 일치한다. 근거는
+`.artifacts/release-v0.6.0-20260920/`의 `pr-ci.json`, `browser-ci.log`, `pr-merged.json`,
+`published-release.json`, `remote-tag.txt`. 이번 릴리스에서 실제 Fabric 네트워크와
+자격정보를 조작하지 않았고, 외부 KB/모델 연동·조직 간 댓글 전송·동적 관리 정책은 남아 있다.
+
 ## 검토 협업·변경 영향·도입 편의 — 2026-09-20
 
 `feature/review-collaboration`에서 검토 기록/알림/일정, 역방향 의존 조회, 초안 템플릿,

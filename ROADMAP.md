@@ -19,14 +19,15 @@ verified, or still planned. Items are grouped by track, not by promised date.
 - Public release: `v0.1.0` (2026-09-16), `v0.2.0` (2026-09-18),
   [`v0.3.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0) (2026-09-20),
   [`v0.4.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0) (2026-09-20),
-  [`v0.5.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0) (2026-09-20)
+  [`v0.5.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0) (2026-09-20),
+  [`v0.6.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0) (2026-09-20)
 
 ## Track A — Protocol completeness
 
-The working branch additionally implements [review collaboration and impact](docs/31-REVIEW-WORKSPACE.md):
+Released in v0.6.0: [review collaboration and impact](docs/31-REVIEW-WORKSPACE.md), including
 application-local comments/mentions, deadlines, recurring reviews, notifications,
 reverse dependencies, starter templates, sync preview/retries and retrieval evaluation.
-These changes form the v0.6.0 release candidate; publication is pending. Cross-organization comment transport, a selected
+Cross-organization comment transport, a selected
 customer KB connector and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate
 [governance migration design](docs/32-GOVERNANCE-EVOLUTION.md), including an explicit

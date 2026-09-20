@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (검토 협업 v0.6.0 릴리스 후보 — 원격 CI·게시 진행)_
+_Last updated: 2026-09-20 KST (검토 협업 PR #17 머지·CI 통과·v0.6.0 게시 완료)_
 
 ## Goal
 
@@ -14,13 +14,15 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
-- **v0.6.0 게시 승인·준비 중**: 사용자 지시에 따라 `80a556d`의 검토 협업·영향 조회·
-  도입 편의를 다음 minor 릴리스로 게시한다. 제품 manifest/lockfile·README·웹 버전·
-  changelog를0.6.0으로 맞췄다. 아래 로컬 검증은 같은 runtime 코드의 근거로 재사용하고
-  PR head의 원격 CI를 확인한 뒤 merge·태그·릴리스를 게시한다. chaincode0.1.0과
-  기존 Fabric 네트워크는 유지한다. 현재는 아직 게시 완료가 아니다.
+- **[v0.6.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0)**:
+  [PR #17](https://github.com/ictechgy/knowledger/pull/17)을 merge `81964fb`로 main에
+  반영하고 같은 commit에 annotated tag·Latest 릴리스를 게시했다. 후보 `f9d5fbf`의
+  push/PR CI8개가 모두 통과했고 머지 tree가 후보와 동일하다. Chromium28개·성능·복구
+  드릴도 통과([CI](https://github.com/ictechgy/knowledger/actions/runs/35506138145)).
+  원격 태그 commit·릴리스 본문·공개/Latest 상태 readback 일치. 제품 버전0.6.0,
+  의존성과 chaincode0.1.0은 유지한다. 현재 branch는 `main`이다.
 
-- **경쟁력 보강 구현·로컬 검증 완료**: 현재 branch는 `feature/review-collaboration`이다.
+- **경쟁력 보강 구현·검증 완료(`80a556d`)**:
   exact shared revision에 연결된 댓글·멘션·수신자별 알림·기한·반복 검토와 역방향 의존
   영향을 API/UI에 추가했다. 검토 완료는 합의 승인이 아니다. 기록은 앱 설치 단위이며
   조직별 Fabric 앱 간 복제·외부 메일 전송은 하지 않는다. 기존 private DB의 별도 테이블에
@@ -30,7 +32,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Node24 검사 **525개 중524 통과·1 GC 생략**, 타입·demo·Chromium **28개 통과**.
   근거와 390/1440px 화면은 `.artifacts/review-collaboration-20260920/`.
   실제 Fabric fixture·키·genesis는 이번 변경에서 조작하지 않았다. 구현 당시 원격 게시를
-  하지 않았으며, 현재는 위 v0.6.0 릴리스 준비로 이어졌다.
+  하지 않았으며, 후속 PR #17·v0.6.0 게시까지 완료했다.
 - **남은 제품/배포 입력**: 실제 KB 제품(Confluence/SharePoint 등), 임베딩 공급자·모델과
   전송 정책이 지정되지 않았다. Git/Markdown부터 보강했고 외부 공급자 문서 조회는 하지 않았다.
   runtime 조직/정책 변경은 [관리 권한·migration 설계](docs/32-GOVERNANCE-EVOLUTION.md)만
@@ -96,7 +98,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   모두 정상이다. 실제 파일럿·독립 물리 호스트 장애 시험은 수행하지 않았다.
   대상 조직·환경·사람 검토자가 정해져야 실제 파일럿을 시작한다.
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`.
-  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 최신 태그·릴리스 `v0.5.0`.**
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 최신 태그·릴리스 `v0.6.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
@@ -496,7 +498,7 @@ python3 -B tools/check_docs.py
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.5.0` 게시·원격 CI 통과 완료.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.6.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
@@ -517,6 +519,11 @@ source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 
 통과했다. 자료는 `.artifacts/pilot-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-UivsQz/`다.
 이후 의존관계 API·UI(`9b0148c`)와 새 HTTP 리허설24개로 문서5개 전부 작성하는
 경로를 검증했다. PR #16(merge `af7b92c`)·CI8개 통과 뒤 v0.5.0으로 게시했고 현재 main이다.
+검토 협업·영향 조회·템플릿·동기화 preview/retry·검색 평가(`80a556d`)도 PR #17
+(merge `81964fb`)·CI8개·Chromium28개 통과 뒤 v0.6.0으로 게시했다. 로컬525개 중524
+통과·1 GC 생략, 타입·demo 통과. 근거는 `.artifacts/release-v0.6.0-20260920/`.
+댓글은 앱 설치 단위이며 조직 간 전달·외부 알림, 실제 KB/임베딩 공급자 연동은 남아 있다.
+runtime 관리 정책은 `docs/32-GOVERNANCE-EVOLUTION.md`의 설계 단계이고 구현 완료가 아니다.
 실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
