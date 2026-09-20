@@ -2,7 +2,8 @@
 
 [선정 기록](35-PILOT-INTEGRATION-SELECTION.md)의 첫 KB adapter다. 명시한 사이트와
 페이지만 읽고 기존 actor-private 초안을 만든다. 기본 실행에서 활성화하지 않으며 실제
-OAuth 등록·로그인·refresh token rotation은 배포자가 제공하는 token 함수의 책임이다.
+OAuth 등록·최초 동의와 비밀 저장소는 배포자가 구성한다. 회전 토큰 갱신과 정기 수집은
+아래 선택형 runtime으로 연결할 수 있다.
 실제 tenant 접속·키 조회는 하지 않았고, 검증에는 가상 fetch와 임시 로컬 앱을 사용했다.
 
 ## 호출과 보존 경계
@@ -62,5 +63,75 @@ cloud ID·page version·ADF hash는 공유 revision metadata에 자동 복사하
 allowlist에서 명시적으로 뺀 경로만 removed로 기록하며 게시된 개정·승인을 철회하지 않는다.
 원본 삭제·접근 회수도 기존 공유 본문을 지우지 않는다.
 
-브라우저 source 목록은 본인 출처의 page ID/버전을 표시하고 초안을 연다. OAuth 연결 UI나
-정기 수집 scheduler는 포함하지 않는다. 이 adapter는 호출자가 실행하는 수집 경계다.
+브라우저 source 목록은 본인 출처의 page ID/버전과 정기 수집 상태를 표시하고 초안을 연다.
+최초 OAuth 동의 UI와 실제 tenant 등록은 배포 환경에서 준비한다.
+
+## 회전 refresh token 갱신
+
+[`createConfluenceOAuthProvider`](../packages/connectors/confluence-oauth.ts)는 고정
+`https://auth.atlassian.com/oauth/token`을 사용한다. 최초 OAuth 동의에는 `offline_access`가
+필요하다. Atlassian은 성공 시 새 refresh token을 주므로 이전 토큰을 계속 사용하면 안 된다.
+[공식 갱신 계약](https://developer.atlassian.com/cloud/confluence/oauth-2-3lo-apps/).
+
+```ts
+const oauth = createConfluenceOAuthProvider({
+  grantId: deployment.grantId,
+  clientId: deployment.clientId,
+  store: secretGrantStore,
+  getClientSecret: signal => credentials.confluenceClientSecret(signal),
+  allows: request => oauthPolicy.allows(request),
+});
+```
+
+`secretGrantStore`는 `ConfluenceGrantStore`의 `load`와 **영속·원자적인 compareAndSwap**을
+구현해야 한다. 프로세스 사이에서도 같은 grant/version을 한 번만 교체하고 version을
+재사용하지 않는다. 암호화·접근제어·KMS와 최초 grant 저장은 이 backend의 책임이다.
+앱은 실제 토큰이나 client secret을 private DB·로그·브라우저에 저장하지 않는다.
+초기 ready grant는 grant/client ID, version, access/refresh token, expires_at(ms),
+`read:page:confluence`를 포함한 scope를 가진다. 이 값들을 채팅이나 Git에 넣지 않는다.
+
+유효기간30초 전부터 갱신한다. 외부 요청 **전에** CAS로 `refreshing` 의도를 기록하고,
+응답의 새 토큰 쌍을 CAS로 저장·재조회한 다음에만 access token을 반환한다. 동시 갱신,
+다른 로그인으로 교체된 grant 덮어쓰기와 저장 전 토큰 반환을 막는다. 매 사용 시 backend를
+조회하고 별도 정책의 true를 요구한다. 기본10초/최대30초, 응답32KiB와 취소를 적용한다.
+
+응답 유실·invalid grant·저장 실패·프로세스 중단 뒤 `refreshing`이 남으면 이전 refresh
+token을 자동 재사용하지 않는다(`OAUTH_REFRESH_UNCONFIRMED`). 최초 동의를 다시 수행해
+새 ready grant를 더 높은 version으로 설치해야 한다. 공급자의 reuse leeway를 재시도
+보장으로 가정하지 않는다. backend에 새 ready grant가 이미 저장됐지만 확인 응답만
+유실된 경우 다음 호출은 저장된 새 토큰을 사용하며 또 갱신하지 않는다.
+
+## 정기 수집
+
+```ts
+const app = await createConfiguredApp(config, {
+  dataDir,
+  confluenceSync: {
+    pollMs: 1000,
+    sources: [{
+      owner: { org_id: deployment.orgId, actor_id: deployment.actorId },
+      intervalMs: 900000,
+      timeoutMs: 60000,
+      source: { ...sourceOptions, getAccessToken: oauth.getAccessToken },
+    }],
+  },
+});
+```
+
+`sourceOptions`는 앞 절의 source_id/cloud_id/pages/allows다. 최대16개 local human owner의
+source를 명시하며 설정하지 않으면 자동 수집하지 않는다. `listen()` 뒤 기본1초마다 기한을
+확인하고 source별 기본15분 간격으로 순차 수집한다. 처리 시간이 길면 다음 source가 지연될 수
+있다. `pollMs: 0`은 자동 실행을 끄며 `app.service.confluenceSync.runOnce()`로 도래한
+작업만 실행한다. 다운타임 동안 누락된 횟수를 몰아서 실행하지 않는다.
+
+private DB의 actor별 source-schedule에 다음 실행 시각·원인 코드·개수·유한 lease를 저장한다.
+두 DB 연결의 중복 claim을 막고 재시작/복원 후 간격을 유지한다. 실패도 같은 간격 뒤 재시도한다.
+owner/workspace/site/page 매핑이 바뀌면 새 binding을 사용하며 source의 site 혼합 금지는
+계속 적용된다. 토큰과 원문은 scheduler 상태에 저장하지 않는다.
+
+각 provider 요청과 private 읽기/쓰기 직전에 현재 owner·계정·serving 상태와 lease를 검사한다.
+비동기 refresh 중 종료/시간 초과 시 늦은 private 쓰기를 차단한다. 이미 완료된 페이지 import는
+되돌리지 않으며 다음 실행에서 이어간다. `/source-automations`와 브라우저는 본인 상태만 보여준다.
+`app.close()`는 scheduler를 취소·정리한다. 외부에서 소유한 oauth provider는 필요 시
+`oauth.close()`로 별도 종료한다. 과거 snapshot 복원 시 grant store를 과거 refresh token으로
+되돌리지 않는다. 토큰 backend와 앱 DB는 각각의 복구 경계를 가진다.

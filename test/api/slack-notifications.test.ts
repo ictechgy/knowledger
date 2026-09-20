@@ -9,6 +9,8 @@ import { createProjectTemplate } from '../../packages/config/template.ts';
 import { createRuntimeSnapshot, restoreRuntimeSnapshot } from '../../packages/storage/runtime-snapshot.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { keyFor } from '../../packages/domain/index.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { createDevelopmentClient } from '../../packages/connectors/development-client.ts';
 
 const address = { team_id: 'TTEST123', user_id: 'UTEST123', dm_id: 'DTEST123' };
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
@@ -155,4 +157,74 @@ test('rate limits persist across DM targets and retries stop after three confirm
     assert.equal(store.slackNotices.get(actor, 'reminder-one')?.status, 'failed');
     assert.equal(store.slackNotices.claim(actor, 'reminder-one', binding, 'TTEST', 'DONE', now, 1000), null);
   } finally { store.close(); }
+});
+
+const signal = () => new AbortController().signal;
+test('a recipient can record manual receipt after completion without fabricating provider or human approval evidence', async t => {
+  const f = await fixture(t); f.remote.post = 'lost'; await f.run(); const current = await f.status();
+  await f.app.service.completeReview(f.recipient, f.digest, { operation_id: 'review-completed', expected_version: 1, body: 'Done' });
+  const runtime = f.app.service.slackNotifications!; const before = f.app.service.ledger.checkpoint();
+  assert.equal((await runtime.list(f.recipient, {}, signal())).notices[0].status, 'unknown');
+  const input = { operation_id: 'slack-confirmed', expected_version: current!.version, outcome: 'seen', confirm: true };
+  const result = await runtime.resolve(f.recipient, f.notice.reminder_id, input, signal());
+  assert.equal(result.status, 'user_confirmed'); assert.equal(result.receipt, null);
+  assert.deepEqual(await runtime.resolve(f.recipient, f.notice.reminder_id, input, signal()), result);
+  await assert.rejects(runtime.resolve(f.recipient, f.notice.reminder_id, { ...input, outcome: 'dismiss' }, signal()), (e: any) => e.code === 'IDEMPOTENCY_CONFLICT');
+  assert.deepEqual(f.app.service.ledger.checkpoint(), before); assert.equal(f.app.service.values('decision').length, 0);
+  await f.restore(); const restored = await f.app.service.slackNotifications!.list(f.recipient, {}, signal());
+  assert.equal(restored.notices[0].status, 'user_confirmed'); assert.equal(restored.notices[0].resolutions.length, 1); await f.run(); assert.equal(f.remote.posted.length, 1);
+});
+
+test('manual retry requires explicit duplicate-risk confirmation and retains total attempts and audit history', async t => {
+  const f = await fixture(t); f.remote.post = 'lost'; await f.run(); const current = await f.status(); const runtime = f.app.service.slackNotifications!;
+  const input = { operation_id: 'slack-retry-manual', expected_version: current!.version, outcome: 'retry', confirm: true, confirm_duplicate_risk: true };
+  await assert.rejects(runtime.resolve(f.recipient, f.notice.reminder_id, { ...input, confirm_duplicate_risk: undefined }, signal()), (e: any) => e.code === 'SLACK_CONFIRMATION_REQUIRED');
+  f.remote.allowed = false; await assert.rejects(runtime.resolve(f.recipient, f.notice.reminder_id, input, signal()), (e: any) => e.status === 403); f.remote.allowed = true;
+  const retried = await runtime.resolve(f.recipient, f.notice.reminder_id, input, signal());
+  assert.equal(retried.status, 'retry_wait'); assert.equal(retried.attempts, 0); assert.equal(retried.total_attempts, 1);
+  assert.deepEqual(await runtime.resolve(f.recipient, f.notice.reminder_id, input, signal()), retried);
+  await assert.rejects(runtime.resolve(f.recipient, f.notice.reminder_id, { ...input, operation_id: 'stale-retry' }, signal()), (e: any) => e.code === 'SLACK_STATE_CHANGED');
+  f.remote.post = 'accept'; await f.run(); assert.equal(f.remote.posted.length, 1, 'manual retry does not bypass the DM cooldown');
+  await delay(1010); await f.run(); const accepted = await f.status(); assert.equal(accepted!.status, 'provider_accepted'); assert.equal(accepted!.total_attempts, 2); assert.equal(accepted!.resolutions.length, 1);
+});
+
+test('read notices cannot be retried, but can be dismissed without another external call', async t => {
+  const f = await fixture(t); f.remote.post = 'lost'; await f.run(); const current = await f.status();
+  await f.app.service.readReviewReminder(f.recipient, f.notice.reminder_id, {});
+  const runtime = f.app.service.slackNotifications!; const input = { operation_id: 'slack-dismiss', expected_version: current!.version, outcome: 'retry', confirm: true, confirm_duplicate_risk: true };
+  await assert.rejects(runtime.resolve(f.recipient, f.notice.reminder_id, input, signal()), (e: any) => e.code === 'SLACK_RETRY_NOT_ALLOWED');
+  const result = await runtime.resolve(f.recipient, f.notice.reminder_id, { operation_id: input.operation_id, expected_version: current!.version, outcome: 'dismiss', confirm: true }, signal());
+  assert.equal(result.status, 'dismissed'); await f.run(); assert.equal(f.remote.posted.length, 1);
+});
+
+test('manual resolution HTTP routes enforce current recipient ownership, CSRF and bounded queries', async t => {
+  const f = await fixture(t); f.remote.post = 'lost'; await f.run(); const current = await f.status(); const origin = await f.app.listen(0);
+  const options = { baseUrl: origin, workspaceId: 'slack-test', actorId: 'maintainer' };
+  const beta = await createDevelopmentClient({ ...options, orgId: 'BetaMSP' }); const alpha = await createDevelopmentClient({ ...options, orgId: 'AlphaMSP' });
+  assert.equal((await beta.request<any>('/slack-notices', {})).notices.length, 1); assert.equal((await alpha.request<any>('/slack-notices', {})).notices.length, 0);
+  const path = `/slack-notices/${f.notice.reminder_id}/resolve`; const input = { operation_id: 'slack-http-dismiss', expected_version: current!.version, outcome: 'dismiss', confirm: true };
+  await assert.rejects(alpha.request(path, { method: 'POST', body: input }), (e: any) => e.status === 404);
+  const session = await fetch(origin + '/api/session'); const cookie = session.headers.get('set-cookie')!.split(';')[0];
+  assert.equal((await fetch(origin + '/v1/workspaces/slack-test' + path, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(input) })).status, 403);
+  await assert.rejects(beta.request('/slack-notices?limit=51', {}), (e: any) => e.status === 400);
+  assert.equal((await beta.request<any>(path, { method: 'POST', body: input })).status, 'dismissed');
+});
+
+test('cancellation while retry policy is pending cannot write a late resolution', async t => {
+  let held = false; let release!: (value: boolean) => void; let reached!: () => void; const entered = new Promise<void>(resolve => { reached = resolve; });
+  const f = await fixture(t, { target: { allows: () => held ? (reached(), new Promise(resolve => { release = resolve; })) : true } });
+  f.remote.post = 'lost'; await f.run(); const current = await f.status(); held = true; const controller = new AbortController();
+  const resolving = f.app.service.slackNotifications!.resolve(f.recipient, f.notice.reminder_id,
+    { operation_id: 'cancel-retry', expected_version: current!.version, outcome: 'retry', confirm: true, confirm_duplicate_risk: true }, controller.signal);
+  const rejected = assert.rejects(resolving, (e: any) => e.code === 'SLACK_ACTION_UNAVAILABLE'); await entered; controller.abort(); await rejected;
+  release(true); await delay(5); assert.equal((await f.status())!.status, 'unknown'); assert.equal((await f.status())!.resolutions.length, 0);
+});
+
+test('migration from the previous Slack table preserves attempts and adds resolution state without resending', () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowledger-slack-migration-')); const path = join(root, 'private.sqlite'); const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE slack_notices(reminder_id TEXT PRIMARY KEY,org_id TEXT,actor_id TEXT,binding TEXT,status TEXT,attempts INTEGER,next_attempt_at INTEGER,lease_token TEXT,lease_until INTEGER,last_code TEXT,receipt_json TEXT)`);
+  db.prepare("INSERT INTO slack_notices VALUES('reminder-old','AlphaMSP','maintainer',?,'unknown',2,0,NULL,NULL,'SLACK_RESULT_UNKNOWN',NULL)").run('sha256:' + 'a'.repeat(64)); db.close();
+  const store = new PrivateStore(path);
+  try { const job = store.slackNotices.get({ org_id: 'AlphaMSP', actor_id: 'maintainer', kind: 'human' }, 'reminder-old'); assert.equal(job!.version, 1); assert.equal(job!.total_attempts, 2); assert.equal(job!.status, 'unknown'); }
+  finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });

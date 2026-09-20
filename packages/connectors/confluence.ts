@@ -4,6 +4,7 @@ import { canonicalize } from '../domain/index.ts';
 import { parseStrictJson } from '../fabric/canonical.ts';
 import { boundedJson } from '../http/bounded-json.ts';
 import { confluenceAdfToMarkdown } from './confluence-adf.ts';
+import { ConfluenceOAuthError } from './confluence-oauth.ts';
 import { MAX_SOURCE_BYTES, MAX_SOURCE_FILES, SourceInputError, confluenceOrigin, sourceId, sourceMapping } from './source-contract.ts';
 import type { ConfluenceOrigin, SourceState } from './source-contract.ts';
 import type { MarkdownSourceFile, MarkdownSourceSnapshot } from './filesystem-markdown.ts';
@@ -26,8 +27,7 @@ export interface ConfluenceSourceSnapshot extends MarkdownSourceSnapshot {
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
-/** Explicit allowlist only. Credentials belong to the caller's delegated account. No discovery or link fetch. */
-export async function readConfluenceSource(options: ConfluenceSourceOptions): Promise<ConfluenceSourceSnapshot> {
+export function validateConfluenceSourceOptions(options: ConfluenceSourceOptions) {
   const id = sourceId(options.source_id); const cloud = options.cloud_id;
   if (typeof cloud !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(cloud)
     || !Array.isArray(options.pages) || options.pages.length > MAX_SOURCE_FILES || typeof options.getAccessToken !== 'function' || typeof options.allows !== 'function') throw new ConfluenceError('INVALID_CONFLUENCE_SOURCE');
@@ -39,6 +39,13 @@ export async function readConfluenceSource(options: ConfluenceSourceOptions): Pr
   if (new Set(pages.map(page => page.page_id)).size !== pages.length) throw new ConfluenceError('INVALID_CONFLUENCE_SOURCE');
   const timeout = options.timeoutMs ?? 30000;
   if (!Number.isSafeInteger(timeout) || timeout < 10 || timeout > 120000) throw new ConfluenceError('INVALID_CONFLUENCE_SOURCE');
+  if (options.fetch !== undefined && typeof options.fetch !== 'function') throw new ConfluenceError('INVALID_CONFLUENCE_SOURCE');
+  return { id, cloud, pages, timeout };
+}
+
+/** Explicit allowlist only. Credentials belong to the caller's delegated account. No discovery or link fetch. */
+export async function readConfluenceSource(options: ConfluenceSourceOptions): Promise<ConfluenceSourceSnapshot> {
+  const { id, cloud, pages, timeout } = validateConfluenceSourceOptions(options);
   const fetchImpl = options.fetch ?? fetch; const allows = options.allows; const getToken = options.getAccessToken;
   const controller = new AbortController(); const deadline = performance.now() + timeout; let expired = false;
   const check = () => { if (expired || performance.now() >= deadline) throw new ConfluenceError('CONFLUENCE_TIMEOUT', 503, true); if (controller.signal.aborted) throw new ConfluenceError('CONFLUENCE_ABORTED', 503, true); };
@@ -87,7 +94,7 @@ export async function readConfluenceSource(options: ConfluenceSourceOptions): Pr
     return { cloud_id: cloud, manifest: { version: 1 as const, source_id: id, files: files.map(file => file.mapping) }, files, missing_paths: [] };
   };
   try { return await Promise.race([collect(), cancelled]); }
-  catch (error) { if (error instanceof ConfluenceError) throw error; check(); if (error instanceof SourceInputError) throw new ConfluenceError('INVALID_CONFLUENCE_PAGE', 502); throw new ConfluenceError('CONFLUENCE_UNAVAILABLE', 503, true); }
+  catch (error) { if (error instanceof ConfluenceError) throw error; check(); if (error instanceof ConfluenceOAuthError) throw new ConfluenceError(error.code, 503); if (error instanceof SourceInputError) throw new ConfluenceError('INVALID_CONFLUENCE_PAGE', 502); throw new ConfluenceError('CONFLUENCE_UNAVAILABLE', 503, true); }
   finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', onAbort); controller.abort(); }
 }
 

@@ -21,6 +21,8 @@ import { ReviewDeliveryRuntime } from './review-delivery.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
 import { SlackNotificationRuntime } from './slack-notifications.ts';
 import type { SlackNotificationOptions } from './slack-notifications.ts';
+import { ConfluenceSyncRuntime } from './confluence-sync.ts';
+import type { ConfluenceSyncOptions } from './confluence-sync.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
 import { sourceId, sourceMapping, validateSourceManifest, confluenceOrigin } from '../../packages/connectors/source-contract.ts';
@@ -103,6 +105,7 @@ export class KnowledgerService {
   readonly reviewDelivery: ReviewDeliveryRuntime | undefined;
   readonly reviewReminders: ReviewReminderWorker | undefined;
   readonly slackNotifications: SlackNotificationRuntime | undefined;
+  readonly confluenceSync: ConfluenceSyncRuntime | undefined;
   private reminderPosition: ReminderPosition | null = null;
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
@@ -138,7 +141,7 @@ export class KnowledgerService {
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
       embedding?: EmbeddingOptions; modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false;
-      slackNotifications?: SlackNotificationOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
+      slackNotifications?: SlackNotificationOptions; confluenceSync?: ConfluenceSyncOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
@@ -170,6 +173,23 @@ export class KnowledgerService {
         workspaceId: definition.workspace.id, refresh: () => this.refresh(), actor: actor => this.actor(actor),
         currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
       }, options.slackNotifications);
+    }
+    if (options.confluenceSync) {
+      if (!Array.isArray(options.confluenceSync.sources) || options.confluenceSync.sources.some(target => !personas.some(actor => actor.kind === 'human' && actor.org_id === target.owner?.org_id && actor.actor_id === target.owner?.actor_id))) throw new TypeError('Confluence schedules must identify configured local human owners');
+      this.confluenceSync = new ConfluenceSyncRuntime(vault, {
+        workspaceId: definition.workspace.id,
+        authorize: async (actor, signal) => {
+          signal.throwIfAborted(); await this.refresh(); signal.throwIfAborted(); this.actor(actor);
+          if (!this.config()?.serving_enabled) throw new ApiError('SERVING_FROZEN', '수집을 일시 중지했습니다.', 503);
+          await options.currentActor?.(actor); signal.throwIfAborted(); this.actor(actor);
+        },
+        request: async (actor, id, path, input, guard) => {
+          if (path === `/sources/${id}` && (!input.method || input.method === 'GET')) return this.getSource(actor, id, guard);
+          if (path === `/sources/${id}/confluence` && input.method === 'POST') return this.importSourceMarkdown(actor, id, input.body, 'confluence', guard);
+          if (path === `/sources/${id}/reconcile` && input.method === 'POST') return this.reconcileSource(actor, id, input.body, guard);
+          throw new ApiError('INVALID_INPUT', '허용되지 않은 수집 작업입니다.');
+        },
+      }, options.confluenceSync);
     }
     this.vectorIndex = options.vectorIndex;
     this.embedQuery = options.embedQuery ?? (text => developmentEmbedding(text));
@@ -1040,18 +1060,22 @@ export class KnowledgerService {
   async listSources(actor:Actor,limit=20,cursor?:string) {
     await this.refresh();this.actor(actor);return new SourceStore(this.vault).list(actor,limit,cursor);
   }
-  async getSource(actor:Actor,id:string) {
-    await this.refresh();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
+  async sourceAutomations(actor: Actor) {
+    await this.refresh(); this.actor(actor); return { schedules: this.confluenceSync?.list(actor) ?? [] };
+  }
+  async getSource(actor:Actor,id:string,guard?:()=>Promise<void>) {
+    await this.refresh();if(guard)await guard();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
     if(!source)throw new SourceStoreError('NOT_FOUND',404);return source;
   }
-  private async privateWrite<T>(actor: Actor, operation: () => T): Promise<T> {
+  private async privateWrite<T>(actor: Actor, operation: () => T, guard?:()=>Promise<void>): Promise<T> {
     await this.refresh();
+    if(guard)await guard();
     this.actor(actor);
     // No await inside operation: validation, CAS, and private writes finish atomically
     // with respect to other JS tasks, without waiting for public transport submission.
     return operation();
   }
-  importSourceMarkdown(actor:Actor,id:string,input:any,kind:'markdown'|'confluence'='markdown') {
+  importSourceMarkdown(actor:Actor,id:string,input:any,kind:'markdown'|'confluence'='markdown',guard?:()=>Promise<void>) {
     onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64',...(kind==='confluence'?['origin']:[])]);
     if(kind==='confluence')confluenceOrigin(input.origin);
     return this.privateWrite(actor,()=>{
@@ -1064,11 +1088,11 @@ export class KnowledgerService {
         const revision=this.buildDraftRevision(actor,{...slotFields(policy),title:mapping.title,...(base?{base_revision_digest:base.revision_digest}:{})},content,'approved_import');
         return {draft_id:newId('draft'),revision};
       });
-    });
+    },guard);
   }
-  reconcileSource(actor:Actor,id:string,input:any) {
+  reconcileSource(actor:Actor,id:string,input:any,guard?:()=>Promise<void>) {
     onlyFields(input,['operation_id','expected_version','present_paths']);
-    return this.privateWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input));
+    return this.privateWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input),guard);
   }
   async getRevision(actor:Actor,digest:string) {
     if(!/^sha256:[a-f0-9]{64}$/.test(digest))throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');

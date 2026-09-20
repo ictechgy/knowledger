@@ -211,6 +211,13 @@ export class ReviewStore {
     });
     return { reminders, unread_count: Number(unread.count), next_cursor: rows.length > limit ? String(rows[limit - 1].seq) : null };
   }
+  /** Owner-bound history remains addressable after a schedule is completed or reassigned. */
+  reminderReference(actor: Actor, id: string): { revision_digest: string; phase: 'due' | 'overdue' } | null {
+    const row: any = this.db.prepare('SELECT revision_digest,phase FROM review_reminders WHERE reminder_id=? AND org_id=? AND actor_id=?').get(id, actor.org_id, actor.actor_id);
+    if (!row) return null;
+    if (!DIGEST.test(row.revision_digest) || !['due', 'overdue'].includes(row.phase)) throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503);
+    return row;
+  }
   /** Only current, unread, due notices are eligible for an optional external notification. */
   outboundReminder(actor: Actor, id: string, now: string) {
     if (!iso(now)) throw new ReviewStoreError('INVALID_QUERY', 400);

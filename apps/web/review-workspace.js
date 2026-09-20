@@ -1,3 +1,5 @@
+import { createSlackManagement } from './slack-management.js';
+
 const node = (tag, value, className) => {
   const element = document.createElement(tag);
   if (value !== undefined) element.textContent = value;
@@ -11,6 +13,7 @@ const samePerson = (a, b) => a?.org_id === b?.org_id && a?.actor_id === b?.actor
 const operationId = () => `review-op-${crypto.randomUUID()}`;
 
 export function createReviewWorkspace({ request, getSession, getBase, openRevision, revise, propose, showStatus }) {
+  const slack = createSlackManagement({ request, getSession, getBase, showStatus });
   let selected = null; let session = null; let version = 0; let inboxVersion = 0;
   let review = null; let impact = null; let loading = false; let busy = false; let impactLoading = false;
   let inbox = { notifications: [], next_cursor: null, unread_count: 0 }; let due = null;
@@ -24,6 +27,7 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
   const read = (path, captured) => request(path, { sessionGuard: captured });
 
   function reset() {
+    slack.reset();
     version++; inboxVersion++; selected = null; session = null; review = null; impact = null; loading = false; busy = false; impactLoading = false;
     inbox = { notifications: [], next_cursor: null, unread_count: 0 }; due = null;
     deliveryVersion++; deliveryTargets = []; outgoing = { deliveries: [], next_cursor: null }; incoming = { deliveries: [], next_cursor: null };
@@ -229,13 +233,15 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
         }), node('p', `기한 ${date(reminder.due_at)}`, 'form-hint'));
         if (reminder.slack) {
           const labels = { pending: 'Slack 알림 대기', sending: 'Slack 전송 중', provider_accepted: 'Slack 접수 확인 · 열람 여부는 알 수 없음',
-            retry_wait: 'Slack 재시도 대기', blocked: 'Slack 전송 보류 · 연결 또는 권한 확인 필요', unknown: 'Slack 발송 여부 확인 필요 · 자동 재발송 중지', failed: 'Slack 재시도 종료', skipped: 'Slack 전송 제외 · 읽거나 지난 알림' };
+            retry_wait: 'Slack 재시도 대기', blocked: 'Slack 전송 보류 · 연결 또는 권한 확인 필요', unknown: 'Slack 발송 여부 확인 필요 · 자동 재발송 중지', failed: 'Slack 재시도 종료', skipped: 'Slack 전송 제외 · 읽거나 지난 알림',
+            user_confirmed: '본인 수신 확인 기록 · 공급자 접수 증명 아님', dismissed: '재발송 없이 종료' };
           row.append(node('p', labels[reminder.slack.status] ?? 'Slack 상태 확인 필요', 'form-hint'));
         }
         target.append(row);
       }
       if (!reminders.reminders.length) target.append(node('li', '새 기한 알림이 없습니다.', 'empty-state'));
       if (reminders.next_cursor) target.append(button('기한 알림 더 보기', () => { void refreshReminders(true); }));
+      void slack.refresh();
     } catch (error) {
       if (token === reminderVersion && captured === getSession()) {
         target.replaceChildren(node('li', error.message, 'form-hint')); document.getElementById('review-reminder-count').textContent = '—';

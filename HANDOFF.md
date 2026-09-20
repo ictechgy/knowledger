@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (임베딩·Confluence·Slack adapter 구현 및 로컬 검증 완료)_
+_Last updated: 2026-09-20 KST (운영 보강 완료·v0.9.0 게시 후보 검증)_
 
 ## Goal
 
@@ -14,6 +14,18 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **사용자 요청: 1번 게시·2번 운영 보강까지 승인**. 실제 계정 연결·실데이터 전송은
+  범위 밖이다. `feature/pilot-integrations`에서 회전 OAuth 갱신(CAS secret backend 계약),
+  Confluence 정기 수집(영속 간격/lease·현재 owner 인가·종료 취소), Slack 본인 확인/종료/
+  중복 위험 확인 후 재시도(API/UI·멱등/CAS·이력·누적 시도 보존)를 구현했다.
+  제품 버전은 **v0.9.0 후보**이며 아직 원격 게시 전이다. 기존0.8 배포와chaincode0.1.0은
+  그대로다. Node24 **618개 중617 통과·1 GC 생략**, 타입·합의/KB/peer 전달 demo·백업·
+  별도 프로세스 복구 드릴 통과. 전체 브라우저는 Chromium 캐시 부재로 실행 전 실패했으나
+  작업용 캐시에 잠긴 버전을 설치한 뒤 **38개 모두 통과**했다.
+  근거 `.artifacts/integration-operations-20260920/`. `docs/37`, `docs/38`에 운영 계약과
+  schema/복원 경계를 갱신했다. 실제 공급자 요청·키 조회·메시지는 없고 fake fetch만 사용했다.
+  다음 단계: 커밋/PR → 원격 CI → 머지/태그/릴리스/readback.
+
 - **선정한 adapter3종 구현·로컬 검증 완료**: 현재 branch `feature/pilot-integrations`.
   임베딩 `bdd5a67`, Confluence `5495774`에 이어 선택형 Slack 개인 DM 기한 알림을 구현했다.
   명시적 local human/team/user/DM 결속, 별도 default-deny 정책·현재 인가, 최소 메시지,
@@ -23,7 +35,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   실제 계정/키 연결·SaaS 요청·메시지·모델 호출은 없고 가상 fetch만 사용했다. 기존 Fabric
   데이터·키·genesis는 보존했다. 신규 코드/문서는 **원격 미게시**, 제품 버전은0.8.0이다.
   남은 것은 원격 게시 요청, 실계정/조직/반출 정책 입력과 실제 연결·한국어 검색 품질 평가다.
-  Confluence OAuth lifecycle/scheduler와 Slack unknown 운영자 조정 UI는 제공하지 않는다.
+  후속 운영 보강으로 OAuth refresh/scheduler와 Slack 본인 조정 UI도 위에 추가했다.
 
 - **Confluence 수집 구현·로컬 검증**: `feature/pilot-integrations`에서 page allowlist,
   보수적 ADF 변환·전체 재조회, 비공개 origin/site/version/hash, 멱등 import와 브라우저

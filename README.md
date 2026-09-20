@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-**v0.8 development alpha · MIT · Node.js 24+**
+**v0.9 development alpha · MIT · Node.js 24+**
 
 Each organization keeps its own knowledge and secrets while agreeing on the interpretations used for shared work. Shared knowledge documents — including body, revisions, proposals, and agreement history — are stored on a permissioned distributed ledger, and the KB/LLM wiki and RAG serve views derived from that canonical record.
 
@@ -127,9 +127,11 @@ assignees inside the app and suppress duplicates and stale schedule versions.
 
 [Optional Slack DM notifications](docs/38-SLACK-NOTIFICATIONS.md) send only a deadline
 notice and app link to explicitly mapped recipients. Provider acceptance and
-unknown outcomes are stored separately from peer receipts and human approvals.
+unknown outcomes are stored separately from peer receipts and human approvals;
+recipients can record their own checks and explicitly request an audited retry.
 [Confluence Cloud collection](docs/37-CONFLUENCE-SOURCE.md) imports allowlisted
-pages into private drafts with versioned provenance and conservative ADF conversion.
+pages into private drafts with versioned provenance and conservative ADF conversion,
+with optional rotating OAuth refresh and durable collection schedules.
 [Guarded embedding providers](docs/36-EMBEDDING-EGRESS.md) add a separate egress
 policy and a fixed-endpoint OpenAI adapter. These integrations require caller-owned
 credentials and deployment policy; live vendor connections and retrieval quality

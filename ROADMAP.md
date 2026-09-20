@@ -35,12 +35,13 @@ HTTPS/HMAC transport with a two-app simulation.
 [Local automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) shipped in v0.8.0:
 current-recipient notices, durable deduplication, stale-schedule suppression and
 visible-tab refresh.
-Live peer deployment, vendor/external reminders, a selected customer KB connector
-and a configured production embedding provider remain open.
+The v0.9.0 release candidate adds guarded embeddings, Confluence private collection
+with OAuth refresh/scheduling, and minimal Slack DMs with recipient resolution.
+Live peer deployment and customer tenant/model/data-egress configuration remain open.
 The [first integration recommendation](docs/35-PILOT-INTEGRATION-SELECTION.md)
 selects Confluence Cloud, Slack bot DMs and text-embedding-3-small as development
-targets after reviewing official documentation. Implementations and customer
-tenant/account/data-egress choices remain open; this is not a deployment claim.
+targets after reviewing official documentation. Adapter implementation is complete;
+live accounts, initial OAuth consent and secret-backend bindings remain deployment inputs.
 Dynamic organizational/policy changes require the separate
 [governance migration design](docs/32-GOVERNANCE-EVOLUTION.md), including an explicit
 choice of governance authorities and quorum; editing genesis is not a migration.

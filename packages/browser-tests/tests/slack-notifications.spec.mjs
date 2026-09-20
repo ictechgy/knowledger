@@ -49,3 +49,33 @@ test('an ambiguous Slack result is visible and has no automatic resend action', 
   await expect(page.locator('#review-reminder-list')).toContainText('Slack 발송 여부 확인 필요 · 자동 재발송 중지');
   await workspace.app.service.slackNotifications.worker.runOnce(); expect(workspace.remote.posts).toHaveLength(1);
 });
+
+test('manual receipt confirmation records a distinct status and does not mark a reminder read', async ({ page, workspace }) => {
+  workspace.remote.lost = true; await workspace.app.service.slackNotifications.worker.runOnce();
+  await page.goto(workspace.origin); await page.locator('#persona-select').selectOption(JSON.stringify({ org_id: 'BetaMSP', actor_id: 'maintainer' }));
+  const panel = page.locator('#slack-notice-panel'); await expect(panel).toBeVisible();
+  await expect(panel.getByRole('button', { name: '확인 결과 저장' })).toBeDisabled();
+  await panel.getByLabel('Slack에서 확인한 결과를 기록합니다.').check();
+  await panel.getByRole('button', { name: '확인 결과 저장' }).click();
+  await expect(panel).toContainText('본인 수신 확인 기록 · 공급자 접수 증명 아님');
+  await expect(panel).toContainText('본인이 수신 확인'); await expect(page.locator('#review-reminder-count')).toHaveText('1');
+  expect(workspace.remote.posts).toHaveLength(1); expect(workspace.app.service.values('decision')).toHaveLength(0);
+  await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.locator('#persona-select').selectOption(JSON.stringify({ org_id: 'AlphaMSP', actor_id: 'maintainer' }));
+  await expect(panel).not.toContainText('PRIVATE_TITLE');
+});
+
+test('manual resend requires duplicate-risk consent and leaves one audited retry request', async ({ page, workspace }) => {
+  workspace.remote.lost = true; await workspace.app.service.slackNotifications.worker.runOnce();
+  await page.goto(workspace.origin); await page.locator('#persona-select').selectOption(JSON.stringify({ org_id: 'BetaMSP', actor_id: 'maintainer' }));
+  const panel = page.locator('#slack-notice-panel'); await panel.getByLabel('Slack 확인 결과').selectOption('retry');
+  await panel.getByLabel('Slack에서 확인한 결과를 기록합니다.').check();
+  await expect(panel.getByRole('button', { name: '확인 결과 저장' })).toBeDisabled();
+  await panel.getByLabel('중복 알림이 생길 수 있음을 알고 재발송합니다.').check();
+  await panel.getByRole('button', { name: '확인 결과 저장' }).click();
+  await expect(panel).toContainText('Slack 재시도 대기'); await expect(panel).toContainText('본인이 재발송 요청');
+  workspace.remote.lost = false;
+  await expect.poll(async () => { await workspace.app.service.slackNotifications.worker.runOnce(); return workspace.remote.posts.length; }).toBe(2);
+  await panel.getByRole('button', { name: 'Slack 상태 새로고침' }).click();
+  await expect(panel).toContainText('Slack 접수 확인'); expect(workspace.remote.posts).toHaveLength(2);
+});

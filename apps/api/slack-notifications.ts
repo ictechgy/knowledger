@@ -1,6 +1,8 @@
 import type { Actor } from '../../packages/domain/index.ts';
 import type { PrivateStore } from '../../packages/storage/private-store.ts';
-import { deliveryHash, deliveryId, samePerson } from '../../packages/review/delivery-contract.ts';
+import { DeliveryError, deliveryHash, deliveryId, samePerson } from '../../packages/review/delivery-contract.ts';
+import { validateSlackResolution } from '../../packages/storage/slack-notice-store.ts';
+import type { SlackNotice } from '../../packages/storage/slack-notice-store.ts';
 import { createSlackAdapter } from '../../packages/review/slack.ts';
 import type { SlackAdapterOptions, SlackAddress } from '../../packages/review/slack.ts';
 import { ReviewReminderWorker } from '../../packages/review/reminder-worker.ts';
@@ -24,6 +26,7 @@ export class SlackNotificationRuntime {
   private vault: PrivateStore; private context: Context; private targets: Target[] = [];
   private targetIndex = 0; private cursors = new Map<string, string>(); private closed = false;
   private runs = new Set<Promise<unknown>>();
+  private actions = new Set<AbortController>();
   constructor(vault: PrivateStore, context: Context, options: SlackNotificationOptions) {
     this.vault = vault; this.context = context;
     if (!Array.isArray(options.targets) || options.targets.length > 32) throw new TypeError('Invalid Slack notification configuration');
@@ -86,19 +89,70 @@ export class SlackNotificationRuntime {
     if (page.next_cursor) this.cursors.set(target.binding, page.next_cursor); else this.cursors.delete(target.binding);
     return { scanned: page.reminders.length, created };
   }
+  private publicJob(actor: Actor, job: SlackNotice, target: Target | undefined) {
+    const changed = !target || job.binding !== target.binding;
+    const status = job.status === 'sending' && job.lease_until! <= Date.now() ? 'unknown'
+      : changed && !['sending', 'provider_accepted', 'user_confirmed', 'dismissed'].includes(job.status) ? 'blocked' : job.status;
+    const terminal = ['unknown', 'blocked', 'failed'].includes(status);
+    return { reminder_id: job.reminder_id, status, attempts: job.attempts, total_attempts: job.total_attempts, version: job.version, receipt: job.receipt,
+      next_attempt_at: status === 'retry_wait' ? new Date(job.next_attempt_at).toISOString() : null,
+      last_code: changed ? 'SLACK_TARGET_CHANGED' : job.last_code,
+      can_resolve: terminal, can_retry: terminal && target?.binding === job.binding && Boolean(this.vault.reviews.outboundReminder(actor, job.reminder_id, new Date().toISOString())),
+      resolutions: this.vault.slackNotices.history(actor, job.reminder_id) };
+  }
   summary(actor: Actor, id: string) {
     const target = this.targets.find(target => samePerson(target.recipient, actor));
     if (!target) return null;
     const job = this.vault.slackNotices.get(actor, id);
     if (!job) return { status: this.vault.reviews.outboundReminder(actor, id, new Date().toISOString()) ? 'pending' : 'skipped', attempts: 0, receipt: null, next_attempt_at: null, last_code: null };
-    const status = job.status === 'sending' && job.lease_until! <= Date.now() ? 'unknown'
-      : job.binding !== target.binding && job.status !== 'provider_accepted' ? 'blocked' : job.status;
-    return { status, attempts: job.attempts, receipt: job.receipt,
-      next_attempt_at: status === 'retry_wait' ? new Date(job.next_attempt_at).toISOString() : null,
-      last_code: job.binding !== target.binding ? 'SLACK_TARGET_CHANGED' : job.last_code };
+    return this.publicJob(actor, job, target);
+  }
+  private async action<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController(); this.actions.add(controller);
+    let reject!: (reason: Error) => void; const cancelled = new Promise<never>((_, fail) => { reject = fail; });
+    const abort = () => controller.abort(); const onAbort = () => reject(new DeliveryError('SLACK_ACTION_UNAVAILABLE', 503));
+    controller.signal.addEventListener('abort', onAbort, { once: true }); signal.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, 10000); if (signal.aborted || this.closed) abort();
+    try { return await Promise.race([operation(controller.signal), cancelled]); }
+    finally { clearTimeout(timer); signal.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', onAbort); this.actions.delete(controller); controller.abort(); }
+  }
+  list(actor: Actor, input: { limit?: number; cursor?: string }, signal: AbortSignal) {
+    return this.action(signal, current => this.listCurrent(actor, input, current));
+  }
+  private async listCurrent(actor: Actor, input: { limit?: number; cursor?: string }, signal: AbortSignal) {
+    if (!await this.authorize(actor, signal) || actor.kind !== 'human') throw new DeliveryError('SLACK_ACCESS_DENIED', 403);
+    const target = this.targets.find(target => samePerson(target.recipient, actor));
+    const page = this.vault.slackNotices.list(actor, input);
+    return { enabled: true, next_cursor: page.next_cursor, notices: page.notices.map(job => {
+      const ref = this.vault.reviews.reminderReference(actor, job.reminder_id); if (!ref) throw new DeliveryError('SLACK_RECORD_UNAVAILABLE', 503);
+      const revision = this.context.revision(ref.revision_digest);
+      return { ...this.publicJob(actor, job, target), ...ref, title: revision.payload.title };
+    }) };
+  }
+  resolve(actor: Actor, id: string, value: unknown, signal: AbortSignal) {
+    return this.action(signal, current => this.resolveCurrent(actor, id, value, current));
+  }
+  private async resolveCurrent(actor: Actor, id: string, value: unknown, signal: AbortSignal) {
+    const input = validateSlackResolution(value); if (!deliveryId(id)) throw new DeliveryError('INVALID_INPUT');
+    if (!await this.authorize(actor, signal) || actor.kind !== 'human') throw new DeliveryError('SLACK_ACCESS_DENIED', 403);
+    const target = this.targets.find(target => samePerson(target.recipient, actor));
+    const replay = this.vault.slackNotices.resolutionReplay(actor, id, input); if (replay) return this.publicJob(actor, replay, target);
+    const reference = this.vault.reviews.reminderReference(actor, id); if (!reference) throw new DeliveryError('NOT_FOUND', 404);
+    this.context.revision(reference.revision_digest);
+    if (input.outcome === 'retry') {
+      if (!target || !this.vault.reviews.outboundReminder(actor, id, new Date().toISOString())) throw new DeliveryError('SLACK_RETRY_NOT_ALLOWED', 409);
+      if (await target.allows?.({ recipient: { ...actor }, address: { ...target.adapter.address }, reminder_id: id,
+        revision_digest: reference.revision_digest, phase: reference.phase, signal }) !== true) throw new DeliveryError('SLACK_ACCESS_DENIED', 403);
+      if (!await this.authorize(actor, signal)) throw new DeliveryError('SLACK_ACCESS_DENIED', 403);
+      this.context.revision(reference.revision_digest);
+    }
+    this.check(signal);
+    const job = this.vault.slackNotices.resolve(actor, id, target?.binding ?? null, input,
+      () => Boolean(this.vault.reviews.outboundReminder(actor, id, new Date().toISOString())), Date.now());
+    return this.publicJob(actor, job, target);
   }
   async close() {
-    this.closed = true; await this.worker.close();
+    this.closed = true; for (const action of this.actions) action.abort(); await this.worker.close();
     // Adapter cancellation races callbacks, so every active DB settlement ends promptly.
     await Promise.allSettled([...this.runs]);
   }

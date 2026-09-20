@@ -17,7 +17,7 @@ const SUMMARY_FIELDS = {
 const SUMMARY_COLUMNS = Object.entries(SUMMARY_FIELDS).map(([name, path]) =>
   `CASE WHEN json_valid(value_json) THEN json_extract(value_json, '${path}') END AS ${name}`).join(', ');
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
-type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-operation';
+type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-operation' | 'source-schedule';
 
 /** Local-only records. This database is never consumed by the shared ledger projector. */
 export class PrivateStore {

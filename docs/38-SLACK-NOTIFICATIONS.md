@@ -79,6 +79,7 @@ DB transaction과45초 lease로 중복 claim을 막고 동일 DM은 동시 전�
 | `blocked` / `failed` | 정책·연결·주소 불일치·명확한 거절 / 허용된 시도 소진. 자동 재시도 없음 |
 | `unknown` | post 이후 timeout/응답 유실/잘못된 응답/서버 오류 또는 만료된 sending lease. 자동 재발송 없음 |
 | `skipped` | 읽거나 지난 알림이어서 발송 대상에서 제외 |
+| `user_confirmed` / `dismissed` | 본인이 수신을 확인했다고 기록 / 재발송 없이 종료. 공급자 접수 응답이 아님 |
 
 429의 `Retry-After`는1초~24시간 범위에서 그대로 기다리며 같은 workspace에도 대기 시간을
 적용한다. 없거나 파싱 불가·범위 초과면 자동 재시도를 중지한다. HTTP200이어도 `ok`와
@@ -86,9 +87,33 @@ channel/ts를 검증한다. Slack은 internal/fatal 오류 시 일부 작업이 
 명시하므로 이런 응답은 unknown이다. [오류 계약](https://docs.slack.dev/reference/methods/chat.postMessage/).
 
 기존 앱 간 `ReviewReceipt`를 생성하지 않고 원장·댓글 이벤트·승인·읽음 상태도 바꾸지 않는다.
-브라우저 본인 기한 알림에 Slack 접수/대기/불명 상태를 표시한다. Slack 이력 조회나
-unknown 강제 재발송·운영자 조정 UI는 제공하지 않는다. 불명 메시지는 Slack에서 실제
-상태를 확인해야 하며 exactly-once 전송을 주장하지 않는다.
+브라우저 본인 기한 알림에 Slack 접수/대기/불명 상태를 표시한다. 자동 Slack 이력 조회는
+하지 않는다. 불명 메시지는 Slack에서 실제 상태를 확인해야 하며 exactly-once 전송을 주장하지 않는다.
+
+## 본인 확인·재처리
+
+**내 Slack 전송 관리**는 완료되거나 읽은 일정의 전송도 별도로 보여준다.
+현재 human 수신자 본인만 unknown/blocked/failed 건을 처리한다. 별도 관리자 역할이나
+다른 사람의 알림 처리 권한을 기본으로 만들지 않는다.
+
+- **수신 직접 확인**: `user_confirmed`로 기록한다. 공급자 receipt를 만들거나 앱 알림을
+  읽음 처리하거나 사람 합의 승인을 생성하지 않는다.
+- **재발송 없이 종료**: `dismissed`로 기록하며 추가 메시지를 보내지 않는다.
+- **재발송 요청**: 현재도 미열람·유효한 일정이고 target binding과 전송 정책이 일치해야 한다.
+  사용자가 확인 결과와 **중복 가능성**을 각각 확인하면 새로운 최대3회 시도 구간을 허용한다.
+  기존 누적 시도 수와 확인 이력은 보존하며 DM/429 대기 시간을 우회하지 않는다.
+
+`GET /slack-notices`는 본인 목록을 pagination하고, `POST /slack-notices/:id/resolve`는
+operation_id/expected_version/outcome/confirm(재시도는 confirm_duplicate_risk도 true)을 받는다.
+session·CSRF·현재 계정/인가와 CAS를 검사하며 확인 이력과 상태를 하나의 transaction에 쓴다.
+같은 operation의 응답 유실 재요청은 재발송 횟수를 다시 초기화하지 않는다. 변경된 payload나
+오래된 version은409로 거절한다. API 취소·종료 뒤 늦게 끝난 정책 조회는 쓰기를 할 수 없다.
+최근20개 확인 이력을 표시하고 전체 이력은 private DB에 보존한다.
+
+이전 Slack table에는 version·total_attempts 열과 별도 확인 이력 table을 추가한다.
+기존 접수/불명 상태와 시도 수는 유지된다. 업데이트 전에 stopped-app snapshot을 만들고,
+구형 앱으로 단순 바이너리 롤백하지 않는다. 구형 reader는 새 상태를 이해하지 못하므로
+새 reader를 유지하거나 별도 복원 디렉터리에서 호환성을 확인한다.
 
 ## 백업과 운영 경계
 

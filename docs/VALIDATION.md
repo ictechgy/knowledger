@@ -1,5 +1,33 @@
 # 검증 기록
 
+## 통합 운영 보강·v0.9.0 후보 — 2026-09-20
+
+사용자가 원격 게시와 운영 보강을 승인했다. OAuth 회전 토큰 갱신과 Confluence 정기 수집,
+Slack 본인 확인/종료/재시도 UI·API를 추가했다. 실제 secret backend·계정 호출 없이
+가상 provider와 격리 앱으로 검증했고 기존 Fabric 네트워크·키·genesis는 조작하지 않았다.
+
+- Node24 `npm run check`: **618 tests /617 passed /0 failed /1 GC skipped**.
+  `npm run check:types`, 합의·KB·peer 전달 demo, stopped-app 백업 리허설과 별도 프로세스
+  복구 드릴 통과. 독립 물리 호스트나 실제 Fabric 장애 시험은 아니다.
+- OAuth8개: intent→회전→CAS 저장 후 반환, current grant/정책 재확인, 동시 공급자1회만 호출,
+  응답 유실/invalid grant/중복 JSON/저장 실패/교체 경합, timeout·늦은 key와 SQL CAS 계약.
+  배포용 암호화 secret store와 최초 OAuth 동의는 연결하지 않았다.
+- Scheduler6개: private import·영속 간격·복원 후 중복 방지, 현재 serving 차단, 늦은 token 및
+  import refresh 중 종료 후 쓰기0회, 두 DB 연결의 lease 중복 차단, 자동 실행과 owner 격리.
+- Slack 새6개: 일정 완료 뒤에도 본인 확인 이력 보존, receipt/승인 비생성, 명시적 중복 위험
+  확인·policy/CAS/멱등과 누적 시도, 읽음 뒤 재시도 거절/종료, HTTP actor/CSRF/query 제한,
+  정책 대기 중 취소와 이전 schema의 상태·시도 보존 migration.
+- Chromium **38개 통과**: 기존35개와 source 자동 수집 상태/actor 격리, Slack 수신 직접
+  확인·재발송 동의/이력3개를 검증했다. 최초 전체 실행은 기본 Chromium 캐시 부재로 기동
+  실패했고 `.artifacts/playwright-cache`에 잠긴 v1243을 설치한 뒤 전체를 재실행했다.
+  중간 재발송 테스트는 실제1초 DM 대기 규칙을 반영하도록 polling 단언으로 수정했다.
+- 제품 manifest/lockfile만0.9.0으로 갱신했으며 의존성 graph와 chaincode0.1.0은 유지했다.
+  최종 런타임 검사 뒤의 문서/버전 표기는 구조·참조/버전 대조로 확인했다.
+
+근거 `.artifacts/integration-operations-20260920/`의 `check-final.log`, `types.log`,
+`browser-final.log`, `demo.log`, `kb-demo.log`, `delivery-demo.log`, `backup.log`, `drill.log`.
+실제 외부 발송/tenant/model 품질을 검증한 것은 아니며 원격 CI·게시 결과는 별도로 기록한다.
+
 ## Slack 개인 DM 알림·통합 회귀 — 2026-09-20
 
 Node24 `npm run check`: **598 tests /597 passed /0 failed /1 GC skipped**.
