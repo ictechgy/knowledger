@@ -304,6 +304,27 @@ export class KnowledgerService {
     };
   }
 
+  /** Resolve only shared, canonical revisions. Callers cannot supply a forged slot. */
+  private draftDependencies(input: unknown): domain.RevisionDependency[] {
+    if (!Array.isArray(input) || input.length > 32) throw new ApiError('INVALID_INPUT', '참조 개정은 최대 32개까지 선택할 수 있습니다.');
+    for (const dependency of input) {
+      onlyFields(dependency, ['revision_digest', 'relationship', 'enforcement']);
+      if (typeof dependency.revision_digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(dependency.revision_digest)
+        || typeof dependency.relationship !== 'string' || !/^[a-z][a-z0-9_:-]{2,63}$/.test(dependency.relationship)
+        || !['requires_active', 'informational'].includes(dependency.enforcement)) {
+        throw new ApiError('INVALID_INPUT', '참조 개정, 관계 또는 사용 조건이 올바르지 않습니다.');
+      }
+    }
+    return input.map(dependency => {
+      const revision = domain.validateRevision(this.revision(dependency.revision_digest));
+      if (revision.revision_digest !== dependency.revision_digest || revision.payload.channel_id !== this.ledger.channelId) {
+        throw new ApiError('PROJECTION_INVALID', '공유 개정의 원장 바인딩을 확인할 수 없습니다.', 503);
+      }
+      return { ...slotFields(revision.payload), revision_digest: revision.revision_digest,
+        relationship: dependency.relationship, enforcement: dependency.enforcement };
+    });
+  }
+
   /** Build and validate the same private revision shape for manual and imported drafts. */
   private buildDraftRevision(actor: Actor, input: any, bodyMarkdown: string, sourceKind: 'human_authored' | 'approved_import' | 'llm_drafted') {
     const base = input.base_revision_digest ? this.revision(input.base_revision_digest) : undefined;
@@ -312,6 +333,7 @@ export class KnowledgerService {
       document_id: input.document_id ?? newId('doc'), context_id: input.context_id,
       scope_id: input.scope_id, usage_scope: input.usage_scope, visibility: 'shared_channel', dependencies: [],
     };
+    if (input.dependencies !== undefined) payload.dependencies = this.draftDependencies(input.dependencies);
     Object.assign(payload, { revision_id: newId('rev'), title: input.title, body_markdown: bodyMarkdown,
       parents: base ? [base.revision_digest] : [], metadata: { author_id: actor.actor_id, author_org_id: actor.org_id,
         created_at: new Date().toISOString(), source_kind: sourceKind, shared_assertions: [] } });
@@ -320,8 +342,9 @@ export class KnowledgerService {
     return revision;
   }
 
-  private buildResumedRevision(actor: Actor, base: any, title: string, bodyMarkdown: string, sourceKind: 'human_authored' | 'approved_import' | 'llm_drafted') {
+  private buildResumedRevision(actor: Actor, base: any, title: string, bodyMarkdown: string, sourceKind: 'human_authored' | 'approved_import' | 'llm_drafted', dependencies?: domain.RevisionDependency[]) {
     const payload = structuredClone(base.payload);
+    if (dependencies !== undefined) payload.dependencies = dependencies;
     Object.assign(payload, {
       revision_id: newId('rev'), title, body_markdown: bodyMarkdown,
       metadata: { ...payload.metadata, author_id: actor.actor_id, author_org_id: actor.org_id, created_at: new Date().toISOString(), source_kind: sourceKind },
@@ -678,7 +701,7 @@ export class KnowledgerService {
   async draft(actor: Actor, input: any) {
     await this.refresh();
     this.actor(actor);
-    onlyFields(input, ['base_revision_digest', 'title', 'body_markdown', 'source_kind', 'context_id', 'scope_id', 'usage_scope', 'document_id']);
+    onlyFields(input, ['base_revision_digest', 'title', 'body_markdown', 'source_kind', 'context_id', 'scope_id', 'usage_scope', 'document_id', 'dependencies']);
     const revision = this.buildDraftRevision(actor, input, input.body_markdown, input.source_kind ?? (actor.kind === 'agent' ? 'llm_drafted' : 'human_authored'));
     const draftId = newId('draft');
     this.vault.put('draft', draftId, actor, { revision });
@@ -709,7 +732,7 @@ export class KnowledgerService {
   }
 
   async resumeDraft(actor: Actor, draftId: string, input: any) {
-    onlyFields(input, ['edit_id', 'title', 'body_markdown', 'source_kind']);
+    onlyFields(input, ['edit_id', 'title', 'body_markdown', 'source_kind', 'dependencies']);
     identifier(draftId);
     identifier(input.edit_id);
     if (typeof input.title !== 'string' || typeof input.body_markdown !== 'string') throw new ApiError('INVALID_INPUT', '초안 제목과 본문이 필요합니다.');
@@ -728,16 +751,17 @@ export class KnowledgerService {
         return { draft_id: newDraftId, revision: existingRevision, source_draft_id: draftId };
       }
       const sourceKind = input.source_kind ?? base.payload.metadata.source_kind;
+      const dependencies = input.dependencies === undefined ? undefined : this.draftDependencies(input.dependencies);
       let revision: any;
-      try { revision = this.buildResumedRevision(actor, base, input.title, input.body_markdown, sourceKind); }
-      catch { throw new ApiError('INVALID_INPUT', '초안 제목 또는 본문이 올바르지 않습니다.'); }
+      try { revision = this.buildResumedRevision(actor, base, input.title, input.body_markdown, sourceKind, dependencies); }
+      catch { throw new ApiError('INVALID_INPUT', '초안 제목, 본문 또는 참조가 올바르지 않습니다.'); }
       this.vault.put('draft', newDraftId, actor, { revision, source_draft_id: draftId, request_digest: requestDigest });
       return { draft_id: newDraftId, revision, source_draft_id: draftId };
     });
   }
 
   async importMarkdown(actor: Actor, input: any) {
-    onlyFields(input, ['import_id', 'filename', 'content_base64', 'title', 'context_id', 'scope_id', 'usage_scope', 'document_id', 'base_revision_digest']);
+    onlyFields(input, ['import_id', 'filename', 'content_base64', 'title', 'context_id', 'scope_id', 'usage_scope', 'document_id', 'base_revision_digest', 'dependencies']);
     identifier(input.import_id);
     if (input.base_revision_digest !== undefined && (typeof input.base_revision_digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(input.base_revision_digest))) throw new ApiError('INVALID_INPUT', '올바른 기존 개정 digest가 필요합니다.');
     return this.privateWrite(actor, () => {

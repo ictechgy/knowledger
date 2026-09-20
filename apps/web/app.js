@@ -30,6 +30,15 @@ const state = {
   markdownImportRequest: null,
   draftSourceId: null,
   draftEditRequest: null,
+  draftBusy: false,
+  draftDependencies: [],
+  dependencyBaseDigest: null,
+  dependencyRequestVersion: 0,
+  dependencyLoading: false,
+  dependencyError: null,
+  dependencySearchVersion: 0,
+  dependencySearchBusy: false,
+  dependencySearch: { results: [], total: 0, next_cursor: null, query: '' },
   privateDrafts: { drafts: [], total: 0, next_cursor: null },
   draftListVersion: 0,
   commands: { commands: [], next_cursor: null },
@@ -577,6 +586,145 @@ function setDraftSlotReadOnly(readOnly) {
   for (const id of ['draft-context', 'draft-scope', 'draft-usage']) el(id).readOnly = readOnly;
 }
 
+function dependencyInputs() {
+  return state.draftDependencies.map(({ revision_digest, relationship, enforcement }) => ({ revision_digest, relationship, enforcement }));
+}
+
+function resetDependencyEditor() {
+  state.dependencyRequestVersion++;
+  state.dependencySearchVersion++;
+  state.dependencyLoading = false; state.dependencyError = null; state.dependencySearchBusy = false;
+  state.draftDependencies = []; state.dependencyBaseDigest = null;
+  state.dependencySearch = { results: [], total: 0, next_cursor: null, query: '' };
+  setValue(el('dependency-query'), '');
+  text(el('dependency-search-status'), '');
+  renderDraftDependencies(); renderDependencyResults();
+}
+
+function acceptDraftDependencies(dependencies, baseDigest) {
+  state.dependencyRequestVersion++;
+  state.dependencyLoading = false; state.dependencyError = null;
+  state.dependencyBaseDigest = baseDigest;
+  state.draftDependencies = structuredClone(dependencies || []);
+  renderDraftDependencies(); updateDraftControls();
+}
+
+async function loadDraftDependencies(baseDigest) {
+  if (baseDigest === state.dependencyBaseDigest && !state.dependencyError && !state.dependencyLoading) return;
+  const version = ++state.dependencyRequestVersion; const session = state.session;
+  state.dependencyLoading = true; state.dependencyError = null; state.draftDependencies = [];
+  renderDraftDependencies(); updateDraftControls();
+  try {
+    const revision = await request(`${apiBase}/revisions/${encodeURIComponent(baseDigest)}`, { sessionGuard: session });
+    if (version !== state.dependencyRequestVersion || session !== state.session || baseDigest !== state.draftBaseDigest) return;
+    if (revision.revision_digest !== baseDigest || !Array.isArray(revision.payload?.dependencies)) throw new Error('기존 개정의 참조를 확인할 수 없습니다.');
+    acceptDraftDependencies(revision.payload.dependencies, baseDigest);
+  } catch (error) {
+    if (version === state.dependencyRequestVersion && session === state.session) state.dependencyError = `기존 참조를 불러오지 못했습니다. ${error.message}`;
+  } finally {
+    if (version === state.dependencyRequestVersion && session === state.session) {
+      state.dependencyLoading = false; renderDraftDependencies(); updateDraftControls();
+    }
+  }
+}
+
+function dependencyHeading(dependency, title) {
+  const heading = document.createElement('div'); heading.className = 'dependency-heading';
+  const name = document.createElement('strong'); name.textContent = title || dependency.title
+    || currentDocuments().find(doc => doc.revision_digest === dependency.revision_digest)?.payload?.title || dependency.document_id;
+  const detail = document.createElement('span'); detail.className = 'form-hint';
+  detail.textContent = `${contextLabel(dependency.context_id)} · ${dependency.scope_id} · ${dependency.usage_scope} · 개정 ${shortDigest(dependency.revision_digest)}`;
+  heading.append(name, detail); return heading;
+}
+
+function renderDraftDependencies() {
+  const list = el('draft-dependency-list'); list.replaceChildren();
+  text(el('dependency-status'), state.dependencyError || (state.dependencyLoading ? '기존 참조 개정을 확인하는 중…' : `참조 ${state.draftDependencies.length}/32개 · 선택한 개정은 자동으로 최신본으로 바뀌지 않습니다.`));
+  el('retry-dependencies').hidden = !state.dependencyError;
+  state.draftDependencies.forEach((dependency, index) => {
+    const item = document.createElement('li'); item.append(dependencyHeading(dependency));
+    const controls = document.createElement('div'); controls.className = 'dependency-conditions';
+    const relationshipLabel = document.createElement('label'); relationshipLabel.textContent = '참조 관계';
+    const relationship = document.createElement('select');
+    const relations = [['reference', '근거 참조'], ['definition', '용어 정의'], ['procedure', '절차·규칙'], ['mapping', '관점 연결']];
+    if (!relations.some(([value]) => value === dependency.relationship)) relations.push([dependency.relationship, `기존 관계 (${dependency.relationship})`]);
+    for (const [value, label] of relations) { const option = document.createElement('option'); option.value = value; option.textContent = label; relationship.append(option); }
+    relationship.value = dependency.relationship;
+    relationship.addEventListener('input', () => { dependency.relationship = relationship.value; });
+    relationshipLabel.append(relationship);
+    const enforcementLabel = document.createElement('label'); enforcementLabel.textContent = '사용 조건';
+    const enforcement = document.createElement('select');
+    for (const [value, label] of [['requires_active', '활성 합의가 필요함'], ['informational', '참고만 함']]) {
+      const option = document.createElement('option'); option.value = value; option.textContent = label; enforcement.append(option);
+    }
+    enforcement.value = dependency.enforcement;
+    enforcement.addEventListener('input', () => { dependency.enforcement = enforcement.value; });
+    enforcementLabel.append(enforcement); controls.append(relationshipLabel, enforcementLabel);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'outline-button'; remove.textContent = '참조 제거';
+    remove.addEventListener('click', () => {
+      state.draftDependencies.splice(index, 1); invalidateDraftPreview(); renderDraftDependencies(); renderDependencyResults();
+      text(el('draft-status'), '변경한 참조를 새 비공개 초안으로 저장하세요.');
+    });
+    item.append(controls, remove); list.append(item);
+  });
+}
+
+function renderDependencyResults() {
+  const list = el('dependency-results'); list.replaceChildren();
+  for (const revision of state.dependencySearch.results) {
+    const { channel_id, document_id, context_id, scope_id, usage_scope } = revision.payload;
+    const dependency = { channel_id, document_id, context_id, scope_id, usage_scope, revision_digest: revision.revision_digest };
+    const item = document.createElement('li'); item.append(dependencyHeading(dependency, revision.payload.title));
+    const status = document.createElement('p'); status.className = 'form-hint';
+    status.textContent = revision.eligible ? '조회 시점에 사용 가능한 합의' : '현재 사용 불가 또는 합의 전 · 초안 참조로는 선택할 수 있습니다.';
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'outline-button';
+    const selected = state.draftDependencies.some(entry => entry.revision_digest === revision.revision_digest);
+    add.textContent = selected ? '추가된 개정' : '이 개정 참조'; add.disabled = selected || state.draftDependencies.length >= 32;
+    add.addEventListener('click', () => {
+      if (state.draftDependencies.length >= 32 || state.draftDependencies.some(entry => entry.revision_digest === revision.revision_digest)) return;
+      state.draftDependencies.push({ ...dependency, title: revision.payload.title, relationship: 'reference', enforcement: 'requires_active' });
+      invalidateDraftPreview(); renderDraftDependencies(); renderDependencyResults();
+      text(el('draft-status'), '선택한 참조를 포함해 비공개 초안을 저장하세요.');
+    });
+    item.append(status, add); list.append(item);
+  }
+  el('more-dependencies').hidden = !state.dependencySearch.next_cursor;
+  el('more-dependencies').disabled = state.dependencySearchBusy;
+  el('search-dependencies').disabled = state.dependencySearchBusy;
+}
+
+async function searchDependencies(append = false) {
+  if (state.dependencySearchBusy || state.dependencyLoading || state.draftBaseLookupPending || state.draftBusy) return;
+  const cursor = append ? state.dependencySearch.next_cursor : null;
+  if (append && !cursor) return;
+  const version = ++state.dependencySearchVersion; const session = state.session;
+  const query = append ? state.dependencySearch.query : el('dependency-query').value;
+  state.dependencySearchBusy = true; renderDependencyResults(); text(el('dependency-search-status'), '공유 개정을 찾는 중…');
+  try {
+    const page = await request(`${apiBase}/search`, { method: 'POST', body: jsonBody({ query, limit: 20, ...(cursor ? { cursor } : {}) }), sessionGuard: session });
+    if (version !== state.dependencySearchVersion || session !== state.session) return;
+    state.dependencySearch = { results: append ? [...state.dependencySearch.results, ...page.results] : page.results,
+      next_cursor: page.next_cursor, total: page.total, query };
+    text(el('dependency-search-status'), `${state.dependencySearch.results.length}/${page.total}개 개정 · 제목과 범위를 확인해 선택하세요.`);
+  } catch (error) {
+    if (version === state.dependencySearchVersion && session === state.session) text(el('dependency-search-status'), `공유 개정 검색 실패: ${error.message}`);
+  } finally {
+    if (version === state.dependencySearchVersion && session === state.session) { state.dependencySearchBusy = false; renderDependencyResults(); }
+  }
+}
+
+function appendDependencySummary(container, dependencies) {
+  if (!dependencies?.length) return;
+  const heading = document.createElement('h3'); heading.className = 'subheading'; heading.textContent = `참조하는 공유 개정 ${dependencies.length}개`;
+  const list = document.createElement('ul'); list.className = 'dependency-list';
+  for (const dependency of dependencies) {
+    const item = document.createElement('li'); item.append(dependencyHeading(dependency));
+    const condition = document.createElement('span'); condition.textContent = `${dependency.relationship} · ${dependency.enforcement === 'requires_active' ? '활성 합의가 필요함' : '참고만 함'}`;
+    item.append(condition); list.append(item);
+  }
+  container.append(heading, list);
+}
+
 function draftPolicies() {
   const currentPersona = (state.session?.personas || []).find((persona) => persona.org_id === state.session?.actor?.org_id && persona.actor_id === state.session?.actor?.actor_id);
   const publishContexts = state.session?.capabilities?.publish_contexts || currentPersona?.publish_contexts || state.session?.actor?.publish_contexts || [];
@@ -607,9 +755,7 @@ function syncDraftPolicies(preferred = null) {
   const hint = el('draft-policy-status');
   text(hint, policies.length ? '선택한 정책의 문서 범위가 자동으로 입력됩니다.' : '작성 가능한 정책이 없습니다. 관리자가 정책과 게시 범위를 먼저 설정해야 합니다.');
   select.disabled = state.draftSourceId !== null || !policies.length;
-  const allowed = Boolean(policies.length);
-  el('save-draft')?.toggleAttribute('disabled', !allowed || Boolean(state.draft));
-  el('import-markdown')?.toggleAttribute('disabled', !allowed);
+  updateDraftControls();
 }
 
 function applyDraftPolicy(policy, { preserveBase = true } = {}) {
@@ -622,11 +768,13 @@ function applyDraftPolicy(policy, { preserveBase = true } = {}) {
   if (preserveBase) {
     const policyKey = slotKeyFor(policy);
     const lookupInProgress = state.draftBaseLookupPolicyKey === policyKey && (state.draftBaseLookupPending || state.draftBaseLookupComplete);
-    if (existing) {
+    if (existing && !lookupInProgress) {
       ++state.draftBaseLookupVersion; state.draftBaseLookupPending = false; state.draftBaseLookupError = null; state.draftBaseLookupPolicyKey = policyKey; state.draftBaseLookupComplete = true; state.draftBaseDigest = existing.revision_digest;
+      void loadDraftDependencies(existing.revision_digest);
     } else if (!lookupInProgress) {
       const lookupVersion = ++state.draftBaseLookupVersion;
       state.draftBaseLookupPending = false; state.draftBaseLookupError = null; state.draftBaseLookupPolicyKey = policyKey; state.draftBaseLookupComplete = false; state.draftBaseDigest = null;
+      resetDependencyEditor();
       void loadPolicyBase(policy, lookupVersion);
     }
   }
@@ -636,25 +784,27 @@ function applyDraftPolicy(policy, { preserveBase = true } = {}) {
 async function loadPolicyBase(policy, version) {
   const session = state.session;
   state.draftBaseLookupPending = true;
+  updateDraftControls();
   try {
     let cursor = null;
     while (true) {
       const page = await request(`${apiBase}/documents/${encodeURIComponent(policy.document_id)}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { sessionGuard: session });
       if (session !== state.session || version !== state.draftBaseLookupVersion) return;
       const base = (page.revisions || []).find((revision) => sameRevisionSlot(revision.payload, policy));
-      if (base) { state.draftBaseDigest = base.revision_digest; return; }
+      if (base) { state.draftBaseDigest = base.revision_digest; await loadDraftDependencies(base.revision_digest); return; }
       if (!page.next_cursor) return;
       cursor = page.next_cursor;
     }
   } catch (error) {
     if (error.status !== 404 && session === state.session && version === state.draftBaseLookupVersion) { state.draftBaseLookupError = `문서의 최신 개정본을 확인하지 못했습니다. ${error.message}`; text(el('draft-status'), state.draftBaseLookupError); }
   } finally {
-    if (session === state.session && version === state.draftBaseLookupVersion) { state.draftBaseLookupPending = false; state.draftBaseLookupComplete = !state.draftBaseLookupError; }
+    if (session === state.session && version === state.draftBaseLookupVersion) { state.draftBaseLookupPending = false; state.draftBaseLookupComplete = !state.draftBaseLookupError; updateDraftControls(); }
   }
 }
 
 function enterSavedDraftMode(draft) {
   state.draft = draft; state.draftSourceId = draft.draft_id;
+  acceptDraftDependencies(draft.revision.payload.dependencies, state.draftBaseDigest);
   setDraftSlotReadOnly(true); document.querySelector('.markdown-import').hidden = true;
   text(el('composer-title'), '저장한 초안 검토');
   text(el('save-draft'), '수정 내용을 새 초안으로 저장');
@@ -1041,6 +1191,7 @@ function renderDocumentDetail(doc) {
   const pre = document.createElement('pre'); pre.className = 'markdown-source'; pre.textContent = payload.body_markdown || ''; source.append(sourceHead, pre);
   const detailActions = document.createElement('div'); detailActions.className = 'detail-actions'; const revise = document.createElement('button'); revise.type = 'button'; revise.className = 'outline-button'; revise.textContent = '이 문서의 새 개정본 작성'; revise.addEventListener('click', () => openComposer('revise', doc)); detailActions.append(revise);
   body.append(title, description, evidence, source, detailActions);
+  appendDependencySummary(body, payload.dependencies);
   const historyItems = state.selectedHistory.revisions?.length ? state.selectedHistory.revisions : doc.history;
   if (historyItems?.length) {
     const history = document.createElement('div'); history.className = 'history-section'; const heading = document.createElement('h3'); heading.className = 'subheading'; heading.textContent = '개정 이력'; const list = document.createElement('div'); list.className = 'history-list';
@@ -1337,7 +1488,7 @@ async function changeAgreement(proposal, action) {
 
 async function onDraftSubmit(event) {
   event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); text(el('draft-status'), '비공개 저장소에 저장 중…');
-  if (state.draftBaseLookupPending || state.draftBaseLookupError) { text(el('draft-status'), state.draftBaseLookupError || '문서의 최신 개정본을 확인하는 중입니다. 잠시 후 다시 저장하세요.'); return; }
+  if (state.draftBaseLookupPending || state.draftBaseLookupError || state.dependencyLoading || state.dependencyError) { text(el('draft-status'), state.dependencyError || state.draftBaseLookupError || '기존 개정과 참조를 확인하는 중입니다. 잠시 후 다시 저장하세요.'); return; }
   const version = ++state.composerVersion; const session = state.session;
   setDraftBusy(true);
   const payload = Object.fromEntries(data.entries());
@@ -1350,12 +1501,13 @@ async function onDraftSubmit(event) {
     payload.usage_scope = policy.usage_scope;
   }
   delete payload.policy_id;
+  payload.dependencies = dependencyInputs();
   if (state.draftBaseDigest) payload.base_revision_digest = state.draftBaseDigest;
   try {
     let path = `${apiBase}/drafts`; let input = payload;
     if (state.draftSourceId) {
       path += `/${encodeURIComponent(state.draftSourceId)}/edits`;
-      input = { title: payload.title, body_markdown: payload.body_markdown, source_kind: payload.source_kind };
+      input = { title: payload.title, body_markdown: payload.body_markdown, source_kind: payload.source_kind, dependencies: payload.dependencies };
       const fingerprint = JSON.stringify({ source: state.draftSourceId, input });
       if (state.draftEditRequest?.fingerprint !== fingerprint) state.draftEditRequest = { fingerprint, editId: nowCommand() };
       input.edit_id = state.draftEditRequest.editId;
@@ -1369,8 +1521,16 @@ async function onDraftSubmit(event) {
 }
 
 function setDraftBusy(busy) {
-  el('save-draft').disabled = busy || Boolean(state.draft);
-  el('import-markdown').disabled = busy;
+  state.draftBusy = busy;
+  updateDraftControls();
+}
+
+function updateDraftControls() {
+  const blocked = state.draftBusy || state.dependencyLoading || Boolean(state.dependencyError)
+    || state.draftBaseLookupPending || Boolean(state.draftBaseLookupError) || !draftPolicies().length;
+  el('save-draft').disabled = blocked || Boolean(state.draft);
+  el('import-markdown').disabled = blocked;
+  el('dependency-controls').disabled = blocked;
 }
 
 function invalidateDraftPreview() {
@@ -1388,13 +1548,14 @@ async function importMarkdown() {
   const policy = selectedDraftPolicy();
   if (!policy) { text(el('draft-status'), '먼저 가져올 문서 범위를 선택하세요.'); return; }
   applyDraftPolicy(policy);
-  if (state.draftBaseLookupPending || state.draftBaseLookupError) { text(el('draft-status'), state.draftBaseLookupError || '문서의 최신 개정본을 확인하는 중입니다. 잠시 후 다시 가져오세요.'); return; }
+  if (state.draftBaseLookupPending || state.draftBaseLookupError || state.dependencyLoading || state.dependencyError) { text(el('draft-status'), state.dependencyError || state.draftBaseLookupError || '기존 개정과 참조를 확인하는 중입니다. 잠시 후 다시 가져오세요.'); return; }
   for (const id of ['draft-title', 'draft-context', 'draft-scope', 'draft-usage']) if (!el(id).reportValidity()) return;
   if (!/\.(md|markdown)$/i.test(file.name) || file.size === 0 || file.size > 262144) {
     text(el('draft-status'), '비어 있지 않은 .md 또는 .markdown 파일을 선택하세요. 최대 크기는 256 KiB입니다.'); return;
   }
   const version = ++state.composerVersion; const session = state.session;
   const payload = { filename: file.name, title: el('draft-title').value, document_id: policy.document_id, context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope };
+  payload.dependencies = dependencyInputs();
   if (state.draftBaseDigest) payload.base_revision_digest = state.draftBaseDigest;
   setDraftBusy(true); text(el('draft-status'), '선택한 파일을 비공개 초안으로 가져오는 중…');
   try {
@@ -1436,7 +1597,7 @@ async function createPublicationPreview(draft) {
 
 function renderPublicationPreview(preview) {
   const section = el('preview-section'); section.replaceChildren(); const callout = document.createElement('div'); callout.className = 'preview-callout'; const heading = document.createElement('h3'); heading.textContent = '게시 미리보기'; const copy = document.createElement('p'); copy.textContent = `digest ${shortDigest(preview.revision_digest)} · ${preview.body_bytes ?? '—'} bytes · ${preview.expires_at ? `만료 ${formatDate(preview.expires_at)}` : '만료 시각 확인 필요'}`;
-  const snapshot = preview.revision?.payload || {}; const snapshotBox = document.createElement('div'); snapshotBox.className = 'preview-snapshot'; const snapshotHeading = document.createElement('div'); snapshotHeading.className = 'source-view-heading'; const snapshotLabel = document.createElement('span'); snapshotLabel.textContent = 'IMMUTABLE PREVIEW SNAPSHOT'; const snapshotTitle = document.createElement('span'); snapshotTitle.textContent = snapshot.title || '제목 없음'; snapshotHeading.append(snapshotLabel, snapshotTitle); const snapshotBody = document.createElement('pre'); snapshotBody.className = 'markdown-source'; snapshotBody.textContent = snapshot.body_markdown || '미리보기 본문을 받지 못했습니다.'; snapshotBox.append(snapshotHeading, snapshotBody);
+  const snapshot = preview.revision?.payload || {}; const snapshotBox = document.createElement('div'); snapshotBox.className = 'preview-snapshot'; const snapshotHeading = document.createElement('div'); snapshotHeading.className = 'source-view-heading'; const snapshotLabel = document.createElement('span'); snapshotLabel.textContent = 'IMMUTABLE PREVIEW SNAPSHOT'; const snapshotTitle = document.createElement('span'); snapshotTitle.textContent = snapshot.title || '제목 없음'; snapshotHeading.append(snapshotLabel, snapshotTitle); const snapshotBody = document.createElement('pre'); snapshotBody.className = 'markdown-source'; snapshotBody.textContent = snapshot.body_markdown || '미리보기 본문을 받지 못했습니다.'; snapshotBox.append(snapshotHeading, snapshotBody); appendDependencySummary(snapshotBox, snapshot.dependencies);
   const recipients = document.createElement('div'); recipients.className = 'recipient-list'; (preview.recipients || []).forEach((recipient) => { const tag = document.createElement('span'); tag.className = 'recipient-tag'; tag.textContent = recipient; recipients.append(tag); }); const confirm = document.createElement('label'); confirm.style.display = 'flex'; confirm.style.gridTemplateColumns = 'auto 1fr'; confirm.style.alignItems = 'center'; confirm.style.gap = '.55rem'; const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.id = 'confirm-shared'; checkbox.style.width = 'auto'; const confirmText = document.createElement('span'); confirmText.textContent = '위 원문과 수신 조직을 확인했고 공유 게시를 요청합니다.'; confirm.append(checkbox, confirmText); const button = document.createElement('button'); button.type = 'button'; button.className = 'primary-button'; button.textContent = '공용 원장에 게시'; button.disabled = true; checkbox.addEventListener('change', () => { button.disabled = !checkbox.checked; }); button.addEventListener('click', () => publishRevision(preview, checkbox)); callout.append(heading, copy, snapshotBox, recipients, confirm, button); section.append(callout);
 }
 
@@ -1497,6 +1658,7 @@ async function switchPersona(event) {
 }
 
 function resetComposer() {
+  resetDependencyEditor();
   state.draftBaseLookupVersion++;
   state.draftBaseLookupPending = false;
   state.draftBaseLookupError = null;
@@ -1531,6 +1693,11 @@ function openComposer(mode, doc = null) {
     : draftPolicies()[0];
   syncDraftPolicies(policy ? `${policy.policy_id}|${policy.policy_version}` : null);
   if (mode === 'new') applyDraftPolicy(policy);
+  else if (state.draftBaseDigest) {
+    state.draftBaseLookupPolicyKey = policy ? slotKeyFor(policy) : null;
+    state.draftBaseLookupComplete = true;
+    void loadDraftDependencies(state.draftBaseDigest);
+  }
   const preview = el('preview-section'); if (preview) { preview.replaceChildren(); preview.hidden = true; }
   text(el('draft-status'), mode === 'revise' ? '현재 개정본을 바탕으로 비공개 초안을 작성합니다.' : policy ? '선택한 정책의 문서 범위에 맞춰 비공개 초안을 작성합니다.' : '작성 가능한 정책이 없어 초안을 만들 수 없습니다.');
   el('composer-panel').hidden = false; el('draft-title').focus();
@@ -1572,7 +1739,11 @@ function bindEvents() {
   el('close-composer').addEventListener('click', resetComposer);
   el('draft-form').addEventListener('submit', onDraftSubmit);
   el('import-markdown').addEventListener('click', importMarkdown);
-  el('draft-form').addEventListener('input', () => { invalidateDraftPreview(); text(el('draft-status'), '변경한 내용을 비공개 초안으로 저장한 뒤 공유 미리보기를 다시 생성하세요.'); });
+  el('draft-form').addEventListener('input', event => { if (event.target.closest('.draft-dependency-search')) return; invalidateDraftPreview(); text(el('draft-status'), '변경한 내용을 비공개 초안으로 저장한 뒤 공유 미리보기를 다시 생성하세요.'); });
+  el('search-dependencies').addEventListener('click', () => { void searchDependencies(); });
+  el('more-dependencies').addEventListener('click', () => { void searchDependencies(true); });
+  el('dependency-query').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void searchDependencies(); } });
+  el('retry-dependencies').addEventListener('click', () => { if (state.draftBaseDigest) void loadDraftDependencies(state.draftBaseDigest); });
   el('draft-policy')?.addEventListener('change', () => { const policy = selectedDraftPolicy(); applyDraftPolicy(policy); invalidateDraftPreview(); text(el('draft-status'), policy ? '선택한 정책의 문서 범위에 맞춰 작성합니다.' : '작성할 문서 범위를 선택하세요.'); });
   el('resolver-form').addEventListener('submit', onResolverSubmit);
   el('refresh-operations')?.addEventListener('click', () => void loadOperations());
