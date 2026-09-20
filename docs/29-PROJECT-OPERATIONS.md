@@ -49,7 +49,7 @@
    순서대로 실행하고 full-block VALID 근거를 남긴다. 완료된 fixture에는
    최초 `fabric:smoke`를 재실행하지 않는다. 실망 검증이 없으면 릴리스 노트에
    그 경계를 명시하며 운영 검증 완료로 표시하지 않는다.
-5. `Unreleased` 아래에 버전·날짜 섹션을 만들고 비교 링크, README 버전 표기,
+5. `Unreleased` 아래에 버전·날짜 섹션을 만들고 비교 링크, README·웹 화면의 버전 표기,
    [ROADMAP.md](../ROADMAP.md), [HANDOFF.md](../HANDOFF.md)를 맞춘다.
    문서 링크·구조 검사를 통과시키고 변경 파일만 커밋한다.
 6. 게시를 명시적으로 요청받은 경우에만 검증한 커밋에 태그를 만들고 원격에

@@ -2,6 +2,13 @@
 
 ## 의존관계 작성 API·UI와 도입 준비 — 2026-09-20
 
+[PR #16](https://github.com/ictechgy/knowledger/pull/16)을 merge commit `af7b92c`로
+main에 반영하고 같은 커밋에 [v0.5.0](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0)을
+게시했다. head `d833b41`의 원격 push/PR CI8개가 모두 통과했고 머지 commit의 파일
+트리가 그 head와 동일함을 확인했다. [PR CI](https://github.com/ictechgy/knowledger/actions/runs/35498345140)는
+Node24·26, Fabric/auth 경계, Chromium23개, 성능·복구 드릴을 포함한다. 원격 태그의
+commit·릴리스 본문·공개/Latest 상태도 readback으로 확인했다.
+
 구현 `9b0148c`는 새 초안·수정·Markdown 가져오기에 shared revision selector를 받고,
 서버가 canonical 개정에서 전체 slot을 채운다. 브라우저에서 고정 개정 검색·추가·관계/
 사용 조건 변경·제거와 미리보기 검토를 지원한다. 참조를 생략한 기존 요청은 유지되고
@@ -31,7 +38,7 @@
   데이터 `.data/pilot-rehearsal-ts4XGZ/`, 근거 `.artifacts/dependency-authoring-rehearsal-20260920/`.
 
 실행 로그·화면·키/genesis 보존 비교는 `.artifacts/dependency-authoring-20260920/`에 있다.
-제품 변경 검증에는 기존 로컬 검사와 정확한 PR head의 CI를 사용한다. 실환경 작업은
+제품 변경 검증에는 위 로컬 검사와 정확한 PR head의 CI를 사용했다. 실환경 작업은
 [도입 준비서](30-PILOT-DEPLOYMENT.md)로 정리했고 configured signer 문서의 org/attestation/
 audit 설정 누락도 수정했다. 실제 조직·독립 호스트·SSO/KMS/모델 공급자는 지정되지 않아
 해당 통합·파일럿·독립 호스트 시험은 실행하지 않았다. 2027-01-01 인증서 점검용 `.ics`는

@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (의존관계 작성 API·UI·실망 검증·HTTP 리허설24개 완료 — v0.5.0 원격 반영 준비)_
+_Last updated: 2026-09-20 KST (의존관계 작성 PR #16 머지·원격 CI·v0.5.0 게시 완료 — 실환경 입력 대기)_
 
 ## Goal
 
@@ -14,6 +14,11 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **[v0.5.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0)**:
+  [PR #16](https://github.com/ictechgy/knowledger/pull/16)을 merge `af7b92c`로 main에
+  반영하고 같은 커밋에 태그·Latest 릴리스를 게시했다. head `d833b41`의 CI8개·
+  Chromium23개 통과, 태그 commit·릴리스 본문·공개 상태 readback 일치.
+  이전 리허설 기록 `a0204ad`도 함께 원격 반영됐다. 현재 branch는 `main`이다.
 - **의존관계 작성 API·UI 구현 완료(`9b0148c`)**: 새 draft·edit·Markdown import에서
   공유 개정 digest/관계/사용 조건을 선택하면 서버가 canonical 전체 slot을 채운다.
   UI는 검색·paging·참조 추가/변경/제거·미리보기를 지원하며 기준 개정을 고정한다.
@@ -22,7 +27,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   가상 문서5개를 모두 HTTP 작성 경로로 재리허설해24개 검증을 통과했다.
   이전 의존 문서3개의 domain publish fixture 우회는 해소됐다. 새 결과는
   `.artifacts/dependency-authoring-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-ts4XGZ/`.
-  `feature/dependency-authoring`에서 v0.5.0 PR·CI·릴리스 반영을 준비한다.
+  PR #16·v0.5.0에 반영 완료했다.
 - **실환경 준비**: [도입 실행서](docs/30-PILOT-DEPLOYMENT.md)와 signer 설정 예제를
   보완했다. 사용자에게 조직·업무·호스트·공급자 정보를 요청했으나 아직 지정되지
   않았으므로 실제 파일럿·독립 호스트·외부 SSO/KMS/모델 연동은 미실행이다.
@@ -41,7 +46,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   [PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로
   main에 반영하고 같은 커밋에 태그·GitHub Latest 릴리스를 게시했다. head `0bdf96e`의
   원격 CI8개·신규 Fabric 측정10개·Chromium18개가 통과했다
-  ([PR CI](https://github.com/ictechgy/knowledger/actions/runs/35492112374)). 로컬 branch는 `main`이다.
+  ([PR CI](https://github.com/ictechgy/knowledger/actions/runs/35492112374)).
   제품 패키지·lockfile·README·changelog는 0.4.0, 배포된 chaincode는0.1.0을 유지한다.
 - **Fabric 파일럿 측정 지원 main 반영 완료(PR #15)**: `pilot:metrics --mode fabric`으로 정지된
   projection의 원시 full block을 읽기 전용·단일 스냅샷에서 재검증하고 VALID 거래만
@@ -68,7 +73,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   모두 정상이다. 실제 파일럿·독립 물리 호스트 장애 시험은 수행하지 않았다.
   대상 조직·환경·사람 검토자가 정해져야 실제 파일럿을 시작한다.
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`.
-  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`·`v0.2.0`·`v0.3.0`·`v0.4.0`.**
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 최신 태그·릴리스 `v0.5.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
@@ -184,6 +189,9 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 2026-09-20 의존관계 작성 후속 변경:
 
+- PR #16 head `d833b41` push/PR CI8개 전부 통과, 머지 `af7b92c`의 파일 트리 동일.
+  해당 커밋에 v0.5.0 게시·Latest readback 확인. 근거는 아래 아티팩트 폴더의
+  `pr-ci.json`, `browser-ci.log`, `published-release.json`에도 보존했다.
 - `npm run check`510개 중509 통과·1 GC 생략, 타입·demo·Chromium23개 통과.
 - 실제 HTTP 최종341, configured 최종373. dependency edit·canonical slot·멱등·원본
   초안 보존·복원 일치 확인. 세 peer height374, genesis/crypto132개 메타데이터 보존.
@@ -465,7 +473,7 @@ python3 -B tools/check_docs.py
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.4.0` 게시·원격 CI 통과 완료.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.5.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
@@ -485,7 +493,7 @@ source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 
 이후 사용자가 가상 리허설을 선택해 2개 가상 조직·5개 문서의 로컬 시나리오22개를
 통과했다. 자료는 `.artifacts/pilot-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-UivsQz/`다.
 이후 의존관계 API·UI(`9b0148c`)와 새 HTTP 리허설24개로 문서5개 전부 작성하는
-경로를 검증했다. 현재 feature/dependency-authoring에서 v0.5.0 원격 반영 준비 중이다.
+경로를 검증했다. PR #16(merge `af7b92c`)·CI8개 통과 뒤 v0.5.0으로 게시했고 현재 main이다.
 실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
