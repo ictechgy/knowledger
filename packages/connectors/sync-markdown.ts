@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize } from '../domain/index.ts';
 import { decodeMarkdownImport } from '../import/markdown.ts';
 import { validateSourceState } from './source-store.ts';
@@ -15,6 +16,11 @@ export interface SyncCounts { imported: number; unchanged: number; skipped: numb
 export interface SyncMarkdownResult {
   source: SourceState;
   counts: SyncCounts;
+}
+export interface SyncMarkdownOptions { retries?: number }
+export interface MarkdownSyncPlan {
+  source_id: string; expected_version: number;
+  added: string[]; changed: string[]; restored: string[]; unchanged: string[]; removed: string[];
 }
 
 export class MarkdownSyncError extends Error {
@@ -73,7 +79,42 @@ function reconcileResult(value: unknown, source: string): { source: SourceState;
   return { source: stateFrom(result.source, source), removed: result.removed_count };
 }
 
-export async function syncMarkdownSource(client: SyncClient, input: MarkdownSourceSnapshot): Promise<SyncMarkdownResult> {
+/** A read-only change preview. The subsequent sync reads state again and still uses CAS. */
+export async function planMarkdownSync(client: SyncClient, input: MarkdownSourceSnapshot): Promise<MarkdownSyncPlan> {
+  const snapshot = validSnapshot(input); const source = sourceId(snapshot.manifest.source_id);
+  let state: SourceState | undefined;
+  try { state = stateFrom(await client.request(`/sources/${source}`, {}), source); }
+  catch (error: any) { if (error?.status !== 404) throw error; }
+  const plan: MarkdownSyncPlan = { source_id: source, expected_version: state?.version ?? 0, added: [], changed: [], restored: [], unchanged: [], removed: [] };
+  const paths = new Set(snapshot.files.map(file => file.mapping.path));
+  for (const file of snapshot.files) {
+    const current = state?.entries.find(entry => entry.path === file.mapping.path);
+    const kind = !current ? 'added' : current.status === 'removed' ? 'restored' : current.sha256 === file.sha256 && sameMapping(current, file.mapping) ? 'unchanged' : 'changed';
+    plan[kind].push(file.mapping.path);
+  }
+  plan.removed = (state?.entries ?? []).filter(entry => entry.status === 'present' && !paths.has(entry.path)).map(entry => entry.path);
+  return plan;
+}
+
+/** Opt-in retries preserve exact request IDs, versions and bytes. Authorization and CAS errors stop immediately. */
+function retryClient(client: SyncClient, options: SyncMarkdownOptions): SyncClient {
+  const retries = options.retries ?? 0;
+  if (!Number.isSafeInteger(retries) || retries < 0 || retries > 3) throw new MarkdownSyncError();
+  return { request: async <T>(path: string, request: { method?: 'GET' | 'POST'; body?: unknown }): Promise<T> => {
+    const original = structuredClone(request);
+    for (let attempt = 0; ; attempt++) {
+      try { return await client.request<T>(path, structuredClone(original)); }
+      catch (error: any) {
+        const transient = error?.retryable === true && (['NETWORK_ERROR', 'TIMEOUT'].includes(error.code) || [429, 500, 502, 503, 504].includes(error.status));
+        if (attempt >= retries || !transient) throw error;
+        await delay(100 * 2 ** attempt);
+      }
+    }
+  } };
+}
+
+export async function syncMarkdownSource(originalClient: SyncClient, input: MarkdownSourceSnapshot, options: SyncMarkdownOptions = {}): Promise<SyncMarkdownResult> {
+  const client = retryClient(originalClient, options);
   const snapshot = validSnapshot(input);
   const source = sourceId(snapshot.manifest.source_id);
   let state: SourceState | undefined;

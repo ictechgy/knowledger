@@ -23,6 +23,15 @@ verified, or still planned. Items are grouped by track, not by promised date.
 
 ## Track A — Protocol completeness
 
+The working branch additionally implements [review collaboration and impact](docs/31-REVIEW-WORKSPACE.md):
+application-local comments/mentions, deadlines, recurring reviews, notifications,
+reverse dependencies, starter templates, sync preview/retries and retrieval evaluation.
+These changes are unreleased. Cross-organization comment transport, a selected
+customer KB connector and a configured production embedding provider remain open.
+Dynamic organizational/policy changes require the separate
+[governance migration design](docs/32-GOVERNANCE-EVOLUTION.md), including an explicit
+choice of governance authorities and quorum; editing genesis is not a migration.
+
 Design contracts in `docs/` and their implementation status:
 
 1. **Organizational signing gateway** — implemented: per-organization remote

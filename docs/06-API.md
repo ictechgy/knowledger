@@ -2,6 +2,10 @@
 
 이 문서는 API의 설계 계약이다. 구현된 개발 알파의 지원 범위는 [실행 가이드](11-RUNTIME.md)에 구분한다. JSON payload의 기본 구조는 [schemas](../schemas/)에 두며 endpoint별 서명·현재 정책·transaction 검증은 런타임 책임이다.
 
+구현된 앱 단위 댓글·기한·알림·변경 영향 경로와 정확한 입력은
+[검토 워크스페이스 API](31-REVIEW-WORKSPACE.md)에 정리한다. 이 운영 기록은 원장 명령과
+분리되고, actor별 `operation_id`와 일정 `expected_version`을 사용한다.
+
 ## 공통 규약
 
 - Base path: `/v1/workspaces/{workspace_id}`. workspace와 Fabric channel은 v1에서 1:1로 매핑한다.

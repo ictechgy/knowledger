@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { createProjectTemplate } from '../../packages/config/template.ts';
 import { createDevelopmentClient } from '../../packages/connectors/development-client.ts';
 import { loadMarkdownSourceManifest, readMarkdownSource } from '../../packages/connectors/filesystem-markdown.ts';
-import { syncMarkdownSource } from '../../packages/connectors/sync-markdown.ts';
+import { planMarkdownSync, syncMarkdownSource } from '../../packages/connectors/sync-markdown.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +34,50 @@ function mkdirForFile(path: string): void {
   const directory = path.slice(0, path.lastIndexOf('/'));
   mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
+
+test('sync preview reports changes without private writes and CLI dry-run preserves source state', async t => {
+  const api = await fixture(t); writeFileSync(api.file, '# Initial preview');
+  const before = api.app.service.ledger.checkpoint();
+  const fresh = await planMarkdownSync(api.client, await api.snapshot());
+  assert.deepEqual(fresh.added, ['guides/handbook.md']); assert.equal(fresh.expected_version, 0);
+  assert.equal((await api.app.service.listDrafts(api.app.service.definition.bootstrap_actor, 20)).total, 0);
+  const first = await syncMarkdownSource(api.client, await api.snapshot());
+  writeFileSync(api.file, '# Changed preview');
+  const command = await execFileAsync(process.execPath, ['tools/kb-sync.ts', '--dry-run', '--root', api.source, '--manifest', join(api.root, 'manifest.json'), '--server', api.client.baseUrl, '--workspace', 'sync-workspace', '--org', 'FirstMSP', '--actor', 'maintainer', '--retries', '2']);
+  assert.deepEqual(JSON.parse(command.stdout).changed, ['guides/handbook.md']);
+  assert.deepEqual(await api.client.request('/sources/repository-guides', {}), first.source);
+  unlinkSync(api.file); assert.deepEqual((await planMarkdownSync(api.client, await api.snapshot())).removed, ['guides/handbook.md']);
+  await syncMarkdownSource(api.client, await api.snapshot()); writeFileSync(api.file, '# Restored preview');
+  assert.deepEqual((await planMarkdownSync(api.client, await api.snapshot())).restored, ['guides/handbook.md']);
+  assert.deepEqual(api.app.service.ledger.checkpoint(), before);
+});
+
+test('transient lost upload responses retry the identical operation without duplicating drafts', async t => {
+  const api = await fixture(t); writeFileSync(api.file, '# Retry fixture');
+  const bodies: unknown[] = []; let lost = false;
+  const client = { request: async <T>(path: string, options: any): Promise<T> => {
+    const result = await api.client.request<T>(path, options);
+    if (path.endsWith('/markdown')) {
+      bodies.push(structuredClone(options.body));
+      if (!lost) { lost = true; throw Object.assign(new Error('Lost response'), { code: 'NETWORK_ERROR', retryable: true }); }
+    }
+    return result;
+  } };
+  const result = await syncMarkdownSource(client, await api.snapshot(), { retries: 2 });
+  assert.equal(bodies.length, 2); assert.deepEqual(bodies[0], bodies[1]); assert.equal(result.source.version, 1);
+  assert.equal((await api.app.service.listDrafts(api.app.service.definition.bootstrap_actor, 20)).total, 1);
+});
+
+test('sync retries are bounded and never retry revoked permissions or conflicting source versions', async t => {
+  const api = await fixture(t); writeFileSync(api.file, '# Retry limit'); const snapshot = await api.snapshot();
+  for (const status of [401, 403, 409, 400]) {
+    let calls = 0; const client = { request: async <T>(): Promise<T> => { calls++; throw Object.assign(new Error('Stop'), { status, retryable: true }); } };
+    await assert.rejects(syncMarkdownSource(client, snapshot, { retries: 3 })); assert.equal(calls, 1);
+  }
+  let calls = 0; const client = { request: async <T>(): Promise<T> => { calls++; throw Object.assign(new Error('Unavailable'), { status: 503, retryable: true }); } };
+  await assert.rejects(syncMarkdownSource(client, snapshot, { retries: 1 })); assert.equal(calls, 2);
+  await assert.rejects(syncMarkdownSource(client, snapshot, { retries: 4 })); assert.equal(calls, 2);
+});
 
 test('development client handshakes a local session and syncs only changed files', async t => {
   const api = await fixture(t);

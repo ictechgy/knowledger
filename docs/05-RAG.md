@@ -109,4 +109,8 @@ Doc body, Wiki projection, vector index, source-to-chunk mapping을 독립 재�
 
 ## AI-DLC 연동
 
+설정형 앱의 실제 임베딩 주입과 정답 질의 기반 precision/recall/MRR·제공/보류 평가 사용법은
+[검토·검색 평가 안내](31-REVIEW-WORKSPACE.md)에 있다. 기본 토큰 해시를 의미 임베딩으로
+간주하지 않으며, 가상 테스트의 측정값을 실제 검색 모델 품질로 보고하지 않는다.
+
 각 단계 시작 시 필요한 context/scope를 명시해 packet을 요청한다. shared knowledge를 프레임워크 파일에 직접 주입하거나 비공개 원문을 자동 수집하지 않는다. agent는 새로운 정의/수정이 필요하면 draft proposal을 만들고, domain owner의 합의를 기다린다. 기존 AI-DLC의 승인·도구 권한을 이 ledger가 대체한다고 가정하지 않는다. 이 제품의 책임은 지식의 선택·합의·버전 경계다.

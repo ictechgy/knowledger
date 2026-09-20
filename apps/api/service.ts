@@ -9,6 +9,8 @@ import type { VectorCandidate, VectorCandidateIndex, VectorIndexEntry, VectorInd
 import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
+import { ReviewStoreError, reviewPeople } from '../../packages/storage/review-store.ts';
+import type { ReviewPerson, ReviewSchedule } from '../../packages/storage/review-store.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
 import { sourceId, sourceMapping, validateSourceManifest } from '../../packages/connectors/source-contract.ts';
@@ -602,6 +604,165 @@ export class KnowledgerService {
     const context = this.browseContext(checkpoint);
     const revision = this.pageRevision(this.revisionRef(proposal.revision_digest, context), context);
     return { ...this.describeProposal(proposal, context, revision), checkpoint };
+  }
+
+  private reviewRevision(digest: string) {
+    if (typeof digest !== 'string' || !DIGEST.test(digest)) throw new ApiError('INVALID_INPUT', '올바른 공유 개정 digest가 필요합니다.');
+    const revision = domain.validateRevision(this.revision(digest));
+    if (revision.revision_digest !== digest || revision.payload.channel_id !== this.ledger.channelId) throw new ApiError('PROJECTION_INVALID', '공유 개정의 원장 연결을 확인할 수 없습니다.', 503);
+    return revision;
+  }
+  private reviewAudience(): ReviewPerson[] {
+    const identities = this.config().identities;
+    return this.personas.filter(p => p.kind === 'human' && identities.some((i: Actor) => i.org_id === p.org_id && i.actor_id === p.actor_id && i.kind === p.kind))
+      .map(p => ({ org_id: p.org_id, actor_id: p.actor_id }));
+  }
+  private canManageReview(actor: Actor, revision: any): boolean {
+    return actor.kind === 'human' && ((revision.payload.metadata.author_org_id === actor.org_id && revision.payload.metadata.author_id === actor.actor_id)
+      || this.config().policies.some((policy: any) => sameSlot(policy, revision.payload) && policy.role_representatives.some((rep: any) => rep.actor_org_id === actor.org_id && rep.actor_id === actor.actor_id)));
+  }
+  private reviewRecipients(value: unknown): ReviewPerson[] {
+    if (!reviewPeople(value)) throw new ApiError('INVALID_INPUT', '중복 없이 최대 16명의 검토자를 선택하세요.');
+    const audience = this.reviewAudience();
+    if (value.some(p => !audience.some(a => a.org_id === p.org_id && a.actor_id === p.actor_id))) throw new ApiError('NOT_FOUND', '이 앱에서 지정할 수 없는 검토자입니다.', 404);
+    return value;
+  }
+  async review(actor: Actor, digest: string, input: PageInput = {}) {
+    onlyFields(input, ['limit', 'cursor']); await this.refresh(); this.actor(actor);
+    const revision = this.reviewRevision(digest);
+    return { revision_digest: digest, ...slotFields(revision.payload), storage_scope: 'application', audience: this.reviewAudience(),
+      can_manage: this.canManageReview(actor, revision), schedule: this.vault.reviews.schedule(digest), ...this.vault.reviews.events(digest, input) };
+  }
+  async commentOnReview(actor: Actor, digest: string, input: any) {
+    onlyFields(input, ['operation_id', 'body', 'mentions']); identifier(input.operation_id);
+    if (typeof input.body !== 'string' || !input.body.trim() || input.body.length > 4000) throw new ApiError('INVALID_INPUT', '댓글은 1~4,000자여야 합니다.');
+    return this.privateWrite(actor, () => {
+      this.reviewRevision(digest);
+      const mentions = this.reviewRecipients(input.mentions ?? []);
+      return this.vault.reviews.write(actor, digest, { kind: 'comment', ...input }, schedule => ({
+        event: { kind: 'comment', body: input.body, mentions, schedule: null },
+        recipients: [...mentions, ...(schedule?.assignees ?? []).filter(p => this.reviewAudience().some(a => a.org_id === p.org_id && a.actor_id === p.actor_id))],
+      }));
+    });
+  }
+  async scheduleReview(actor: Actor, digest: string, input: any) {
+    onlyFields(input, ['operation_id', 'expected_version', 'assignees', 'due_at', 'repeat_after_days']); identifier(input.operation_id);
+    if (!Number.isSafeInteger(input.expected_version) || input.expected_version < 0 || input.expected_version >= Number.MAX_SAFE_INTEGER
+      || (input.due_at !== null && (typeof input.due_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(input.due_at)
+        || !Number.isFinite(Date.parse(input.due_at)) || new Date(input.due_at).toISOString() !== input.due_at))
+      || (input.repeat_after_days !== null && (!Number.isSafeInteger(input.repeat_after_days) || input.repeat_after_days < 1 || input.repeat_after_days > 3650))
+      || (input.repeat_after_days !== null && input.due_at === null)) throw new ApiError('INVALID_INPUT', '일정 버전, 검토 기한과 반복 주기를 확인하세요.');
+    return this.privateWrite(actor, () => {
+      const revision = this.reviewRevision(digest);
+      if (!this.canManageReview(actor, revision)) throw new ApiError('REVIEW_MANAGER_REQUIRED', '작성자 또는 이 범위의 책임자만 검토 일정을 바꿀 수 있습니다.', 403);
+      const assignees = this.reviewRecipients(input.assignees);
+      if (!assignees.length) throw new ApiError('INVALID_INPUT', '검토자를 한 명 이상 선택하세요.');
+      return this.vault.reviews.write(actor, digest, { kind: 'schedule', ...input }, previous => {
+        if ((previous?.version ?? 0) !== input.expected_version) throw new ReviewStoreError('REVIEW_VERSION_CONFLICT', 409);
+        const schedule: ReviewSchedule = { revision_digest: digest, version: input.expected_version + 1, assignees,
+          due_at: input.due_at, repeat_after_days: input.repeat_after_days, completed_at: null };
+        return { event: { kind: 'schedule', body: '검토 일정 변경', mentions: [], schedule }, recipients: [...assignees, ...(previous?.assignees ?? [])] };
+      });
+    });
+  }
+  async completeReview(actor: Actor, digest: string, input: any) {
+    onlyFields(input, ['operation_id', 'expected_version', 'body']); identifier(input.operation_id);
+    if (!Number.isSafeInteger(input.expected_version) || input.expected_version < 1 || input.expected_version >= Number.MAX_SAFE_INTEGER
+      || typeof input.body !== 'string' || !input.body.trim() || input.body.length > 4000) throw new ApiError('INVALID_INPUT', '검토 버전과 완료 메모가 필요합니다.');
+    return this.privateWrite(actor, () => {
+      this.reviewRevision(digest);
+      if (actor.kind !== 'human') throw new ApiError('HUMAN_REVIEW_REQUIRED', '사람 검토자만 검토 완료를 기록할 수 있습니다.', 403);
+      return this.vault.reviews.write(actor, digest, { kind: 'reviewed', ...input }, previous => {
+        if (!previous?.assignees.some(p => p.org_id === actor.org_id && p.actor_id === actor.actor_id)) throw new ApiError('REVIEW_ASSIGNEE_REQUIRED', '지정된 검토자만 완료를 기록할 수 있습니다.', 403);
+        if (previous.version !== input.expected_version) throw new ReviewStoreError('REVIEW_VERSION_CONFLICT', 409);
+        if (previous.completed_at && (!previous.due_at || Date.parse(previous.due_at) > Date.now())) throw new ApiError('REVIEW_NOT_DUE', '다음 검토 기한이 아직 되지 않았습니다.', 409);
+        const now = new Date();
+        const schedule = { ...previous, version: previous.version + 1, completed_at: now.toISOString(),
+          due_at: previous.repeat_after_days ? new Date(now.getTime() + previous.repeat_after_days * 86400000).toISOString() : null };
+        return { event: { kind: 'reviewed', body: input.body, mentions: [], schedule }, recipients: previous.assignees };
+      });
+    });
+  }
+  async reviewNotifications(actor: Actor, input: PageInput = {}) {
+    onlyFields(input, ['limit', 'cursor']); await this.refresh(); this.actor(actor);
+    const result = this.vault.reviews.notifications(actor, input);
+    for (const notification of result.notifications) this.reviewRevision(notification.event.revision_digest);
+    return result;
+  }
+  async readReviewNotification(actor: Actor, id: string, input: any) {
+    onlyFields(input, []); identifier(id);
+    return this.privateWrite(actor, () => this.vault.reviews.markRead(actor, id));
+  }
+  async dueReviews(actor: Actor, input: { limit?: number } = {}) {
+    onlyFields(input, ['limit']); await this.refresh(); this.actor(actor);
+    const now = new Date().toISOString();
+    const result = this.vault.reviews.due(actor, now, input.limit);
+    return { ...result, evaluated_at: now, tasks: result.tasks.map(task => {
+      const revision = this.reviewRevision(task.revision_digest);
+      return { ...task, title: revision.payload.title, ...slotFields(revision.payload) };
+    }) };
+  }
+
+  /** Reverse references explain potential impact; they never grant use or mutate approvals. */
+  async revisionImpact(actor: Actor, digest: string, input: PageInput = {}) {
+    onlyFields(input, ['limit', 'cursor']);
+    if (typeof digest !== 'string' || !DIGEST.test(digest)) throw new ApiError('INVALID_INPUT', '올바른 공유 개정 digest가 필요합니다.');
+    await this.refresh(); this.actor(actor);
+    const page = this.page(actor, 'revision-impact', input, digest);
+    const refs = new Map<string, RevisionBrowseRef>();
+    const reverse = new Map<string, { digest: string; dependency: domain.RevisionDependency }[]>();
+    let offset = 0; let edges = 0;
+    while (true) {
+      const batch = this.queryBrowse({ kind: 'revisions', mode: 'all', at: page.checkpoint, offset, limit: 1000 });
+      // An explicit failure is preferable to silently claiming an incomplete impact set.
+      if (batch.total > 100000) throw new ApiError('IMPACT_CAPACITY_EXCEEDED', '이 설치의 영향 조회 상한을 넘었습니다.', 503);
+      const context = this.browseContext(page.checkpoint);
+      this.prefetch(context, batch.items.map(ref => ref.key));
+      for (const ref of batch.items) {
+        refs.set(ref.revision_digest, ref);
+        const revision = this.readIndexedRevision(ref, context);
+        for (const dependency of revision.payload.dependencies) {
+          if (++edges > 500000) throw new ApiError('IMPACT_CAPACITY_EXCEEDED', '이 설치의 참조 조회 상한을 넘었습니다.', 503);
+          const list = reverse.get(dependency.revision_digest) ?? [];
+          list.push({ digest: ref.revision_digest, dependency }); reverse.set(dependency.revision_digest, list);
+        }
+      }
+      offset += batch.items.length;
+      if (offset >= batch.total) break;
+      if (!batch.items.length) throw new ApiError('PROJECTION_INVALID', '영향 조회 페이지를 확인할 수 없습니다.', 503);
+    }
+    if (!refs.has(digest)) throw new ApiError('NOT_FOUND', '공유 개정을 찾을 수 없습니다.', 404);
+    for (const [source, dependents] of reverse) {
+      const ref = refs.get(source);
+      if (!ref || dependents.some(edge => !sameSlot(ref.slot, edge.dependency))) throw new ApiError('PROJECTION_INVALID', '의존 참조와 공유 개정 범위가 일치하지 않습니다.', 503);
+    }
+    const traverse = (requiredOnly: boolean) => {
+      const visited = new Map<string, { via_revision_digest: string; depth: number; relationship: string }>();
+      const queue = [{ digest, depth: 0 }]; const seen = new Set([digest]);
+      for (let index = 0; index < queue.length; index++) {
+        const current = queue[index];
+        for (const edge of reverse.get(current.digest) ?? []) {
+          if (seen.has(edge.digest) || (requiredOnly && edge.dependency.enforcement !== 'requires_active')) continue;
+          seen.add(edge.digest);
+          visited.set(edge.digest, { via_revision_digest: current.digest, depth: current.depth + 1, relationship: edge.dependency.relationship });
+          queue.push({ digest: edge.digest, depth: current.depth + 1 });
+        }
+      }
+      return visited;
+    };
+    const all = traverse(false); const required = traverse(true);
+    const affected = [...all.keys()].sort((a, b) => (required.has(a) ? 0 : 1) - (required.has(b) ? 0 : 1)
+      || (required.get(a) ?? all.get(a))!.depth - (required.get(b) ?? all.get(b))!.depth || a.localeCompare(b));
+    const context = this.browseContext(page.checkpoint);
+    const selected = affected.slice(page.offset, page.offset + page.limit);
+    this.annotate(context, selected); this.prefetchRevisionSet(context, selected.map(id => refs.get(id)!));
+    const revisions = [];
+    for (const id of selected) revisions.push({ ...(await this.describeRevision(this.readIndexedRevision(refs.get(id)!, context), context)),
+      impact: { kind: required.has(id) ? 'required' : 'informational', ...(required.get(id) ?? all.get(id))! } });
+    this.actor(actor);
+    return { revision_digest: digest, checkpoint: page.checkpoint, revisions, total: affected.length,
+      required_count: required.size, informational_count: all.size - required.size,
+      next_cursor: this.nextCursor(page, affected.length) };
   }
 
   async overview(actor: Actor, input: OverviewInput = {}) {

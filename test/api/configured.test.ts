@@ -4,6 +4,32 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProjectTemplate } from '../../packages/config/template.ts';
+import { LocalVectorIndex } from '../../packages/storage/vector-index.ts';
+import { createDevelopmentClient } from '../../packages/connectors/development-client.ts';
+import { evaluateRetrieval } from '../../packages/measurement/retrieval.ts';
+
+test('configured applications use the supplied embedding pair and index, including close ownership', async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'knowledger-config-vector-')); t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const config = createProjectTemplate(); const index = new LocalVectorIndex(); let queries = 0; let revisions = 0; let closed = false;
+  index.close = () => { closed = true; };
+  const app = await createConfiguredApp(config, { dataDir, port: 0, vectorIndex: index,
+    embedQuery: () => { queries++; return [1, 0]; }, embedRevision: () => { revisions++; return [1, 0]; } });
+  try {
+    const policy = config.genesis.policies[0]; const actor = config.bootstrap_actor;
+    const draft = await app.service.draft(actor, { document_id: policy.document_id, context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope, title: 'Embedding fixture', body_markdown: '# Shared' });
+    const preview = await app.service.preview(actor, { draft_id: draft.draft_id });
+    await app.service.publish(actor, { preview_id: preview.preview_id, confirm_shared: true, command_id: 'embedding-publish' });
+    await app.service.rebuildVectorIndex(actor, {});
+    const result = await app.service.vectorSearch(actor, { query: 'meaning', limit: 1 });
+    assert.equal(result.results[0].revision_digest, draft.revision.revision_digest);
+    assert.equal(revisions, 1); assert.equal(queries, 1);
+    const client = await createDevelopmentClient({ baseUrl: await app.listen(0), workspaceId: config.workspace.id, orgId: actor.org_id, actorId: actor.actor_id });
+    const report = await evaluateRetrieval(client, [{ id: 'case-unapproved', query: 'meaning', context_id: policy.context_id, scope_id: policy.scope_id, usage_scope: policy.usage_scope,
+      relevant_revision_digests: [draft.revision.revision_digest], use: { document_ids: [policy.document_id], expected_status: 'withheld' } }], 1, { allowDevelopment: true });
+    assert.equal(report.mean_reciprocal_rank_at_k, 1); assert.equal(report.status_accuracy, 1);
+  } finally { await app.close(); }
+  assert.equal(closed, true);
+});
 import { createConfiguredApp } from '../../apps/api/configured-runtime.ts';
 import { createDemoApp } from '../../examples/order-workflow/application.ts';
 
