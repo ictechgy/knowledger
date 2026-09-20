@@ -21,6 +21,7 @@ jobs:
       - run: npm run check
       - run: npm run demo
       - run: npm run demo:kb
+      - run: npm run demo:review-delivery
       - run: npm run config:init -- --output /tmp/knowledger-ci.json
       - run: node infra/fabric/build.mjs --config /tmp/knowledger-ci.json --output /tmp/knowledger-chaincode
   fabric-boundaries:

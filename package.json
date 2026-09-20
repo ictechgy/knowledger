@@ -1,6 +1,6 @@
 {
   "name": "knowledger",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Domain-scoped knowledge agreements for KB, LLM wiki and AI workflows",
   "license": "MIT",

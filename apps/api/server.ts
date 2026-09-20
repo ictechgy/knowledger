@@ -12,6 +12,7 @@ import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ApiError, KnowledgerService, onlyFields } from './service.ts';
 import type { ModelEgressPolicy } from './service.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
+import type { ReviewReminderOptions } from '../../packages/review/reminder-worker.ts';
 import { DELIVERY_MAX_BYTES } from '../../packages/review/delivery-contract.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
@@ -65,6 +66,8 @@ export interface AppOptions {
   modelEgress?: ModelEgressPolicy;
   /** Explicit operator-configured delivery targets and inbound peer keys; disabled when omitted. */
   reviewDelivery?: ReviewDeliveryOptions;
+  /** Local deadline notices; false disables generation, pollMs: 0 enables explicit manual runs. */
+  reviewReminders?: ReviewReminderOptions | false;
   /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
@@ -106,7 +109,7 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
     service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress,
-      reviewDelivery: options.reviewDelivery, currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
+      reviewDelivery: options.reviewDelivery, reviewReminders: options.reviewReminders, currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
     await service.initialize();
   } catch (error) {
     // 색인 정리 실패가 원래 초기화 오류를 가리지 않게 원인에 부착한다.
@@ -285,6 +288,8 @@ export async function createApp(options: AppOptions) {
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
+        const reminderRead = /^\/review-reminders\/([^/]+)\/read$/.exec(resourcePath);
+        if (reminderRead) { respond(await run(() => service.readReviewReminder(actor, decodeResourceId(reminderRead[1]), input))); return; }
         const deliveryWrite = /^\/revisions\/([^/]+)\/review\/deliveries$/.exec(resourcePath);
         const deliveryRetry = /^\/review-deliveries\/([^/]+)\/retry$/.exec(resourcePath);
         if (deliveryWrite || deliveryRetry) {
@@ -314,6 +319,7 @@ export async function createApp(options: AppOptions) {
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if (resourcePath === '/review-reminders') { json(res, 200, await run(() => service.reviewReminderList(actor, pageQuery(url)))); return; }
         if (resourcePath === '/review-delivery-targets') {
           pageQuery(url, []);
           json(res, 200, await run(async () => {
@@ -412,6 +418,7 @@ export async function createApp(options: AppOptions) {
         server.listen(port, '127.0.0.1', () => {
           server.off('error', onError);
           service.reviewDelivery?.worker.start();
+          service.reviewReminders?.start();
           const address = server.address() as { port: number };
           resolve(publicOrigin ?? `http://127.0.0.1:${address.port}`);
         });
@@ -430,6 +437,7 @@ export async function createApp(options: AppOptions) {
       };
       await attempt('readiness', () => readiness.close());
       await attempt('review-delivery', () => service.reviewDelivery?.close());
+      await attempt('review-reminders', () => service.reviewReminders?.close());
       await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
       // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
       await attempt('vectorIndex', () => options.vectorIndex?.close?.());

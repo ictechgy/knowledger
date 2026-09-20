@@ -1,5 +1,33 @@
 # 검증 기록
 
+## 앱 내부 자동 기한 알림 — 2026-09-20
+
+`feature/review-reminders`에서 수신자별 도래/초과 알림과 현재 일정 목록을 구현했다.
+기본60초의 앱 worker와 보이는 브라우저의30초 갱신이며 외부 메시지·원장 쓰기는 없다.
+별도 private table을 기존 snapshot에 포함하고 단계별 UNIQUE/트랜잭션으로 중복을 제거한다.
+상세 계약은 [자동 기한 알림](34-REVIEW-REMINDERS.md).
+
+- Node24.18.0 `npm run check`: **552 tests / 551 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, 기존 합의 demo와 두 앱 전달 demo, 문서/구조 검사 통과.
+- 새 API/worker9개: 기한 경계·단계별 멱등·원장/승인 비영향, downtime catch-up·읽음/복원,
+  시계 역행, 변경/재할당/완료/반복 주기, 두 DB 연결의 중복과 stale schedule 차단,
+  배치 진행·회수된 membership/serving freeze, 종료 뒤 늦은 쓰기 차단·명시적 비활성화,
+  HTTP CSRF/수신자/페이지, 자동 tick과 timeout 뒤 정상 재시도.
+- Chromium **32개 통과**: 기존30개에 브라우저 자동 갱신·읽음·정확한 개정 열기·완료 후 제거,
+  계정 전환 뒤 늦은 알림 응답 폐기2개 추가. HTML은 텍스트로 표시한다. 데스크톱/모바일
+  screenshot과390/1440px 가로 넘침도 확인했다.
+- 최초 전체 검사에서 빈 일정의 시작 worker가 원장을 깨워 기존 anonymous liveness 검사에
+  잡혔다. 권한과 무관한 private 후보 조회를 먼저 하고 후보가 없으면 원장을 읽지 않도록
+  수정해 전체 재검증했다. 실제 알림 쓰기 전에는 현재 원장/membership 검사를 유지한다.
+- 근거 `.artifacts/review-reminders-20260920/`: `check-release.log`, `types-final.log`,
+  `browser.log`, `demo.log`, `relay-demo.log`, `reminder-tests-final.log`, `reminder-*.png`.
+  마지막 timeout 회귀를 포함한 전체552개가 위 check-release 로그에 기록되어 있다.
+  Node24/26 CI에 기존 `demo:review-delivery` 실행도 추가했다.
+
+실제 Fabric 원장·키·genesis를 이 리마인더 변경에서 조작하지 않았다. 같은 세션의
+v0.7.0 기존 네트워크 연속 검증은 아래 기록을 참조한다. 외부 알림 adapter·실제 peer
+연결·실제 사용자 파일럿과 자동 기한 알림의 실망 배포는 완료 항목이 아니다.
+
 ## v0.7.0 게시와 기존 Fabric 연속 검증 — 2026-09-20
 
 [PR #18](https://github.com/ictechgy/knowledger/pull/18), 후보 `aaaa28a`의 push/PR CI8개를

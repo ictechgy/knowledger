@@ -10,7 +10,9 @@ import { SearchMatchCache } from './search-matches.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ReviewStoreError, reviewPeople } from '../../packages/storage/review-store.ts';
-import type { ReviewPerson, ReviewSchedule } from '../../packages/storage/review-store.ts';
+import type { ReviewPerson, ReviewSchedule, ReminderPosition } from '../../packages/storage/review-store.ts';
+import { ReviewReminderWorker } from '../../packages/review/reminder-worker.ts';
+import type { ReviewReminderOptions } from '../../packages/review/reminder-worker.ts';
 import { ReviewDeliveryRuntime } from './review-delivery.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
@@ -93,6 +95,8 @@ interface StoredRunRecord { boot_id?: string; slot?: any; manifest?: any; model_
 /** API orchestration over verified application-ledger reads and actor-private storage. */
 export class KnowledgerService {
   readonly reviewDelivery: ReviewDeliveryRuntime | undefined;
+  readonly reviewReminders: ReviewReminderWorker | undefined;
+  private reminderPosition: ReminderPosition | null = null;
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
   private personas: Persona[];
@@ -125,7 +129,7 @@ export class KnowledgerService {
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-      modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
+      modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false; currentActor?: (actor: Actor) => Promise<void> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
@@ -137,6 +141,7 @@ export class KnowledgerService {
     this.ledger = ledger;
     this.vault = vault;
     this.personas = personas;
+    if (options.reviewReminders !== false) this.reviewReminders = new ReviewReminderWorker((now, signal) => this.generateReviewReminders(now, signal), options.reviewReminders);
     if (options.reviewDelivery && (!personas.some(actor => actor.org_id === options.reviewDelivery!.source_org_id)
       || (options.reviewDelivery.destinations ?? []).some(target => !definition.genesis.identities.some(actor => actor.kind === 'human' && actor.org_id === target.recipient?.org_id && actor.actor_id === target.recipient?.actor_id)))) {
       throw new TypeError('Review delivery must bind configured local senders and human recipients');
@@ -712,6 +717,45 @@ export class KnowledgerService {
       const revision = this.reviewRevision(task.revision_digest);
       return { ...task, title: revision.payload.title, ...slotFields(revision.payload) };
     }) };
+  }
+
+  private async generateReviewReminders(now: number, signal: AbortSignal) {
+    const worker = this.reviewReminders!; const started = performance.now();
+    const check = () => { signal.throwIfAborted(); if (performance.now() - started > worker.timeoutMs) throw new Error('REMINDER_UNAVAILABLE'); };
+    check();
+    const timestamp = new Date(now).toISOString();
+    const candidates = this.vault.reviews.reminderCandidates(timestamp, new Date(now - worker.overdueAfterMs).toISOString(), this.reminderPosition, worker.batchSize);
+    // Local candidates do not authorize delivery; avoid waking the ledger when there is no work.
+    if (!candidates.length) { this.reminderPosition = null; return { scanned: 0, created: 0 }; }
+    await this.refresh(); check();
+    if (!this.config()?.serving_enabled) throw new ApiError('SERVING_FROZEN', '현재 알림 생성을 중지했습니다.', 503);
+    let created = 0;
+    for (const candidate of candidates) {
+      check();
+      try { this.actor({ ...candidate.recipient, kind: 'human' }); }
+      catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'NOT_FOUND') throw error;
+        this.reminderPosition = candidate.position; continue;
+      }
+      this.reviewRevision(candidate.schedule.revision_digest); check();
+      if (this.vault.reviews.recordReminder(candidate, timestamp)) created++;
+      this.reminderPosition = candidate.position;
+    }
+    if (candidates.length < worker.batchSize) this.reminderPosition = null;
+    return { scanned: candidates.length, created };
+  }
+  async reviewReminderList(actor: Actor, input: PageInput = {}) {
+    onlyFields(input, ['limit', 'cursor']); await this.refresh(); this.actor(actor);
+    const page = this.vault.reviews.reminders(actor, input);
+    return { ...page, reminders: page.reminders.map(reminder => {
+      const revision = this.reviewRevision(reminder.revision_digest);
+      return { ...reminder, title: revision.payload.title, ...slotFields(revision.payload) };
+    }), automation: { enabled: Boolean(this.reviewReminders?.pollMs), poll_ms: this.reviewReminders?.pollMs ?? 0,
+      overdue_after_ms: this.reviewReminders?.overdueAfterMs ?? null, last_error: this.reviewReminders?.lastError ?? null } };
+  }
+  async readReviewReminder(actor: Actor, id: string, input: any) {
+    onlyFields(input, []); identifier(id);
+    return this.privateWrite(actor, () => this.vault.reviews.readReminder(actor, id));
   }
 
   /** Reverse references explain potential impact; they never grant use or mutate approvals. */

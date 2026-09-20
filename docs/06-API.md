@@ -9,6 +9,9 @@
 선택형 [댓글 전달 API](33-REVIEW-DELIVERY.md)는 작성자 확인·고정 수신자·영속 재시도 큐와
 peer 인증 수신을 제공한다. 전달 상태의202/영수증은 원장 커밋 상태와 구분한다.
 
+[자동 기한 알림](34-REVIEW-REMINDERS.md)의 `/review-reminders` 조회/읽음 처리는
+현재 일정과 수신자에 한정되며 공유 원장 쓰기와 분리된다.
+
 ## 공통 규약
 
 - Base path: `/v1/workspaces/{workspace_id}`. workspace와 Fabric channel은 v1에서 1:1로 매핑한다.

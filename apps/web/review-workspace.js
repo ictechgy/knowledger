@@ -16,6 +16,7 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
   let inbox = { notifications: [], next_cursor: null, unread_count: 0 }; let due = null;
   let deliveryVersion = 0; let deliveryTargets = [];
   let outgoing = { deliveries: [], next_cursor: null }; let incoming = { deliveries: [], next_cursor: null };
+  let reminderVersion = 0; let reminderTimer = null; let reminders = { reminders: [], unread_count: 0, next_cursor: null };
   const discussion = () => document.getElementById('review-discussion-content');
   const impactTarget = () => document.getElementById('revision-impact-content');
   const live = (token, captured) => token === version && captured === getSession() && captured === session;
@@ -28,6 +29,9 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
     deliveryVersion++; deliveryTargets = []; outgoing = { deliveries: [], next_cursor: null }; incoming = { deliveries: [], next_cursor: null };
     document.getElementById('review-delivery-panel').hidden = true;
     document.getElementById('review-delivery-outbox').replaceChildren(); document.getElementById('review-delivery-inbox').replaceChildren();
+    reminderVersion++; if (reminderTimer) clearTimeout(reminderTimer); reminderTimer = null;
+    reminders = { reminders: [], unread_count: 0, next_cursor: null };
+    document.getElementById('review-reminder-list').replaceChildren(); document.getElementById('review-reminder-count').textContent = '0'; document.getElementById('review-reminder-status').textContent = '';
     discussion()?.replaceChildren(node('p', '문서를 선택하면 검토 대화와 일정을 볼 수 있습니다.', 'empty-state'));
     impactTarget()?.replaceChildren(node('p', '문서를 선택하면 연결된 문서의 영향을 확인할 수 있습니다.', 'empty-state'));
     document.getElementById('review-notification-list')?.replaceChildren();
@@ -193,11 +197,45 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
       inbox = { ...notifications, notifications: append ? [...inbox.notifications, ...notifications.notifications] : notifications.notifications }; due = tasks;
       renderInbox(captured);
       void refreshDeliveries();
+      void refreshReminders();
     } catch (error) {
       if (token === inboxVersion && captured === getSession()) {
         document.getElementById('review-notification-list').replaceChildren(node('li', error.message, 'form-hint'));
         document.getElementById('review-due-list').replaceChildren(node('li', '검토 기한을 확인할 수 없습니다.', 'form-hint'));
       }
+    }
+  }
+  async function refreshReminders(append = false) {
+    if (reminderTimer) clearTimeout(reminderTimer); reminderTimer = null;
+    const captured = getSession(); if (!captured?.actor) return;
+    const token = ++reminderVersion; const target = document.getElementById('review-reminder-list');
+    try {
+      const response = await read(`${getBase()}/review-reminders${append && reminders.next_cursor ? `?cursor=${encodeURIComponent(reminders.next_cursor)}` : ''}`, captured);
+      if (token !== reminderVersion || captured !== getSession()) return;
+      reminders = { ...response, reminders: append ? [...reminders.reminders, ...response.reminders] : response.reminders };
+      document.getElementById('review-reminder-count').textContent = String(reminders.unread_count);
+      document.getElementById('review-reminder-status').textContent = response.automation.last_error ? '자동 알림 갱신이 지연되고 있습니다.'
+        : response.automation.enabled ? '현재 일정의 알림입니다. 검토 완료·일정 변경 시 이전 알림은 사라집니다.' : '자동 알림 생성이 꺼져 있습니다.';
+      target.replaceChildren();
+      for (const reminder of reminders.reminders) {
+        const row = node('li');
+        row.append(button(`${reminder.read_at ? '읽음' : '새 알림'} · ${reminder.phase === 'overdue' ? '검토 기한 초과' : '검토 기한 도래'} · ${reminder.title}`, async () => {
+          try {
+            await request(`${getBase()}/review-reminders/${encodeURIComponent(reminder.reminder_id)}/read`, { method: 'POST', body: '{}', sessionGuard: captured });
+            if (captured === getSession()) await openRevision(reminder.revision_digest);
+          } catch (error) { if (captured === getSession()) showStatus(error.message, 'error'); }
+          finally { if (captured === getSession()) await refreshReminders(); }
+        }), node('p', `기한 ${date(reminder.due_at)}`, 'form-hint')); target.append(row);
+      }
+      if (!reminders.reminders.length) target.append(node('li', '새 기한 알림이 없습니다.', 'empty-state'));
+      if (reminders.next_cursor) target.append(button('기한 알림 더 보기', () => { void refreshReminders(true); }));
+    } catch (error) {
+      if (token === reminderVersion && captured === getSession()) {
+        target.replaceChildren(node('li', error.message, 'form-hint')); document.getElementById('review-reminder-count').textContent = '—';
+        document.getElementById('review-reminder-status').textContent = '기한 알림을 불러오지 못했습니다.';
+      }
+    } finally {
+      if (token === reminderVersion && captured === getSession() && !document.hidden) reminderTimer = setTimeout(() => { void refreshReminders(); }, 30000);
     }
   }
   async function refreshDeliveries(append = null) {
@@ -249,5 +287,9 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
     impactTarget().replaceChildren(button('이 개정의 영향 문서 확인', () => { void loadImpact(); }));
   }
   document.getElementById('refresh-review-deliveries').addEventListener('click', () => { void refreshDeliveries(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (reminderTimer) clearTimeout(reminderTimer); reminderTimer = null; }
+    else void refreshReminders();
+  });
   return { select, reset, refreshInbox };
 }

@@ -13,6 +13,8 @@ export interface ReviewEvent {
   kind: 'comment' | 'schedule' | 'reviewed'; body: string; mentions: ReviewPerson[];
   schedule: ReviewSchedule | null;
 }
+export interface ReminderPosition { due_at: string; revision_digest: string; org_id: string; actor_id: string }
+export interface ReminderCandidate { schedule: ReviewSchedule; recipient: ReviewPerson; phase: 'due' | 'overdue'; position: ReminderPosition }
 export class ReviewStoreError extends Error {
   readonly code: string; readonly status: number;
   constructor(code: string, status: number) {
@@ -77,6 +79,13 @@ export class ReviewStore {
       CREATE TABLE IF NOT EXISTS review_notifications (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
         org_id TEXT NOT NULL, actor_id TEXT NOT NULL, read_at TEXT, UNIQUE(event_id, org_id, actor_id));
       CREATE INDEX IF NOT EXISTS review_notifications_actor ON review_notifications(org_id, actor_id, seq DESC);`);
+    db.exec(`CREATE INDEX IF NOT EXISTS review_due_scan ON review_assignees(due_at,revision_digest,org_id,actor_id);
+      CREATE TABLE IF NOT EXISTS review_reminders (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, reminder_id TEXT NOT NULL UNIQUE, revision_digest TEXT NOT NULL,
+        schedule_version INTEGER NOT NULL, org_id TEXT NOT NULL, actor_id TEXT NOT NULL, phase TEXT NOT NULL,
+        due_at TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT,
+        UNIQUE(revision_digest,schedule_version,org_id,actor_id,phase));
+      CREATE INDEX IF NOT EXISTS review_reminders_actor ON review_reminders(org_id,actor_id,seq DESC);`);
   }
   schedule(digest: string): ReviewSchedule | null {
     const row = this.db.prepare('SELECT value_json FROM review_schedules WHERE revision_digest=?').get(digest) as any;
@@ -146,5 +155,66 @@ export class ReviewStore {
       if (!task.assignees.some(p => p.org_id === actor.org_id && p.actor_id === actor.actor_id) || !task.due_at || task.due_at > now) throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503);
       return task;
     }), has_more: rows.length > limit };
+  }
+
+  reminderCandidates(now: string, overdueBefore: string, after: ReminderPosition | null, limit: number): ReminderCandidate[] {
+    if (!iso(now) || !iso(overdueBefore) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ReviewStoreError('INVALID_QUERY', 400);
+    const version = "CASE WHEN json_valid(s.value_json) THEN json_extract(s.value_json,'$.version') END";
+    const rows = this.db.prepare(`SELECT a.*,s.value_json,CASE WHEN a.due_at<=? THEN 'overdue' ELSE 'due' END AS phase
+      FROM review_assignees a JOIN review_schedules s ON s.revision_digest=a.revision_digest
+      WHERE a.due_at IS NOT NULL AND a.due_at<=?
+      AND NOT EXISTS(SELECT 1 FROM review_reminders r WHERE r.revision_digest=a.revision_digest AND r.schedule_version=${version}
+        AND r.org_id=a.org_id AND r.actor_id=a.actor_id AND (r.phase='overdue' OR r.phase=CASE WHEN a.due_at<=? THEN 'overdue' ELSE 'due' END))
+      ${after ? 'AND (a.due_at,a.revision_digest,a.org_id,a.actor_id)>(?,?,?,?)' : ''}
+      ORDER BY a.due_at,a.revision_digest,a.org_id,a.actor_id LIMIT ?`)
+      .all(overdueBefore, now, overdueBefore, ...(after ? [after.due_at, after.revision_digest, after.org_id, after.actor_id] : []), limit) as any[];
+    return rows.map(row => {
+      let schedule;
+      try { schedule = scheduleFrom(JSON.parse(row.value_json), row.revision_digest); } catch { throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503); }
+      if (schedule.due_at !== row.due_at || !schedule.assignees.some(p => p.org_id === row.org_id && p.actor_id === row.actor_id)) throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503);
+      return { schedule, recipient: { org_id: row.org_id, actor_id: row.actor_id }, phase: row.phase,
+        position: { due_at: row.due_at, revision_digest: row.revision_digest, org_id: row.org_id, actor_id: row.actor_id } };
+    });
+  }
+  recordReminder(candidate: ReminderCandidate, now: string): boolean {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const { schedule, recipient, phase } = candidate; const current = this.schedule(schedule.revision_digest);
+      let created = false;
+      if (current?.version === schedule.version && current.due_at === schedule.due_at && current.due_at && current.due_at <= now
+        && current.assignees.some(p => p.org_id === recipient.org_id && p.actor_id === recipient.actor_id)
+        && (phase !== 'due' || !this.db.prepare("SELECT 1 FROM review_reminders WHERE revision_digest=? AND schedule_version=? AND org_id=? AND actor_id=? AND phase='overdue'")
+          .get(schedule.revision_digest, schedule.version, recipient.org_id, recipient.actor_id))) {
+        const id = `reminder-${createHash('sha256').update(canonicalize([schedule.revision_digest, schedule.version, recipient, phase])).digest('hex').slice(0, 48)}`;
+        created = this.db.prepare(`INSERT OR IGNORE INTO review_reminders(reminder_id,revision_digest,schedule_version,org_id,actor_id,phase,due_at,created_at)
+          VALUES(?,?,?,?,?,?,?,?)`).run(id, schedule.revision_digest, schedule.version, recipient.org_id, recipient.actor_id, phase, current.due_at, now).changes === 1;
+      }
+      this.db.exec('COMMIT'); return created;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  private reminderPredicate = `EXISTS(SELECT 1 FROM review_schedules s JOIN review_assignees a ON a.revision_digest=s.revision_digest
+    WHERE s.revision_digest=r.revision_digest AND a.org_id=r.org_id AND a.actor_id=r.actor_id AND a.due_at=r.due_at
+      AND CASE WHEN json_valid(s.value_json) THEN json_extract(s.value_json,'$.version') END=r.schedule_version)`;
+  reminders(actor: Actor, input: { limit?: number; cursor?: string }) {
+    const { limit, before } = reviewPage(input);
+    const rows = this.db.prepare(`SELECT r.* FROM review_reminders r WHERE r.org_id=? AND r.actor_id=? AND r.seq<? AND ${this.reminderPredicate} ORDER BY r.seq DESC LIMIT ?`)
+      .all(actor.org_id, actor.actor_id, before, limit + 1) as any[];
+    const unread = this.db.prepare(`SELECT COUNT(*) AS count FROM review_reminders r WHERE r.org_id=? AND r.actor_id=? AND r.read_at IS NULL AND ${this.reminderPredicate}`)
+      .get(actor.org_id, actor.actor_id) as any;
+    const reminders = rows.slice(0, limit).map(row => {
+      const schedule = this.schedule(row.revision_digest);
+      if (!schedule || schedule.version !== row.schedule_version || schedule.due_at !== row.due_at || !ID.test(row.reminder_id)
+        || !['due', 'overdue'].includes(row.phase) || !iso(row.created_at) || (row.read_at !== null && !iso(row.read_at))
+        || !schedule.assignees.some(p => p.org_id === actor.org_id && p.actor_id === actor.actor_id)) throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503);
+      return { reminder_id: row.reminder_id, revision_digest: row.revision_digest, schedule_version: row.schedule_version,
+        phase: row.phase, due_at: row.due_at, created_at: row.created_at, read_at: row.read_at };
+    });
+    return { reminders, unread_count: Number(unread.count), next_cursor: rows.length > limit ? String(rows[limit - 1].seq) : null };
+  }
+  readReminder(actor: Actor, id: string) {
+    const result = this.db.prepare(`UPDATE review_reminders AS r SET read_at=COALESCE(read_at,?)
+      WHERE r.reminder_id=? AND r.org_id=? AND r.actor_id=? AND ${this.reminderPredicate}`).run(new Date().toISOString(), id, actor.org_id, actor.actor_id);
+    if (result.changes !== 1) throw new ReviewStoreError('NOT_FOUND', 404);
+    return { reminder_id: id, read: true };
   }
 }

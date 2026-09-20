@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-20
+
+### Added
+
+- Local automatic review reminders: one due and one overdue notice per exact
+  revision, schedule version and recipient. Restart/restore and concurrent workers
+  retain deduplication and read state; rescheduling, reassignment and completion
+  hide stale notices. Downtime catch-up emits only the current phase.
+- A bounded reminder worker enabled by default while the app listens, with runtime
+  controls to tune or disable generation. Serving/membership checks precede local
+  writes; current session authorization protects recipient views and read actions.
+- A recipient-only deadline inbox with visible-tab refresh. No reminder enters the
+  external delivery queue, shared ledger, human review events or approval records.
+
 ## [0.7.0] — 2026-09-20
 
 ### Added
@@ -292,7 +306,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ictechgy/knowledger/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ictechgy/knowledger/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ictechgy/knowledger/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ictechgy/knowledger/compare/v0.4.0...v0.5.0
