@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-20
+
 ### Added
 
 - Fabric adoption measurement: `pilot:metrics --mode fabric` reads a stopped
@@ -238,7 +240,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ictechgy/knowledger/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ictechgy/knowledger/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ictechgy/knowledger/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ictechgy/knowledger/releases/tag/v0.1.0
