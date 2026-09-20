@@ -1,5 +1,42 @@
 # 검증 기록
 
+## 의존관계 작성 API·UI와 도입 준비 — 2026-09-20
+
+구현 `9b0148c`는 새 초안·수정·Markdown 가져오기에 shared revision selector를 받고,
+서버가 canonical 개정에서 전체 slot을 채운다. 브라우저에서 고정 개정 검색·추가·관계/
+사용 조건 변경·제거와 미리보기 검토를 지원한다. 참조를 생략한 기존 요청은 유지되고
+명시적 빈 배열은 제거다. 활성화·승인·withdrawal의 공통 domain 규칙은 바꾸지 않았다.
+
+- Node24.18.0 `npm run check`: **510 tests / 509 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo` 통과.
+- 신규 API6개: canonical 전체 slot·private/미존재·형태/중복/개수 거절, 원본 보존,
+  수정/가져오기 멱등·재시작, 기존 참조 유지/명시적 교체, fresh dependency eligibility,
+  변경된 개정의 새 승인 요구와 잘못된 ledger key 바인딩 거절.
+- Chromium **23개 통과**, 신규5개 포함: 검색·paging·immutable preview, HTML 문자 처리,
+  참조만 수정/제거·원본 보존, 실패한 기존 참조 조회 재시도, 계정 전환 뒤 늦은 응답 폐기,
+  overview 갱신 뒤에도 Markdown import의 기준 개정과 편집 중 참조 유지.
+  잠긴 Playwright Chromium을 설치해 로컬에서도 실행했다. 데스크톱/모바일 화면을 확인했다.
+- 실제 `fabric:http-smoke` 통과: 게시332·승인334·활성335·철회339·최종341.
+  실제 `configured:smoke` 최종 통과: 게시358·승인360·활성361·철회370·최종373.
+  새 dependency edit의 canonical slot·동일 요청 재시도·원본 초안 보존과 복원 후 참조
+  일치를 확인했다. 반복 시험에서 참조 깊이가 계속 자라지 않게 안정된 초기 fixture
+  개정을 informational 참조로 선택한다. signer 감사510개·egress/권한·복원 검증도 통과했다.
+- 세 peer가 **height374 / block373**에 일치한다. 시험 합의는 철회됐으며 genesis
+  SHA-256과 crypto132개 파일의 크기·mtime·inode를 보존했다. 실제 근거는
+  `.data/fabric-http-smoke-S5K5z4/http-evidence.json`, `.data/configured-smoke-pXapEd/evidence.json`.
+- 새 가상 리허설은 **24개 단언 통과**: 문서5개 모두 HTTP draft→preview→publish로
+  작성했다. 의존 문서3개를 위한 직접 domain publish fixture 우회를 제거했다.
+  가상 승인10·합의5·철회1, 의존성 참조4개. 복원 직후 저널51·private 초안7개와
+  측정 JSON이 일치했고, 최신 조회가 fence를 더한56건에서도 파생 지표는 동일했다.
+  데이터 `.data/pilot-rehearsal-ts4XGZ/`, 근거 `.artifacts/dependency-authoring-rehearsal-20260920/`.
+
+실행 로그·화면·키/genesis 보존 비교는 `.artifacts/dependency-authoring-20260920/`에 있다.
+제품 변경 검증에는 기존 로컬 검사와 정확한 PR head의 CI를 사용한다. 실환경 작업은
+[도입 준비서](30-PILOT-DEPLOYMENT.md)로 정리했고 configured signer 문서의 org/attestation/
+audit 설정 누락도 수정했다. 실제 조직·독립 호스트·SSO/KMS/모델 공급자는 지정되지 않아
+해당 통합·파일럿·독립 호스트 시험은 실행하지 않았다. 2027-01-01 인증서 점검용 `.ics`는
+로컬 아티팩트로 준비했으며 자동 예약·갱신은 설치하지 않았다.
+
 ## 격리된 가상 파일럿 리허설 — 2026-09-20
 
 사용자가 가상 리허설을 선택해 v0.4.0 코드(`5ccb41e`)로 새 로컬 workspace를 만들었다.
