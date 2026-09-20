@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (v0.7.0 게시 완료·자동 기한 알림 구현/검증 완료 — v0.8.0 준비)_
+_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0·자동 기한 알림 v0.8.0 게시 완료)_
 
 ## Goal
 
@@ -14,6 +14,14 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **[v0.8.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0)**:
+  [PR #19](https://github.com/ictechgy/knowledger/pull/19), merge `21780da`, 후보 `714d65d`의
+  push/PR CI8개 통과 뒤 동일 tree에 태그·Latest를 게시하고 본문/원격 commit을 readback했다.
+  [CI](https://github.com/ictechgy/knowledger/actions/runs/35510239235)는 Node24/26,
+  Fabric/auth 경계, Chromium32개, 성능·복구 드릴과 전달 demo를 포함한다.
+  현재 branch는 `main`, 제품 버전0.8.0이며 의존성·배포 chaincode0.1.0은 그대로다.
+  남은 외부 알림 채널 선택은 답변이 없으므로 실제 공급자·조직으로 전송하지 않았다.
+
 - **앱 내부 자동 기한 알림 구현·검증 완료**: `feature/review-reminders`에서 기본60초
   worker와 브라우저30초 갱신, 기한/초과 단계별 중복 제거, 현재 일정/수신자에 한정된 목록과
   읽음 처리를 구현했다. 일정 변경·완료 뒤 과거 알림은 숨기고 재시작/복원 시 중복과 읽음
@@ -21,7 +29,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Node24 **552개 중551 통과·1 GC 생략**, 타입·합의/전달 demo·Chromium **32개 통과**.
   빈 후보일 때 불필요한 원장 조회를 생략해 기존 anonymous liveness 회귀도 통과했다.
   [안내](docs/34-REVIEW-REMINDERS.md), 근거 `.artifacts/review-reminders-20260920/`.
-  사용자 일괄 진행 승인에 따라 v0.8.0으로 게시할 예정이다. 아직 게시 완료가 아니다.
+  PR #19·v0.8.0으로 게시까지 완료했다.
 
 - **[v0.7.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0)**:
   [PR #18](https://github.com/ictechgy/knowledger/pull/18), merge `b237bcf`, 후보 `aaaa28a`의
@@ -34,7 +42,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 - **후속 일괄 진행 승인**: 댓글 전달을 v0.7.0으로 게시한 뒤 앱 내부 자동 기한 리마인더를
   구현·검증한다. 외부 알림 제품과 실제 조직 연결 입력은 아직 미정이다. GitHub 게시 및
   기존 Fabric의 HTTP/configured 연속 검증을 진행하며 새 네트워크를 초기화하지 않는다.
-  v0.7.0 게시·앱 내부 자동 리마인더 구현을 마쳤으며 v0.8.0 게시로 이어간다.
+  v0.7.0 게시·앱 내부 자동 리마인더 구현과 v0.8.0 게시를 모두 마쳤다.
 
 - **댓글 전달 구현·검증 완료(`e14501d`)**:
   작성자가 확인한 본인 댓글을 구성된 사람 수신자에게 보내는 API/UI, 영속 outbox/inbox,
@@ -132,7 +140,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   모두 정상이다. 실제 파일럿·독립 물리 호스트 장애 시험은 수행하지 않았다.
   대상 조직·환경·사람 검토자가 정해져야 실제 파일럿을 시작한다.
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`.
-  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 최신 태그·릴리스 `v0.6.0`.**
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 최신 태그·릴리스 `v0.8.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
@@ -532,7 +540,7 @@ python3 -B tools/check_docs.py
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.6.0` 게시·원격 CI 통과 완료.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.8.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
@@ -560,8 +568,13 @@ source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 
 이후 `feature/review-delivery`에서 선택한 본인 댓글의 전달 인터페이스·영속 재시도·수신자
 inbox와 가상 연동을 구현했다. 기본 비활성·고정 수신자·명시 확인이며 source/조직 HMAC,
 현재 인가·대상 변경 차단·수신 중복 제거를 검증했다. 543개 중542 통과·1 GC 생략,
-브라우저30개 통과, 타입·합의/전달 demo 통과. 이 변경은 아직 원격 미게시다.
-실제 peer URL/키/계정 배포와 외부 메일·Slack·Teams adapter, 자동 기한 리마인더는 남았다.
+브라우저30개 통과, 타입·합의/전달 demo 통과. PR #18(merge `b237bcf`)·CI8개 뒤 v0.7.0으로
+게시했고 실제 Fabric HTTP/configured 연속 검증도 통과했다. 세 peer 최신 tip은 block399다.
+앱 내부 자동 기한 알림(`0ab4d34`)도 PR #19(merge `21780da`)·CI8개 뒤 v0.8.0으로 게시했다.
+552개 중551 통과·1 GC 생략, Chromium32개·타입·합의/전달 demo 통과. 자동60초 생성,
+브라우저30초 갱신, 중복/이전 일정 제외·현재 수신자 인가·종료/timeout을 검증했다.
+실제 peer URL/키/계정 배포와 외부 메일·Slack·Teams adapter는 남았다. 채널 선택을
+사용자에게 요청했지만 아직 답변이 없어 외부 실제 전송은 구성하지 않았다.
 runtime 관리 정책은 `docs/32-GOVERNANCE-EVOLUTION.md`의 설계 단계이고 구현 완료가 아니다.
 실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.

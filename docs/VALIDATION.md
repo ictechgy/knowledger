@@ -1,5 +1,19 @@
 # 검증 기록
 
+## v0.8.0 게시 — 2026-09-20
+
+[PR #19](https://github.com/ictechgy/knowledger/pull/19), 후보 `714d65d`의 push/PR CI8개
+성공 후 동일 파일 tree의 merge `21780da`에 [v0.8.0](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0)을
+게시했다. [CI](https://github.com/ictechgy/knowledger/actions/runs/35510239235)는 Node24/26,
+Fabric/auth 경계, Chromium32개, 성능/복구 드릴과 전달 demo를 포함한다. 제품 패키지와
+lockfile의 루트 버전0.8.0을 대조하고 의존성 graph·chaincode0.1.0이 그대로인지 확인했다.
+원격 annotated tag의 대상은 `21780dae7ef200ddc73e7034d8115e3ff9ae4b53`이며 본문·공개/Latest
+상태 readback이 일치한다. 근거 `.artifacts/release-v0.8.0-20260920/`의 `pr-ci.json`,
+`browser-ci.log`, `published-release.json`, `remote-tag.txt`.
+
+이 리마인더 릴리스는 ledger/auth 프로토콜을 바꾸지 않으며 같은 세션의 v0.7.0 기존
+Fabric 연속 검증을 경계 근거로 보존했다. 외부 알림/실제 수신 조직의 배포를 완료한 것은 아니다.
+
 ## 앱 내부 자동 기한 알림 — 2026-09-20
 
 `feature/review-reminders`에서 수신자별 도래/초과 알림과 현재 일정 목록을 구현했다.

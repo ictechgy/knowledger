@@ -21,7 +21,8 @@ verified, or still planned. Items are grouped by track, not by promised date.
   [`v0.4.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0) (2026-09-20),
   [`v0.5.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0) (2026-09-20),
   [`v0.6.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0) (2026-09-20),
-  [`v0.7.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0) (2026-09-20)
+  [`v0.7.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0) (2026-09-20),
+  [`v0.8.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0) (2026-09-20)
 
 ## Track A — Protocol completeness
 
@@ -31,9 +32,9 @@ reverse dependencies, starter templates, sync preview/retries and retrieval eval
 Released in v0.7.0: [selected comment delivery](docs/33-REVIEW-DELIVERY.md), including
 explicit recipient confirmation, durable leased retries, a recipient-only inbox and
 HTTPS/HMAC transport with a two-app simulation.
-[Local automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) are implemented in
-the subsequent working branch: current-recipient notices, durable deduplication,
-stale-schedule suppression and visible-tab refresh. Publication is pending.
+[Local automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) shipped in v0.8.0:
+current-recipient notices, durable deduplication, stale-schedule suppression and
+visible-tab refresh.
 Live peer deployment, vendor/external reminders, a selected customer KB connector
 and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate
