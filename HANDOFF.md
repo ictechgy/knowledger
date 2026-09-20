@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (PR #14 머지·실제 Fabric 재검증·원격 CI 통과·v0.3.0 게시 완료)_
+_Last updated: 2026-09-20 KST (Fabric 파일럿 측정 지원 v0.4.0 후보 — PR·원격 CI·게시 진행)_
 
 ## Goal
 
@@ -14,10 +14,21 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **v0.4.0 릴리스 후보**: `release/v0.4.0`에서 Fabric 파일럿 측정 기능
+  `d491d81`을 원격 PR·CI·릴리스로 반영한다. 제품 패키지·lockfile·README·changelog를
+  0.4.0으로 맞추고 배포된 chaincode0.1.0·기존 키·genesis는 유지한다.
+- **Fabric 파일럿 측정 지원 로컬 완료**: `pilot:metrics --mode fabric`으로 정지된
+  projection의 원시 full block을 읽기 전용·단일 스냅샷에서 재검증하고 VALID 거래만
+  집계한다. channel/chaincode/version/public genesis를 명시하며, source 전체 tip·
+  원시 저널 digest·정확한 VALID 거래 checkpoint를 출력한다. 기존 로컬 schema1과
+  무설치 경로를 유지했다. 테스트504개 중503 통과·1 GC 생략, 타입·데모·선택
+  의존성 없는 로컬 측정11개 통과. 기존 실제 Fabric 스냅샷 사본에서도331블록·
+  VALID332/INVALID2를 측정했고 원본·사본 DB 해시를 보존했다. 해당 기능을 v0.4.0으로
+  게시 준비 중이다. 사용법은 [파일럿 안내](docs/28-ADOPTION-PILOT.md).
 - **[v0.3.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0)**:
   [PR #14](https://github.com/ictechgy/knowledger/pull/14)를 main에 merge commit
   `bdb55fb`로 반영하고 같은 커밋에 태그·GitHub Latest 릴리스를 게시했다.
-  로컬 branch는 `main`이다. 제품 패키지와
+  제품 패키지와
   README·changelog를 0.3.0으로 갱신하고, 설정형 smoke의 조직 서명·감사 로그·
   모델 egress 설정을 현재 계약에 맞췄다. 실제 `fabric:http-smoke`와
   `configured:smoke`가 통과했다. head `87c06ad`의 원격 CI8개와 Chromium18개가
@@ -132,6 +143,9 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   합산 바이트 예산, 상한 생성자 주입 가능).
 - `docs/29-PROJECT-OPERATIONS.md`: Track D 릴리스·의존성 운영 기준.
   `examples/pilot/PLAN.template.md`·`observations.template.json`: 실제 파일럿 준비 입력.
+- `tools/adoption-metrics.ts`, `packages/measurement/fabric-adoption.ts`: 로컬/Fabric
+  파일럿 측정 CLI와 Fabric 읽기 전용 경로. `packages/fabric/journal-verification.ts`는
+  durable replay·측정이 공유하는 바인딩/블록 대조다. `test/fabric/adoption.test.ts`에 회귀 검사.
 - `tools/performance-smoke.ts`(로컬 workload, `--slot-groups`·100k 상한)와
   `tools/performance-fabric.ts`(합성 블록→실제 projector·adapter 재생, `--journal` 재사용)가
   성능 측정 도구다. 결과는 `.artifacts/`에 JSON으로 남는다.
@@ -141,6 +155,15 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
+
+2026-09-20 Fabric 파일럿 측정 후속 변경(로컬 검증):
+
+- `npm run check` **504 tests / 503 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo` 통과. Fabric 집중10개, 무선택 의존성 로컬11개 통과.
+- 기존 오프라인 snapshot 사본:331블록·VALID332/INVALID2, 합의 시간30표본.
+  원본·측정 사본의 DB SHA-256 불변. 지표는 이전 가상 검증 이력의 측정값이며 실제 도입 결과가 아니다.
+- 근거 `.artifacts/fabric-pilot-20260920/`. 원격 CI·새 네트워크 검증은 실행하지 않았다.
+  검증 범위·명령·세부 지표는 [검증 기록](docs/VALIDATION.md)에 있다.
 
 2026-09-20 v0.3.0 릴리스 검증:
 
@@ -360,8 +383,9 @@ python3 -B tools/check_docs.py
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
    B8의 단일 대형 캐시·블록당 Map 복사는 PR #14·v0.3.0에 반영 완료.
    풀별 예산을 넘는 교차 질의 재계산·cold 검색/이력 재생 비용은 남는다.
-   현재 파일럿 측정 CLI는 LocalLedger 저널만 지원하며 Fabric projection DB 직접
-   측정은 지원하지 않는다. Fabric 파일럿에는 별도 VALID 이벤트 추출 연동이 필요하다.
+   파일럿 측정 CLI의 LocalLedger와 Fabric projection 지원은 로컬 구현·검증 완료.
+   Fabric은 인증된 peer 경로에서 보존한 스냅샷을 오프라인 재검증하며, 현재 네트워크
+   신선도나 입력의 외부 서명 인증은 수행하지 않는다. 새 변경은 원격 반영 전이다.
 4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): **PR #3 머지 완료(squash `b073c81`)**.
    6라운드 리뷰 루프에서 유효 블로커를 모두 해소했고, 남은 LOW 항목은
    **PR #4(`e636166`)로 정리 완료** — 성능 도구 잔여 과제는 없다.
@@ -392,11 +416,14 @@ Track C(PR #13 squash `4aad9ea` — Git 커넥터·채택 측정·원자 아티�
 main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과 Track D 운영 정책,
 파일럿 계획/관찰 템플릿을 PR #14(merge `bdb55fb`)로 main에 반영하고 v0.3.0으로
 게시했다(493개 중492 통과·1 GC 생략). 실제 Fabric HTTP/configured smoke와
-백업·장애 드릴, 원격 Node24·26/Fabric/Chromium18개 CI까지 통과했다. 로컬 branch는 main이다.
+백업·장애 드릴, 원격 Node24·26/Fabric/Chromium18개 CI까지 통과했다.
 공개 인증서81개는 정상이고, 세 peer tip은 block331(height332)이다.
 남은 작업은 2027-01-01 수동 인증서 점검, 대상 조직·환경이 필요한 실제 파일럿,
-독립 물리 호스트/Fabric 채널 장애 검증이다. 파일럿 CLI는 LocalLedger 전용이며
-Fabric 측정에는 별도 검증된 VALID 이벤트 추출 연동이 필요하다.
+독립 물리 호스트/Fabric 채널 장애 검증이다. 후속 작업으로 파일럿 CLI의
+`--mode fabric` 원시 블록 재검증·VALID 집계를 로컬 구현·검증했다(504개 중503 통과·
+1 GC 생략). source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며
+기존 로컬 모드도 유지한다. 현재 `release/v0.4.0`에서 이 후속 변경의 PR·CI·게시를
+진행한다. 기존 로컬 검증은 재사용하고 정확한 후보 head의 원격 CI를 확인한다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.

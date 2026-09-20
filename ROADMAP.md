@@ -61,7 +61,8 @@ Design contracts in `docs/` and their implementation status:
    (`docs/23-KB-SOURCE-CONNECTOR.md`).
 10. **Adoption pilot** — measurement support implemented:
     `npm run pilot:metrics` derives time-to-agreement, review effort and
-    reuse rate from the verified journal and combines them with an
+    reuse rate from a verified local journal or stored Fabric full blocks
+    (`--mode fabric`, VALID transactions only) and combines them with an
     explicit observation log for interpretation mixing and disclosure
     burden; a plan/results template and empty observation log are available
     ([pilot guide](docs/28-ADOPTION-PILOT.md)). Running an actual pilot still

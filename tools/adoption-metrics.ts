@@ -11,20 +11,21 @@ import { measureAdoption, validateObservationLog } from '../packages/measurement
 import type { AdoptionMeasurement } from '../packages/measurement/adoption.ts';
 import type { LedgerEvent } from '../packages/storage/local-ledger.ts';
 import { CHANNEL_ID } from '../examples/order-workflow/config.ts';
+import { parseStrictJson } from '../packages/fabric/canonical.ts';
 
 /**
  * Adoption pilot measurement. Derives ledger-backed metrics (time-to-agreement,
- * review effort, reuse rate) from the verified local journal and combines them
+ * review effort, reuse rate) from a verified local or Fabric journal and combines them
  * with an explicit human observation log (interpretation mixing, review
  * questions, disclosure burden). The output is one pilot's measurement record —
  * not production evidence or a generalized SLA.
  * Stop the application before running this against its data directory.
  */
 
-const USAGE = 'Usage: node tools/adoption-metrics.ts --observations PATH (--data DIR | --ledger PATH) [--channel ID] [--out PATH]';
+const USAGE = 'Usage: node tools/adoption-metrics.ts --observations PATH (--data DIR | --ledger PATH) [--mode local|fabric] [--channel ID] [--out PATH]\nFabric mode requires --channel ID --chaincode NAME --chaincode-version VERSION --genesis PATH (public genesis JSON).';
 
 /**
- * 저널 파일을 읽기 전용으로 열어 채널·해시 체인을 검증한 뒤 전체 이벤트를 페이지네이션한다.
+ * 저널 파일을 읽기 전용으로 열어 채널·해시 체인을 검증한 뒤 이벤트를 순차 소비한다.
  * 스키마가 없거나 채널이 다른 파일은 verifyJournalDb가 거부한다 — 빈·잘못된 파일이 0건
  * 측정으로 통과하지 않는다. 읽기 전용이라도 SQLite는 WAL 인덱스(-shm)를 만들거나 갱신할
  * 수 있다 — 저널 내용의 변경은 아니며, 읽는 동안 입력이 바뀌지 않는 정지된 저장소라는
@@ -34,28 +35,43 @@ export function readPilotMeasurement(input: { path: string; channelId: string; o
   const log = validateObservationLog(input?.observations);
   const db = new DatabaseSync(input?.path, { readOnly: true });
   try {
-    // 검증과 페이지네이션을 한 읽기 트랜잭션에 묶는다 — autocommit 스냅샷 사이의
+    // 검증과 집계를 한 읽기 트랜잭션에 묶는다 — autocommit 스냅샷 사이의
     // 동시 변경이 해시 체인 검증 없이 측정에 섞이는 것을 막는다.
-    const events: LedgerEvent[] = [];
     db.exec('BEGIN');
     try {
       verifyJournalDb(db, input?.channelId);
-      const page = db.prepare('SELECT sequence, record_json FROM ledger_transactions WHERE sequence > ? ORDER BY sequence LIMIT 1000');
-      for (let after = 0;;) {
-        const rows = page.all(after) as any[];
-        for (const row of rows) events.push(JSON.parse(row.record_json));
-        if (rows.length < 1000) break;
-        after = rows[rows.length - 1].sequence;
+      function* events(): Generator<LedgerEvent> {
+        const rows = db.prepare('SELECT record_json FROM ledger_transactions ORDER BY sequence').iterate();
+        for (const row of rows) yield JSON.parse(row.record_json as string);
       }
+      const measurement = measureAdoption({ events: events(), log, channel_id: input?.channelId, evidence: input?.evidence });
       db.exec('COMMIT');
+      return measurement;
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;
     }
-    return measureAdoption({ events, log, channel_id: input?.channelId, evidence: input?.evidence });
   } finally {
     db.close();
   }
+}
+
+/** Descriptor-pinned JSON input shared by observations and public genesis. */
+function readJsonInput(path: string, strict = false): { path: string; inode: string; bytes: Buffer; value: unknown } {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before: BigIntStats = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_SOURCE_BYTES)) throw new Error('invalid option');
+    const buffer = Buffer.alloc(MAX_SOURCE_BYTES + 1);
+    let total = 0;
+    for (let n = 1; n > 0; total += n) n = readSync(fd, buffer, total, buffer.length - total, null);
+    if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
+    const after = fstatSync(fd, { bigint: true });
+    if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) throw new Error('invalid option');
+    const bytes = buffer.subarray(0, total);
+    const value = strict ? parseStrictJson(bytes) : JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    return { path, inode: `${before.dev}:${before.ino}`, bytes, value };
+  } finally { closeSync(fd); }
 }
 
 function isMain(): boolean { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href; }
@@ -69,39 +85,21 @@ if (isMain()) {
       for (let index = 0; index < args.length; index += 2) {
         const name = args[index];
         const value = args[index + 1];
-        if (!['--data', '--ledger', '--observations', '--channel', '--out'].includes(name) || !value || value.startsWith('--') || values.has(name)) throw new Error('invalid option');
+        if (!['--data', '--ledger', '--observations', '--channel', '--out', '--mode', '--genesis', '--chaincode', '--chaincode-version'].includes(name) || !value || value.startsWith('--') || values.has(name)) throw new Error('invalid option');
         values.set(name, value);
       }
       if (!values.has('--observations') || (!values.has('--data') && !values.has('--ledger')) || (values.has('--data') && values.has('--ledger'))) throw new Error('invalid option');
-      const ledgerPath = resolve(values.get('--ledger') ?? join(values.get('--data')!, 'shared-ledger.sqlite'));
+      const mode = values.get('--mode') ?? 'local';
+      const fabricFlags = ['--genesis', '--chaincode', '--chaincode-version'];
+      if (mode !== 'local' && mode !== 'fabric') throw new Error('invalid option');
+      if (mode === 'fabric' ? !values.has('--channel') || fabricFlags.some(flag => !values.has(flag))
+        : fabricFlags.some(flag => values.has(flag))) throw new Error('invalid option');
+      const ledgerPath = resolve(values.get('--ledger') ?? join(values.get('--data')!, mode === 'fabric' ? 'fabric-projection.sqlite' : 'shared-ledger.sqlite'));
       // 오타 경로가 새 빈 저널을 만들어 조용히 0건 측정을 내지 못하게 기존 정규 파일만 연다.
       const ledgerStat = lstatSync(ledgerPath, { throwIfNoEntry: false, bigint: true });
       if (!ledgerStat?.isFile() || ledgerStat.isSymbolicLink()) throw new Error('invalid option');
-      const observationsPath = resolve(values.get('--observations')!);
-      // 관찰 입력은 디스크립터로 열어 정규 파일·크기를 검증한다 — FIFO는 열기가 막히고
-      // 심볼릭 링크는 따라가지 않는다. 디스크립터의 inode가 곧 읽은 대상의 신원이다.
-      const observationsFd = openSync(observationsPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      let observationsStat: BigIntStats;
-      let observations: unknown;
-      let observationsBytes: Buffer;
-      try {
-        observationsStat = fstatSync(observationsFd, { bigint: true });
-        if (!observationsStat.isFile()) throw new Error('invalid option');
-        // 경계 읽기 — 크기 검사 후 읽는 사이 자라는 파일은 MAX+1바이트로 넘쳐 거부된다.
-        const buffer = Buffer.alloc(MAX_SOURCE_BYTES + 1);
-        let total = 0;
-        for (let n = 1; n > 0; total += n) n = readSync(observationsFd, buffer, total, buffer.length - total, null);
-        if (total > MAX_SOURCE_BYTES) throw new Error('invalid option');
-        // 같은 디스크립터의 읽기 후 메타를 비교한다 — 같은 inode의 제자리 덮어쓰기가
-        // 읽는 사이 섞여 들어오면 거부한다.
-        const afterStat = fstatSync(observationsFd, { bigint: true });
-        if (afterStat.size !== observationsStat.size || afterStat.mtimeNs !== observationsStat.mtimeNs || afterStat.ctimeNs !== observationsStat.ctimeNs) throw new Error('invalid option');
-        observationsBytes = buffer.subarray(0, total);
-        // 치명적 디코딩 — 잘못된 UTF-8을 U+FFFD로 고쳐 읽지 않는다.
-        observations = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observationsBytes));
-      } finally {
-        closeSync(observationsFd);
-      }
+      const observations = readJsonInput(resolve(values.get('--observations')!));
+      const genesis = mode === 'fabric' ? readJsonInput(resolve(values.get('--genesis')!), true) : undefined;
       // --out이 저널이나 관찰 입력과 같은 파일(부모 심볼릭 링크 우회·하드링크·대소문자
       // 별칭 포함)이면 측정 결과가 입력을 덮어쓴다 — 저널 sidecar(-wal/-shm/-journal)와
       // 그 하위 경로도 보호 대상이다. 입력 신원은 읽기 전에 고정한다 — 읽는 동안 입력이
@@ -114,12 +112,20 @@ if (isMain()) {
       };
       const inputs = [
         pin(ledgerPath), pin(`${ledgerPath}-wal`), pin(`${ledgerPath}-shm`), pin(`${ledgerPath}-journal`),
-        { path: observationsPath, inode: `${observationsStat.dev}:${observationsStat.ino}` },
+        { path: observations.path, inode: observations.inode },
+        ...(genesis ? [{ path: genesis.path, inode: genesis.inode }] : []),
       ];
       // 측정 아티팩트에 읽은 관찰 입력의 신원을 싣는다 — 같은 건수의 다른 로그는
       // 다른 다이제스트로 구별된다.
-      const evidence = { observations_sha256: createHash('sha256').update(observationsBytes).digest('hex'), observations_bytes: observationsBytes.byteLength };
-      const result = readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations, evidence });
+      const evidence = { observations_sha256: createHash('sha256').update(observations.bytes).digest('hex'), observations_bytes: observations.bytes.byteLength };
+      // Keep the default local path usable without optional Fabric dependencies.
+      const result = mode === 'fabric'
+        ? (await import('../packages/measurement/fabric-adoption.ts')).readFabricPilotMeasurement({
+          path: ledgerPath, observations: observations.value, evidence,
+          options: { channel_id: values.get('--channel')!, chaincode_name: values.get('--chaincode')!,
+            chaincode_version: values.get('--chaincode-version')!, public_genesis: genesis!.value },
+        })
+        : readPilotMeasurement({ path: ledgerPath, channelId: values.get('--channel') ?? CHANNEL_ID, observations: observations.value, evidence });
       // 고정한 신원을 가진 모든 입력이 읽기 후에도 같은 대상인지 확인한다 — 읽는 동안
       // 바뀌거나 지워진 입력은 고정 신원이 실제 읽은 내용을 대표하지 못한다. 읽기 중
       // 새로 생긴 sidecar는 출력 검증 시점의 재조회가 보호 비교에 쓴다.
@@ -142,7 +148,7 @@ if (isMain()) {
       process.stdout.write(`${output}\n`);
     }
   } catch {
-    process.stderr.write('adoption measurement failed: invalid input or unreadable ledger\n');
+    process.stderr.write('adoption measurement failed: invalid input, unreadable ledger, or missing optional Fabric dependencies\n');
     process.exitCode = 1;
   }
 }

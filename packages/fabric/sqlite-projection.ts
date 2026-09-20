@@ -12,25 +12,18 @@ import {
   type ProjectorCheckpoint,
 } from "./block-projector.ts";
 import { sha256Digest } from "./canonical.ts";
+import { fabricProjectionBinding, verifyFabricJournalBlock, type FabricJournalBlock } from "./journal-verification.ts";
 import type { Checkpoint, LedgerEvent } from "../storage/local-ledger.ts";
 import { VerifiedBrowseIndex } from "../storage/browse-index.ts";
 import type { BrowseResult, BrowseWriteBatch, BrowseQuery } from "../storage/browse-contract.ts";
 
-const SCHEMA_VERSION = 1;
 const MAX_HISTORICAL_SNAPSHOT_CACHE = 8;
 const EMPTY_JOURNAL_DIGEST = '0'.repeat(64);
 function appendJournalDigest(previous: string, rawBlockDigest: string): string {
   return rawDigest(Buffer.from(previous + rawBlockDigest, 'hex'));
 }
 
-type BlockRow = {
-  block_number: number;
-  block_hash: string;
-  data_hash: string;
-  previous_hash: string;
-  raw_digest: string;
-  bytes: Uint8Array;
-};
+type BlockRow = FabricJournalBlock;
 
 type HistoricalReplay = {
   before: Map<string, unknown>;
@@ -481,13 +474,7 @@ export class SqliteFabricProjection {
   private ensureOpen(): void { if (this.closed) throw new Error("Fabric projection is closed"); }
 
   private ensureBinding(): void {
-    const expected = {
-      schema_version: SCHEMA_VERSION,
-      channel_id: this.options.channel_id,
-      chaincode_name: this.options.chaincode_name,
-      chaincode_version: this.options.chaincode_version ?? "0.1.0",
-      genesis_digest: sha256Digest(this.options.public_genesis),
-    };
+    const expected = fabricProjectionBinding(this.options);
     const row = this.db.prepare("SELECT schema_version, channel_id, chaincode_name, chaincode_version, genesis_digest FROM fabric_projection_binding WHERE singleton = 1").get() as any;
     if (row) {
       for (const key of Object.keys(expected)) if (row[key] !== (expected as any)[key]) throw new Error("Fabric projection binding mismatch");
@@ -542,15 +529,7 @@ export class SqliteFabricProjection {
   }
 
   private verifyAndApply(projector: FabricBlockProjector, block: BlockRow): ProjectBlockResult {
-    const decoded = decodeBlock(block.bytes);
-    const header = decoded.getHeader();
-    if (!header || header.getNumber() !== block.block_number) throw new Error("Fabric raw block number mismatch");
-    if (rawDigest(block.bytes) !== block.raw_digest) throw new Error("Fabric raw block digest mismatch");
-    const result = projector.applyBlock(block.bytes);
-    const previousHash = Buffer.from(header.getPreviousHash_asU8()).toString("hex");
-    const dataHash = Buffer.from(header.getDataHash_asU8()).toString("hex");
-    if (result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash || previousHash !== block.previous_hash || dataHash !== block.data_hash) throw new Error("Fabric raw block journal metadata mismatch");
-    return result;
+    return verifyFabricJournalBlock(projector, block);
   }
 
   private replayAndRebuild(): { projector: FabricBlockProjector; browseIndex: VerifiedBrowseIndex; latestResult: ProjectBlockResult | null; latestRawDigest: string | null; stateCreationAnchors: Map<string, StateCreationAnchor>; journalDigest: string } {

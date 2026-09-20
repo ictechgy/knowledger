@@ -108,6 +108,16 @@ test('empty journal yields a measurement with no derived samples', () => {
   assert.equal(measurement.window.channel_id, 'kcl-demo');
 });
 
+test('adoption aggregation consumes a one-pass stream with the same metrics and window as an array', async t => {
+  const ledger = await seededLedger(t);
+  const events = ledger.events(0, 1000);
+  function* stream() { for (const event of events) yield event; }
+  assert.deepEqual(measureAdoption({ events: stream(), log }), measureAdoption({ events, log }));
+  for (const value of [null, {}, 42]) assert.throws(() => measureAdoption({ events: value as any, log }));
+  function* failing() { yield events[0]; throw new Error('incomplete journal'); }
+  assert.throws(() => measureAdoption({ events: failing(), log }), /incomplete journal/);
+});
+
 test('observation times must be strict RFC 3339 timestamps', () => {
   const observation = (at: string) => ({ ...log, observations: [{ kind: 'review_question', subject: 's', at }] });
   for (const at of ['March 5, 2026', '2026-03-05', '2026-03-05T25:00:00Z', '2026-03-05T12:61:00Z', '2026-02-30T00:00:00Z', '2026-03-05T12:00:00+25:00', '2026-03-05 12:00:00Z']) {
