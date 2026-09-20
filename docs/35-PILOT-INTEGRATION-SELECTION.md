@@ -100,6 +100,8 @@ true이므로 adapter에서는 false로 지정해 입력 손실을 감추지 않
 1. **임베딩 전송 경계와 provider adapter**: small/1536을 기본 평가 프로필로 준비한다.
    허용 안 된 입력의 외부 호출0회, timeout/취소, 잘못된 차원/모델·큰 응답 거절을 검증한다.
    로컬 토큰 해시와 무설치 경로는 유지한다.
+   후속 [구현 안내](36-EMBEDDING-EGRESS.md)에 새 guarded provider와 OpenAI adapter를 기록했다.
+   실제 tokenizer/키 연결 및 한국어 실측은 별도다.
 2. **Confluence source adapter**: 페이지 allowlist·고정 버전·보수적인 본문 변환,
    private import/CAS/재시도, 원본 권한 회수·삭제·버전 경합을 시험한다.
 3. **Slack 알림 adapter**: 명시적 actor/DM 매핑, 최소 메시지, 실제 전송 전 현재 인가,

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in guarded embedding providers with separate fail-closed egress policy,
+  current actor checks before sends/results/cache use, immutable profiles,
+  bounded calls/concurrency/deadlines and HTTP/shutdown cancellation.
+- A fixed-endpoint OpenAI embedding adapter for text-embedding-3-small/large:
+  caller-owned tokenizer and key access, no truncation or automatic retry,
+  strict response/model/dimension checks and redacted failures. Legacy local
+  embedding functions and the dependency-free default remain available.
+
 ## [0.8.0] — 2026-09-20
 
 ### Added

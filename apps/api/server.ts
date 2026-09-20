@@ -24,6 +24,7 @@ import type { ApplicationDefinition, Persona } from '../../packages/config/types
 import { ReadinessMonitor } from './readiness.ts';
 import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
+import type { EmbeddingOptions } from '../../packages/embeddings/contract.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
 type RequestSession = Session | AuthenticatedSession;
@@ -62,6 +63,8 @@ export interface AppOptions {
   embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
   /** embedQuery와 같은 임베딩 공간의 개정본 임베더 — 색인에 기록된 행의 임베더와 차원이 같아야 한다. */
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
+  /** Guarded provider path, exclusive with the legacy embedding pair. */
+  embedding?: EmbeddingOptions;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
   /** Explicit operator-configured delivery targets and inbound peer keys; disabled when omitted. */
@@ -108,7 +111,7 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress,
+    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, embedding: options.embedding, modelEgress: options.modelEgress,
       reviewDelivery: options.reviewDelivery, reviewReminders: options.reviewReminders, currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
     await service.initialize();
   } catch (error) {
@@ -193,6 +196,17 @@ export async function createApp(options: AppOptions) {
   }
 
   const server = createServer(async (req, res) => {
+    let embeddingController: AbortController | undefined;
+    const embeddingSignal = () => {
+      if (!embeddingController) {
+        embeddingController = new AbortController();
+        const abort = () => { embeddingController!.abort(); cleanup(); };
+        const cleanup = () => { req.off('aborted', abort); res.off('close', abort); res.off('finish', cleanup); };
+        req.once('aborted', abort); res.once('close', abort); res.once('finish', cleanup);
+        if (req.aborted || res.destroyed) abort();
+      }
+      return embeddingController.signal;
+    };
     const requestStarted = performance.now();
     const requestId = `request-${randomUUID()}`;
     res.setHeader('X-Request-ID', requestId);
@@ -282,8 +296,8 @@ export async function createApp(options: AppOptions) {
           [`${root}/revisions`]: () => service.publish(actor, input),
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),
           [`${root}/search`]: () => service.search(actor, input),
-          [`${root}/vector-search`]: () => service.vectorSearch(actor, input),
-          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor, input),
+          [`${root}/vector-search`]: () => service.vectorSearch(actor, input, embeddingSignal()),
+          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor, input, embeddingSignal()),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
@@ -438,6 +452,7 @@ export async function createApp(options: AppOptions) {
       await attempt('readiness', () => readiness.close());
       await attempt('review-delivery', () => service.reviewDelivery?.close());
       await attempt('review-reminders', () => service.reviewReminders?.close());
+      await attempt('embeddings', () => service.closeEmbeddings());
       await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
       // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
       await attempt('vectorIndex', () => options.vectorIndex?.close?.());

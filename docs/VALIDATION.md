@@ -1,5 +1,28 @@
 # 검증 기록
 
+## 임베딩 전송 정책·OpenAI adapter — 2026-09-20
+
+별도 `embedding` provider 경로를 추가했다. 기존 생성용 `modelEgress`와 분리해 default deny,
+현재 actor·canonical revision scope, cache 재인가, provider 호출 직전/결과 뒤 검사와 유한
+operation을 적용한다. API 키·실계정은 사용하지 않고 모든 공급자 응답을 fake fetch로 검증했다.
+정책 metadata에는 원문을 넘기지 않고 전송 여부는 가상 fetch 호출 수로 확인했다.
+
+- Node24.18.0 `npm run check`: **570 tests / 569 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, 기존 합의 demo 통과. 새 dependency/SDK 설치 없음.
+- 새 API12개: actor/정확한 slot/profile·정책에 원문 비노출, missing/false/nonboolean 거절,
+  생성용 허용과 분리, 문서 단위 거절·캐시/타 actor 재인가, 늦은 정책·키 조회 중 권한 회수,
+  응답 중 serving freeze, 재구축 실패/예산/최종 검사·기존 색인 유지, HTTP disconnect,
+  종료·진단 redaction·동시 처리 상한을 검증했다.
+- adapter6개: 고정 URL·float·정확한 입력, tokenizer/byte/key 사전 검사, 잘못된 모델/index/
+  차원/zero/nonfinite vector/usage/중복 JSON/큰 응답, 상태별 안전한 오류·자동 재시도 없음,
+  늦은 key callback과 미완성 response stream의 timeout/cancel을 확인했다.
+- 기존 벡터/configured 검사52개도 통과했다. 문서 변경의 참조/구조와 `git diff --check` 통과.
+  근거 `.artifacts/embedding-egress-20260920/`의 `check.log`, `types.log`, `demo.log`.
+
+실제 OpenAI 요금·한국어 의미 검색 품질·운영 tokenizer는 미측정이다. runtime API/전체 작업
+중단과 이미 시작된 외부 index 교체의 경계를 [구현 안내](36-EMBEDDING-EGRESS.md)에 명시했다.
+실제 Fabric network·keys·genesis, 외부 계정은 조작하지 않았고 원격 게시도 하지 않았다.
+
 ## v0.8.0 게시 — 2026-09-20
 
 [PR #19](https://github.com/ictechgy/knowledger/pull/19), 후보 `714d65d`의 push/PR CI8개

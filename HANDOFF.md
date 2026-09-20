@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (v0.8.0 게시 완료·파일럿 연동 후보 공식 조사/선정 완료)_
+_Last updated: 2026-09-20 KST (임베딩 전송 정책/OpenAI adapter 구현 — Confluence 수집 후속 진행)_
 
 ## Goal
 
@@ -13,6 +13,16 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
+
+- **임베딩 전송 정책과 OpenAI adapter 구현·로컬 검증**: `feature/embedding-egress`에서
+  별도 default-deny policy·현재 actor·profile/cache·호출/시간/동시 처리 예산·취소를 적용했다.
+  고정 OpenAI endpoint, 필수 tokenizer/키 함수, token/response/model/dimension 검증을
+  지원한다. legacy callback과 무설치 로컬 토큰 해시는 유지한다.
+  Node24 **570개 중569 통과·1 GC 생략**, 타입·합의 demo와 새 전송 회귀18개 통과.
+  실제 키 조회·OpenAI 호출은 없고 가상 fetch/키/tokenizer만 사용했다.
+  [안내](docs/36-EMBEDDING-EGRESS.md), `.artifacts/embedding-egress-20260920/`.
+  사용자가 계속 진행을 지시했으므로 문서/커밋 정리 뒤 Confluence 수집 adapter로 이어간다.
+  선정 문서 `c696b20`도 현재 branch에 포함되며 아직 원격 미게시다.
 
 - **파일럿 연동 조합 권고 선정 완료**: 사용자가 Atlassian·Microsoft·Slack·OpenAI·Ollama의
   공개 공식 문서 조회를 승인했고 확인한 자료로 [선정 기록](docs/35-PILOT-INTEGRATION-SELECTION.md)을
