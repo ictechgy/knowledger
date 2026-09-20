@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in Slack DM deadline notifications with explicit recipient/workspace/DM
+  bindings, current authorization and a separate egress policy. Messages contain
+  only a notice and app link. Durable provider acceptance, bounded retry/rate
+  limits and unknown outcomes prevent automatic reposting after ambiguous sends;
+  recipient views distinguish Slack acceptance from human reading or approval.
 - Confluence Cloud allowlist collection into actor-private immutable drafts, with
   conservative ADF conversion, full reread before writes, private version/hash
   provenance and resumable imports. OAuth credentials remain caller-owned.

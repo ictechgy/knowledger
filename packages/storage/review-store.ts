@@ -211,6 +211,18 @@ export class ReviewStore {
     });
     return { reminders, unread_count: Number(unread.count), next_cursor: rows.length > limit ? String(rows[limit - 1].seq) : null };
   }
+  /** Only current, unread, due notices are eligible for an optional external notification. */
+  outboundReminder(actor: Actor, id: string, now: string) {
+    if (!iso(now)) throw new ReviewStoreError('INVALID_QUERY', 400);
+    const row: any = this.db.prepare(`SELECT r.seq FROM review_reminders r WHERE r.reminder_id=? AND r.org_id=? AND r.actor_id=?
+      AND r.read_at IS NULL AND r.due_at<=? AND ${this.reminderPredicate}
+      AND (r.phase='overdue' OR NOT EXISTS(SELECT 1 FROM review_reminders later WHERE later.revision_digest=r.revision_digest
+        AND later.schedule_version=r.schedule_version AND later.org_id=r.org_id AND later.actor_id=r.actor_id AND later.phase='overdue'))`)
+      .get(id, actor.org_id, actor.actor_id, now);
+    if (!row) return null;
+    const notice = this.reminders(actor, { limit: 1, cursor: String(row.seq + 1) }).reminders[0];
+    if (notice?.reminder_id !== id) throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503); return notice;
+  }
   readReminder(actor: Actor, id: string) {
     const result = this.db.prepare(`UPDATE review_reminders AS r SET read_at=COALESCE(read_at,?)
       WHERE r.reminder_id=? AND r.org_id=? AND r.actor_id=? AND ${this.reminderPredicate}`).run(new Date().toISOString(), id, actor.org_id, actor.actor_id);

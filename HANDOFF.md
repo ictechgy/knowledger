@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (Confluence 비공개 수집 구현 — Slack 알림 후속 진행)_
+_Last updated: 2026-09-20 KST (임베딩·Confluence·Slack adapter 구현 및 로컬 검증 완료)_
 
 ## Goal
 
@@ -14,13 +14,24 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **선정한 adapter3종 구현·로컬 검증 완료**: 현재 branch `feature/pilot-integrations`.
+  임베딩 `bdd5a67`, Confluence `5495774`에 이어 선택형 Slack 개인 DM 기한 알림을 구현했다.
+  명시적 local human/team/user/DM 결속, 별도 default-deny 정책·현재 인가, 최소 메시지,
+  영속 접수/재시도/불명 상태와 수신자 브라우저 표시를 지원한다. 불명 발송은 재전송하지 않는다.
+  Node24 **598개 중597 통과·1 GC 생략**, 타입·Chromium **35개**, 합의/peer 전달 demo 통과.
+  [Slack 안내](docs/38-SLACK-NOTIFICATIONS.md), `.artifacts/slack-notifications-20260920/`.
+  실제 계정/키 연결·SaaS 요청·메시지·모델 호출은 없고 가상 fetch만 사용했다. 기존 Fabric
+  데이터·키·genesis는 보존했다. 신규 코드/문서는 **원격 미게시**, 제품 버전은0.8.0이다.
+  남은 것은 원격 게시 요청, 실계정/조직/반출 정책 입력과 실제 연결·한국어 검색 품질 평가다.
+  Confluence OAuth lifecycle/scheduler와 Slack unknown 운영자 조정 UI는 제공하지 않는다.
+
 - **Confluence 수집 구현·로컬 검증**: `feature/pilot-integrations`에서 page allowlist,
   보수적 ADF 변환·전체 재조회, 비공개 origin/site/version/hash, 멱등 import와 브라우저
   출처 표시를 추가했다. Node24 **579개 중578 통과·1 GC 생략**, 타입·새 Chromium1개 통과.
   실제 tenant/OAuth 호출 없이 가상 fetch와 임시 앱으로 권한·변경·응답 유실·복원을 검증했다.
   [안내](docs/37-CONFLUENCE-SOURCE.md), `.artifacts/confluence-20260920/`.
-  임베딩 커밋은 `bdd5a67`이며 두 구현 모두 원격 미게시다. 다음은 Slack 최소 알림과
-  공급자 접수/결과 불명 상태를 구현한다. 실계정 연결·실데이터 전송 승인은 별도다.
+  임베딩 커밋은 `bdd5a67`이며 두 구현 모두 원격 미게시다. 후속 Slack 구현도 위에 완료했다.
+  실계정 연결·실데이터 전송 승인은 별도다.
 
 - **임베딩 전송 정책과 OpenAI adapter 구현·로컬 검증**: `feature/embedding-egress`에서
   별도 default-deny policy·현재 actor·profile/cache·호출/시간/동시 처리 예산·취소를 적용했다.
@@ -29,7 +40,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Node24 **570개 중569 통과·1 GC 생략**, 타입·합의 demo와 새 전송 회귀18개 통과.
   실제 키 조회·OpenAI 호출은 없고 가상 fetch/키/tokenizer만 사용했다.
   [안내](docs/36-EMBEDDING-EGRESS.md), `.artifacts/embedding-egress-20260920/`.
-  사용자가 계속 진행을 지시했으므로 문서/커밋 정리 뒤 Confluence 수집 adapter로 이어간다.
+  이후 사용자가 계속 진행을 지시해 Confluence와 Slack adapter까지 구현했다.
   선정 문서 `c696b20`도 현재 branch에 포함되며 아직 원격 미게시다.
 
 - **파일럿 연동 조합 권고 선정 완료**: 사용자가 Atlassian·Microsoft·Slack·OpenAI·Ollama의
@@ -568,49 +579,23 @@ python3 -B tools/check_docs.py
 
 ## Resume Prompt
 
-`/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.8.0` 게시·원격 CI 통과 완료.
-10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
-조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
-Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
-Track C(PR #13 squash `4aad9ea` — Git 커넥터·채택 측정·원자 아티팩트)는 리뷰 수렴 후
-main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과 Track D 운영 정책,
-파일럿 계획/관찰 템플릿을 PR #14(merge `bdb55fb`)로 main에 반영하고 v0.3.0으로
-게시했다(493개 중492 통과·1 GC 생략). 실제 Fabric HTTP/configured smoke와
-백업·장애 드릴, 원격 Node24·26/Fabric/Chromium18개 CI까지 통과했다.
-공개 인증서81개는 앞선 점검에서 정상이었고, 후속 검증의 세 peer tip은 block373(height374)이다.
-남은 작업은 2027-01-01 수동 인증서 점검, 대상 조직·환경이 필요한 실제 파일럿,
-독립 물리 호스트/Fabric 채널 장애 검증이다. 후속 작업으로 파일럿 CLI의
-`--mode fabric` 원시 블록 재검증·VALID 집계를 PR #15(merge `0eea4be`)로 main에
-반영하고 v0.4.0으로 게시했다(로컬504개 중503 통과·1 GC 생략, 원격 CI8개 성공).
-source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 기존 로컬 모드도
-유지한다. 현재 branch는 main이다. 실제 조직 파일럿·독립 호스트 검증·외부 공급자
-연동과 2027-01-01 수동 인증서 점검은 남아 있다.
-이후 사용자가 가상 리허설을 선택해 2개 가상 조직·5개 문서의 로컬 시나리오22개를
-통과했다. 자료는 `.artifacts/pilot-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-UivsQz/`다.
-이후 의존관계 API·UI(`9b0148c`)와 새 HTTP 리허설24개로 문서5개 전부 작성하는
-경로를 검증했다. PR #16(merge `af7b92c`)·CI8개 통과 뒤 v0.5.0으로 게시했고 현재 main이다.
-검토 협업·영향 조회·템플릿·동기화 preview/retry·검색 평가(`80a556d`)도 PR #17
-(merge `81964fb`)·CI8개·Chromium28개 통과 뒤 v0.6.0으로 게시했다. 로컬525개 중524
-통과·1 GC 생략, 타입·demo 통과. 근거는 `.artifacts/release-v0.6.0-20260920/`.
-댓글은 앱 설치 단위이며 조직 간 전달·외부 알림, 실제 KB/임베딩 공급자 연동은 남아 있다.
-이후 `feature/review-delivery`에서 선택한 본인 댓글의 전달 인터페이스·영속 재시도·수신자
-inbox와 가상 연동을 구현했다. 기본 비활성·고정 수신자·명시 확인이며 source/조직 HMAC,
-현재 인가·대상 변경 차단·수신 중복 제거를 검증했다. 543개 중542 통과·1 GC 생략,
-브라우저30개 통과, 타입·합의/전달 demo 통과. PR #18(merge `b237bcf`)·CI8개 뒤 v0.7.0으로
-게시했고 실제 Fabric HTTP/configured 연속 검증도 통과했다. 세 peer 최신 tip은 block399다.
-앱 내부 자동 기한 알림(`0ab4d34`)도 PR #19(merge `21780da`)·CI8개 뒤 v0.8.0으로 게시했다.
-552개 중551 통과·1 GC 생략, Chromium32개·타입·합의/전달 demo 통과. 자동60초 생성,
-브라우저30초 갱신, 중복/이전 일정 제외·현재 수신자 인가·종료/timeout을 검증했다.
-실제 peer URL/키/계정 배포와 외부 메일·Slack·Teams adapter는 남았다. 채널 선택을
-사용자에게 요청했지만 아직 답변이 없어 외부 실제 전송은 구성하지 않았다.
-이후 사용자가 공개 공식 문서 조회를 승인해 `docs/35-PILOT-INTEGRATION-SELECTION.md`에
-Confluence Cloud·Slack Bot DM·text-embedding-3-small/1536을 첫 구현 후보로 선정했다.
-실제 사용 중인 도구/계정은 미지정이며 SaaS 연결·임베딩 호출은 수행하지 않았다.
-임베딩 전송 정책과 공급자 접수 영수증의 별도 계약을 구현하기 전 단순 callback 연결로
-운영 보호가 갖춰졌다고 설명하지 마. 선정 문서는 `docs/pilot-stack-selection` 로컬 변경이다.
-runtime 관리 정책은 `docs/32-GOVERNANCE-EVOLUTION.md`의 설계 단계이고 구현 완료가 아니다.
-실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
-완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
-`kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
-실제 실행하지 않은 장애 시험을 완료로 표시하지 마.
+`/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 이어가.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 게시 릴리스는 v0.8.0(PR #19,
+merge 21780da), main/origin main 기준은78d5049다. 현재 로컬 branch는
+`feature/pilot-integrations`이며 제품 버전0.8.0, 배포 chaincode0.1.0을 유지한다.
+공개 공식 문서 조회 승인을 받아 c696b20에서 Confluence Cloud·Slack Bot DM·OpenAI
+text-embedding-3-small/1536을 첫 구현 조합으로 권고 선정했다. 임베딩 전송 정책과
+OpenAI adapter(bdd5a67), Confluence private source(5495774), Slack 최소 기한 알림까지
+구현·로컬 검증했다. 상세는 docs/35–38, 최신 커밋은 git log로 확인해.
+598개 중597 통과·1 GC 생략, 타입·Chromium35개·합의/peer 전달 demo 통과.
+근거는 .artifacts/slack-notifications-20260920/와 앞선 embedding-egress/confluence 디렉터리다.
+신규 코드는 아직 원격 미게시다. 별도 명시적 게시 요청 없이 push/PR/릴리스를 진행하지 마.
+실제 SaaS/token/model 호출·메시지 발송은 하지 않았다. fake fetch와 임시 앱으로 검증했다.
+Confluence token lifecycle/scheduler는 caller 소유, Slack unknown은 자동 재발송 없이 보류하며
+이력 확인/운영자 조정 UI는 미구현이다. 공급자 접수는 peer receipt·열람·승인이 아니다.
+실계정/조직/호스트/반출 정책 입력, 실제 연결·한국어 검색 평가·독립 호스트 시험은 남았다.
+거버넌스 변경은 docs/32의 설계 단계다. 다음 수동 테스트 인증서 점검은2027-01-01 KST다.
+기존 Fabric은 마지막 검증에서 세 peer block399(height400), 시험 합의 철회 완료였다.
+완료된 fixture에 fresh fabric:smoke를 실행하지 마. 기존 데이터·키·genesis·.serena·
+scorpionfish를 보존하고 kcl persisted contracts와 fixture 이름을 바꾸지 마.
+실제로 실행하지 않은 외부 연결·Fabric VALID·장애 시험을 완료로 표시하지 마.

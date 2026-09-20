@@ -19,6 +19,8 @@ import { ReviewReminderWorker } from '../../packages/review/reminder-worker.ts';
 import type { ReviewReminderOptions } from '../../packages/review/reminder-worker.ts';
 import { ReviewDeliveryRuntime } from './review-delivery.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
+import { SlackNotificationRuntime } from './slack-notifications.ts';
+import type { SlackNotificationOptions } from './slack-notifications.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
 import { sourceId, sourceMapping, validateSourceManifest, confluenceOrigin } from '../../packages/connectors/source-contract.ts';
@@ -100,6 +102,7 @@ interface StoredRunRecord { boot_id?: string; slot?: any; manifest?: any; model_
 export class KnowledgerService {
   readonly reviewDelivery: ReviewDeliveryRuntime | undefined;
   readonly reviewReminders: ReviewReminderWorker | undefined;
+  readonly slackNotifications: SlackNotificationRuntime | undefined;
   private reminderPosition: ReminderPosition | null = null;
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
@@ -134,7 +137,8 @@ export class KnowledgerService {
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-      embedding?: EmbeddingOptions; modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false; currentActor?: (actor: Actor) => Promise<void> } = {}) {
+      embedding?: EmbeddingOptions; modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false;
+      slackNotifications?: SlackNotificationOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
@@ -160,6 +164,13 @@ export class KnowledgerService {
       workspaceId: definition.workspace.id, channelId: ledger.channelId, refresh: () => this.refresh(), actor: actor => this.actor(actor),
       currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
     }, options.reviewDelivery);
+    if (options.slackNotifications) {
+      if (!Array.isArray(options.slackNotifications.targets) || options.slackNotifications.targets.some(target => !personas.some(actor => actor.kind === 'human' && actor.org_id === target.recipient?.org_id && actor.actor_id === target.recipient?.actor_id))) throw new TypeError('Slack targets must identify configured local human recipients');
+      this.slackNotifications = new SlackNotificationRuntime(vault, {
+        workspaceId: definition.workspace.id, refresh: () => this.refresh(), actor: actor => this.actor(actor),
+        currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
+      }, options.slackNotifications);
+    }
     this.vectorIndex = options.vectorIndex;
     this.embedQuery = options.embedQuery ?? (text => developmentEmbedding(text));
     this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));
@@ -763,8 +774,10 @@ export class KnowledgerService {
     const page = this.vault.reviews.reminders(actor, input);
     return { ...page, reminders: page.reminders.map(reminder => {
       const revision = this.reviewRevision(reminder.revision_digest);
-      return { ...reminder, title: revision.payload.title, ...slotFields(revision.payload) };
-    }), automation: { enabled: Boolean(this.reviewReminders?.pollMs), poll_ms: this.reviewReminders?.pollMs ?? 0,
+      return { ...reminder, title: revision.payload.title, ...slotFields(revision.payload), slack: this.slackNotifications?.summary(actor, reminder.reminder_id) ?? null };
+    }), slack_automation: { enabled: Boolean(this.slackNotifications?.worker.pollMs),
+      last_error: this.slackNotifications?.worker.lastError ? 'SLACK_UNAVAILABLE' : null },
+      automation: { enabled: Boolean(this.reviewReminders?.pollMs), poll_ms: this.reviewReminders?.pollMs ?? 0,
       overdue_after_ms: this.reviewReminders?.overdueAfterMs ?? null, last_error: this.reviewReminders?.lastError ?? null } };
   }
   async readReviewReminder(actor: Actor, id: string, input: any) {

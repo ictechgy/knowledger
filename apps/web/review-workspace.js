@@ -216,6 +216,7 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
       document.getElementById('review-reminder-count').textContent = String(reminders.unread_count);
       document.getElementById('review-reminder-status').textContent = response.automation.last_error ? '자동 알림 갱신이 지연되고 있습니다.'
         : response.automation.enabled ? '현재 일정의 알림입니다. 검토 완료·일정 변경 시 이전 알림은 사라집니다.' : '자동 알림 생성이 꺼져 있습니다.';
+      if (response.slack_automation?.last_error) document.getElementById('review-reminder-status').textContent += ' Slack 알림 연결을 확인해 주세요.';
       target.replaceChildren();
       for (const reminder of reminders.reminders) {
         const row = node('li');
@@ -225,7 +226,13 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
             if (captured === getSession()) await openRevision(reminder.revision_digest);
           } catch (error) { if (captured === getSession()) showStatus(error.message, 'error'); }
           finally { if (captured === getSession()) await refreshReminders(); }
-        }), node('p', `기한 ${date(reminder.due_at)}`, 'form-hint')); target.append(row);
+        }), node('p', `기한 ${date(reminder.due_at)}`, 'form-hint'));
+        if (reminder.slack) {
+          const labels = { pending: 'Slack 알림 대기', sending: 'Slack 전송 중', provider_accepted: 'Slack 접수 확인 · 열람 여부는 알 수 없음',
+            retry_wait: 'Slack 재시도 대기', blocked: 'Slack 전송 보류 · 연결 또는 권한 확인 필요', unknown: 'Slack 발송 여부 확인 필요 · 자동 재발송 중지', failed: 'Slack 재시도 종료', skipped: 'Slack 전송 제외 · 읽거나 지난 알림' };
+          row.append(node('p', labels[reminder.slack.status] ?? 'Slack 상태 확인 필요', 'form-hint'));
+        }
+        target.append(row);
       }
       if (!reminders.reminders.length) target.append(node('li', '새 기한 알림이 없습니다.', 'empty-state'));
       if (reminders.next_cursor) target.append(button('기한 알림 더 보기', () => { void refreshReminders(true); }));

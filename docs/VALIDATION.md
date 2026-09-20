@@ -1,5 +1,27 @@
 # 검증 기록
 
+## Slack 개인 DM 알림·통합 회귀 — 2026-09-20
+
+Node24 `npm run check`: **598 tests /597 passed /0 failed /1 GC skipped**.
+`npm run check:types`, Chromium **35개**, 합의 demo와 peer 전달 demo 통과.
+Slack target과 token callback, 모든 provider fetch는 가상 값이며 실제 전송은0회다.
+
+- 새 adapter7개: 고정 endpoint·bot/team/정확한 DM 결속, 최소 내용·미리보기 차단,
+  사전/키 조회 뒤 인가,429/명확한 거절/모호한 오류 구분, 잘못된/큰/중복 JSON 응답,
+  callback/stream timeout·취소·늦은 호출 차단과 오류 redaction을 검증했다.
+- 새 runtime/store12개: actor 격리·원장/승인 비영향, 접수/불명 상태의 stopped-app 복원,
+  default deny, 읽음/완료/이전 단계 제외, 키 조회 중 완료, serving/membership 회수,
+  target binding 변경, post/ledger 대기 중 종료, 자동 tick 중복, 두 DB 연결 claim과
+  lease 만료의 unknown, workspace429 대기와 총3회 제한을 검증했다.
+- 브라우저2개: 수신자만 접수/열람 미확인 표시, 결과 불명의 자동 재발송 중지 표시,
+  최소 전송 내용과390px 넘침 없음. 기존33개(Confluence 출처1개 포함)도 통과했다.
+- 합의 demo는 기존 활성/제공/철회 흐름을, peer 전달 demo는2회 제출/1개 inbox 저장과
+  receipt·수신자 격리·승인0건을 유지했다. Slack 접수를 peer 영수증으로 바꾸지 않았다.
+
+근거 `.artifacts/slack-notifications-20260920/`의 `check.log`, `types.log`, `browser.log`,
+`demo.log`, `delivery-demo.log`. [경계/운영 안내](38-SLACK-NOTIFICATIONS.md).
+실제 Fabric 재실행·데이터/키 변경·실계정 연결·원격 게시는 하지 않았다.
+
 ## Confluence 비공개 수집 — 2026-09-20
 
 Node24 `npm run check` **579 tests /578 passed /0 failed /1 GC skipped**,

@@ -125,6 +125,16 @@ for a two-app local simulation with deliberate receipt loss and duplicate suppre
 [Automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) notify the current
 assignees inside the app and suppress duplicates and stale schedule versions.
 
+[Optional Slack DM notifications](docs/38-SLACK-NOTIFICATIONS.md) send only a deadline
+notice and app link to explicitly mapped recipients. Provider acceptance and
+unknown outcomes are stored separately from peer receipts and human approvals.
+[Confluence Cloud collection](docs/37-CONFLUENCE-SOURCE.md) imports allowlisted
+pages into private drafts with versioned provenance and conservative ADF conversion.
+[Guarded embedding providers](docs/36-EMBEDDING-EGRESS.md) add a separate egress
+policy and a fixed-endpoint OpenAI adapter. These integrations require caller-owned
+credentials and deployment policy; live vendor connections and retrieval quality
+have not been validated by the local fixtures.
+
 [Markdown repository connector](docs/23-KB-SOURCE-CONNECTOR.md) syncs only manifest-listed files into private drafts.
 The [knowledge client](docs/24-KNOWLEDGE-CLIENT.md) verifies the exact revision and agreement state,
 and re-checks authorization and freshness before model generation and before returning results.
