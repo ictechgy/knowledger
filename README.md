@@ -118,6 +118,10 @@ comments, mentions, due dates, recurring reviews, recipient inboxes and verified
 reverse dependency views. Starter document templates and retrieval evaluation help
 with adoption. Review completion does not replace human agreement approvals.
 
+[Selected comment delivery](docs/33-REVIEW-DELIVERY.md) adds an opt-in recipient
+transport, durable retry queue and separate inbox. Run `npm run demo:review-delivery`
+for a two-app local simulation with deliberate receipt loss and duplicate suppression.
+
 [Markdown repository connector](docs/23-KB-SOURCE-CONNECTOR.md) syncs only manifest-listed files into private drafts.
 The [knowledge client](docs/24-KNOWLEDGE-CLIENT.md) verifies the exact revision and agreement state,
 and re-checks authorization and freshness before model generation and before returning results.

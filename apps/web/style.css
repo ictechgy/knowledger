@@ -309,3 +309,4 @@ input::placeholder, textarea::placeholder { color: #596475; }
 .review-event-list li p { white-space: pre-wrap; }
 .review-event-list button { max-width: 100%; white-space: normal; margin: .2rem .3rem .2rem 0; text-align: left; }
 .review-schedule-summary { font-size: 14px; }
+.review-transfer-form input[type="checkbox"] { width: auto; justify-self: start; }

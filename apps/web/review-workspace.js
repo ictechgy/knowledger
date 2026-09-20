@@ -14,6 +14,8 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
   let selected = null; let session = null; let version = 0; let inboxVersion = 0;
   let review = null; let impact = null; let loading = false; let busy = false; let impactLoading = false;
   let inbox = { notifications: [], next_cursor: null, unread_count: 0 }; let due = null;
+  let deliveryVersion = 0; let deliveryTargets = [];
+  let outgoing = { deliveries: [], next_cursor: null }; let incoming = { deliveries: [], next_cursor: null };
   const discussion = () => document.getElementById('review-discussion-content');
   const impactTarget = () => document.getElementById('revision-impact-content');
   const live = (token, captured) => token === version && captured === getSession() && captured === session;
@@ -23,6 +25,9 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
   function reset() {
     version++; inboxVersion++; selected = null; session = null; review = null; impact = null; loading = false; busy = false; impactLoading = false;
     inbox = { notifications: [], next_cursor: null, unread_count: 0 }; due = null;
+    deliveryVersion++; deliveryTargets = []; outgoing = { deliveries: [], next_cursor: null }; incoming = { deliveries: [], next_cursor: null };
+    document.getElementById('review-delivery-panel').hidden = true;
+    document.getElementById('review-delivery-outbox').replaceChildren(); document.getElementById('review-delivery-inbox').replaceChildren();
     discussion()?.replaceChildren(node('p', '문서를 선택하면 검토 대화와 일정을 볼 수 있습니다.', 'empty-state'));
     impactTarget()?.replaceChildren(node('p', '문서를 선택하면 연결된 문서의 영향을 확인할 수 있습니다.', 'empty-state'));
     document.getElementById('review-notification-list')?.replaceChildren();
@@ -34,10 +39,14 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
     const token = version; const captured = session; const path = route(); loading = true;
     if (!append) discussion().replaceChildren(node('p', '검토 기록을 불러오는 중…', 'form-hint'));
     try {
-      const response = await read(`${path}/review${append && review?.next_cursor ? `?cursor=${encodeURIComponent(review.next_cursor)}` : ''}`, captured);
+      const [response, destinations] = await Promise.all([
+        read(`${path}/review${append && review?.next_cursor ? `?cursor=${encodeURIComponent(review.next_cursor)}` : ''}`, captured),
+        read(`${getBase()}/review-delivery-targets`, captured),
+      ]);
       if (!live(token, captured)) return;
       if (response.revision_digest !== selected.revision_digest) throw new Error('검토 대상 개정이 다릅니다.');
       review = { ...response, events: append ? [...review.events, ...response.events] : response.events };
+      deliveryTargets = destinations.targets;
       renderReview();
     } catch (error) {
       if (!live(token, captured)) return;
@@ -54,9 +63,9 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
       try {
         pending ??= { operation_id: operationId(), ...build() };
         busy = true; form.querySelectorAll('input,textarea,select,button').forEach(input => { input.disabled = true; });
-        await request(`${path}/review/${suffix}`, { method: 'POST', body: JSON.stringify(pending), sessionGuard: captured });
+        await request(`${path}/review/${suffix}`, { method: 'POST', body: JSON.stringify(pending), sessionGuard: captured, acceptDeliveryQueue: suffix === 'deliveries' });
         if (!live(token, captured)) return;
-        showStatus(suffix === 'complete' ? '검토 완료를 기록했습니다. 합의 승인은 별도로 필요합니다.' : '검토 기록을 저장했습니다.', 'success');
+        showStatus(suffix === 'deliveries' ? '전달 대기열에 등록했습니다. 전달 상태에서 수신 여부를 확인하세요.' : suffix === 'complete' ? '검토 완료를 기록했습니다. 합의 승인은 별도로 필요합니다.' : '검토 기록을 저장했습니다.', 'success');
         await loadReview(); await refreshInbox();
       } catch (error) { if (live(token, captured)) showStatus(error.message, 'error'); }
       finally { if (live(token, captured)) { busy = false; form.querySelectorAll('input,textarea,select,button').forEach(input => { input.disabled = false; }); } }
@@ -106,6 +115,21 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
       const item = node('li'); const author = node('strong', `${event.author.org_id} · ${event.author.actor_id}${event.author.kind === 'agent' ? ' · AI' : ''}`);
       item.append(author, node('span', ` · ${date(event.created_at)} · ${{ comment: '댓글', schedule: '일정 변경', reviewed: '검토 완료' }[event.kind]}`, 'form-hint'), node('p', event.body));
       if (event.mentions.length) item.append(node('p', `알림: ${event.mentions.map(p => `${p.org_id} · ${p.actor_id}`).join(', ')}`, 'form-hint'));
+      if (event.kind === 'comment' && samePerson(event.author, session.actor) && deliveryTargets.length) {
+        const details = node('details'); details.append(node('summary', '이 댓글 전달'));
+        const form = node('form', undefined, 'review-form review-transfer-form'); const select = node('select');
+        for (const destination of deliveryTargets) { const option = node('option', `${destination.label} · ${destination.recipient.org_id} / ${destination.recipient.actor_id}`); option.value = destination.id; select.append(option); }
+        const confirm = node('input'); confirm.type = 'checkbox'; const submit = node('button', '선택한 수신자에게 전달', 'secondary-button'); submit.type = 'submit'; submit.disabled = true;
+        confirm.addEventListener('change', () => { submit.disabled = !confirm.checked; });
+        select.addEventListener('change', () => { confirm.checked = false; submit.disabled = true; });
+        form.append(label('댓글 수신 대상', select), label('이 댓글의 원문을 선택한 수신자에게 전달합니다', confirm), submit);
+        mutationForm(form, 'deliveries', () => {
+          const destination = deliveryTargets.find(target => target.id === select.value);
+          if (!confirm.checked || !destination) throw new Error('수신자와 전달할 댓글을 확인하세요.');
+          return { event_id: event.event_id, destination_id: destination.id, destination_version: destination.version, confirm_shared: true };
+        });
+        details.append(form); item.append(details);
+      }
       list.append(item);
     }
     if (!review.events.length) list.append(node('li', '아직 검토 기록이 없습니다.', 'empty-state'));
@@ -168,12 +192,53 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
       if (token !== inboxVersion || captured !== getSession()) return;
       inbox = { ...notifications, notifications: append ? [...inbox.notifications, ...notifications.notifications] : notifications.notifications }; due = tasks;
       renderInbox(captured);
+      void refreshDeliveries();
     } catch (error) {
       if (token === inboxVersion && captured === getSession()) {
         document.getElementById('review-notification-list').replaceChildren(node('li', error.message, 'form-hint'));
         document.getElementById('review-due-list').replaceChildren(node('li', '검토 기한을 확인할 수 없습니다.', 'form-hint'));
       }
     }
+  }
+  async function refreshDeliveries(append = null) {
+    const captured = getSession(); if (!captured?.actor) return;
+    const token = ++deliveryVersion; const panel = document.getElementById('review-delivery-panel');
+    const out = document.getElementById('review-delivery-outbox'); const inside = document.getElementById('review-delivery-inbox');
+    try {
+      const targets = await read(`${getBase()}/review-delivery-targets`, captured);
+      if (token !== deliveryVersion || captured !== getSession()) return;
+      panel.hidden = !targets.enabled; if (!targets.enabled) return;
+      const [sent, received] = await Promise.all([
+        read(`${getBase()}/review-deliveries${append === 'out' && outgoing.next_cursor ? `?cursor=${encodeURIComponent(outgoing.next_cursor)}` : ''}`, captured),
+        read(`${getBase()}/review-deliveries/received${append === 'in' && incoming.next_cursor ? `?cursor=${encodeURIComponent(incoming.next_cursor)}` : ''}`, captured),
+      ]);
+      if (token !== deliveryVersion || captured !== getSession()) return;
+      outgoing = { ...sent, deliveries: append === 'out' ? [...outgoing.deliveries, ...sent.deliveries] : sent.deliveries };
+      incoming = { ...received, deliveries: append === 'in' ? [...incoming.deliveries, ...received.deliveries] : received.deliveries };
+      out.replaceChildren(); inside.replaceChildren();
+      const statuses = { pending: '전달 대기', sending: '전송 중', delivered: '수신 저장 확인', blocked: '전달 차단', failed: '전달 확인 실패' };
+      for (const job of outgoing.deliveries) {
+        const row = node('li'); row.append(node('strong', statuses[job.status]), node('p', `${job.recipient.org_id} · ${job.recipient.actor_id} · 총 ${job.total_attempts}회 시도`, 'form-hint'));
+        if (job.status === 'failed') row.append(node('p', '응답이 유실됐을 수 있습니다. 재시도는 같은 전달 ID를 사용합니다.', 'form-hint'));
+        if (job.status === 'failed' || job.status === 'blocked') row.append(button('같은 전달 재시도', async event => {
+          const control = event.currentTarget; control.disabled = true;
+          try { await request(`${getBase()}/review-deliveries/${encodeURIComponent(job.delivery_id)}/retry`, { method: 'POST', body: '{}', sessionGuard: captured, acceptDeliveryQueue: true }); if (captured === getSession()) await refreshDeliveries(); }
+          catch (error) { if (captured === getSession()) showStatus(error.message, 'error'); }
+          finally { control.disabled = false; }
+        }));
+        row.append(button('원래 개정 열기', () => { void openRevision(job.revision_digest); })); out.append(row);
+      }
+      for (const delivery of incoming.deliveries) {
+        const message = delivery.packet.message; const row = node('li');
+        row.append(node('strong', `${message.comment.author.org_id} · ${message.comment.author.actor_id}${message.comment.author.kind === 'agent' ? ' · AI' : ''}`));
+        const details = node('details'); details.append(node('summary', '전달된 댓글 원문 보기'), node('p', message.comment.body));
+        row.append(details, node('p', `수신 ${date(delivery.receipt.received_at)} · 본인에게 전달된 댓글`, 'form-hint'), button('전달된 개정 열기', () => { void openRevision(message.revision_digest); })); inside.append(row);
+      }
+      if (!outgoing.deliveries.length) out.append(node('li', '전달 요청이 없습니다.', 'empty-state'));
+      if (!incoming.deliveries.length) inside.append(node('li', '전달받은 댓글이 없습니다.', 'empty-state'));
+      if (outgoing.next_cursor) out.append(button('전달 요청 더 보기', () => { void refreshDeliveries('out'); }));
+      if (incoming.next_cursor) inside.append(button('받은 댓글 더 보기', () => { void refreshDeliveries('in'); }));
+    } catch (error) { if (token === deliveryVersion && captured === getSession()) { panel.hidden = false; out.replaceChildren(node('li', error.message, 'form-hint')); inside.replaceChildren(); } }
   }
   function select(doc) {
     const captured = getSession();
@@ -183,5 +248,6 @@ export function createReviewWorkspace({ request, getSession, getBase, openRevisi
     void loadReview();
     impactTarget().replaceChildren(button('이 개정의 영향 문서 확인', () => { void loadImpact(); }));
   }
+  document.getElementById('refresh-review-deliveries').addEventListener('click', () => { void refreshDeliveries(); });
   return { select, reset, refreshInbox };
 }

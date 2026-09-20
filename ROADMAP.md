@@ -27,8 +27,11 @@ verified, or still planned. Items are grouped by track, not by promised date.
 Released in v0.6.0: [review collaboration and impact](docs/31-REVIEW-WORKSPACE.md), including
 application-local comments/mentions, deadlines, recurring reviews, notifications,
 reverse dependencies, starter templates, sync preview/retries and retrieval evaluation.
-Cross-organization comment transport, a selected
-customer KB connector and a configured production embedding provider remain open.
+The subsequent working branch implements [selected comment delivery](docs/33-REVIEW-DELIVERY.md):
+explicit recipient confirmation, durable leased retries, a recipient-only inbox and
+HTTPS/HMAC transport with a two-app simulation. This addition is unreleased.
+Live peer deployment, vendor notifications and automatic deadline reminders,
+a selected customer KB connector and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate
 [governance migration design](docs/32-GOVERNANCE-EVOLUTION.md), including an explicit
 choice of governance authorities and quorum; editing genesis is not a migration.

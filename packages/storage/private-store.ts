@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Actor } from './local-ledger.ts';
 import { ReviewStore } from './review-store.ts';
+import { ReviewDeliveryStore } from './review-delivery-store.ts';
 
 const CREATED_AT = "CASE WHEN json_valid(value_json) THEN json_extract(value_json, '$.revision.payload.metadata.created_at') END";
 const SUMMARY_FIELDS = {
@@ -21,6 +22,7 @@ type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-
 export class PrivateStore {
   private db: DatabaseSync;
   readonly reviews: ReviewStore;
+  readonly deliveries: ReviewDeliveryStore;
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
@@ -36,6 +38,7 @@ export class PrivateStore {
           ON private_records(org_id, actor_id, kind, ${CREATED_AT} DESC, record_id DESC);
         CREATE INDEX IF NOT EXISTS private_command_actor_order ON private_records(org_id, actor_id, kind);`);
       this.reviews = new ReviewStore(this.db);
+      this.deliveries = new ReviewDeliveryStore(this.db);
     } catch (error) { this.db.close(); throw error; }
   }
   put(kind: PrivateKind, id: string, actor: Actor, value: any): void {

@@ -45,7 +45,8 @@
     "pilot:metrics": "node tools/adoption-metrics.ts",
     "test:drill:multi-host": "node tools/multi-host-drill.ts",
     "kb:sync": "node tools/kb-sync.ts",
-    "demo:kb": "node tools/kb-demo.ts"
+    "demo:kb": "node tools/kb-demo.ts",
+    "demo:review-delivery": "node tools/review-delivery-demo.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.4",

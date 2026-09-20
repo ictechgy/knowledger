@@ -84,6 +84,10 @@ export class ReviewStore {
     try { return scheduleFrom(JSON.parse(row.value_json), digest); }
     catch { throw new ReviewStoreError('REVIEW_RECORD_CORRUPT', 503); }
   }
+  event(id: string): ReviewEvent | null {
+    const row = this.db.prepare('SELECT * FROM review_events WHERE event_id=?').get(id);
+    return row ? eventFrom(row) : null;
+  }
   events(digest: string, input: { limit?: number; cursor?: string }) {
     const { limit, before } = reviewPage(input);
     const rows = this.db.prepare('SELECT * FROM review_events WHERE revision_digest=? AND seq<? ORDER BY seq DESC LIMIT ?').all(digest, before, limit + 1) as any[];

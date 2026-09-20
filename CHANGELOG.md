@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in delivery of an author's selected review comment to a configured human
+  recipient: explicit browser confirmation, sender outbox and recipient-only inbox.
+- Durable leased retries, exact destination bindings, current authorization and
+  delivery-policy checks, bounded cancellation, idempotent receiver storage and
+  exact payload receipts. Receipt loss retries the same delivery ID; no receipt
+  grants human approval or proves a Fabric commit.
+- Fixed-endpoint HTTPS/HMAC transport with explicit loopback test mode and a
+  disposable two-app demo (`npm run demo:review-delivery`). Credentials stay in
+  runtime options; additive private DB tables use the existing backup contract.
+  Live organization deployment, vendor notifications and automatic reminders
+  remain unconfigured/unimplemented.
+
 ## [0.6.0] — 2026-09-20
 
 ### Added
