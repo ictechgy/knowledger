@@ -20,16 +20,17 @@ verified, or still planned. Items are grouped by track, not by promised date.
   [`v0.3.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0) (2026-09-20),
   [`v0.4.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0) (2026-09-20),
   [`v0.5.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0) (2026-09-20),
-  [`v0.6.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0) (2026-09-20)
+  [`v0.6.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0) (2026-09-20),
+  [`v0.7.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0) (2026-09-20)
 
 ## Track A — Protocol completeness
 
 Released in v0.6.0: [review collaboration and impact](docs/31-REVIEW-WORKSPACE.md), including
 application-local comments/mentions, deadlines, recurring reviews, notifications,
 reverse dependencies, starter templates, sync preview/retries and retrieval evaluation.
-The subsequent working branch implements [selected comment delivery](docs/33-REVIEW-DELIVERY.md):
+Released in v0.7.0: [selected comment delivery](docs/33-REVIEW-DELIVERY.md), including
 explicit recipient confirmation, durable leased retries, a recipient-only inbox and
-HTTPS/HMAC transport with a two-app simulation. This forms the v0.7.0 release candidate.
+HTTPS/HMAC transport with a two-app simulation.
 Live peer deployment, vendor notifications and automatic deadline reminders,
 a selected customer KB connector and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate

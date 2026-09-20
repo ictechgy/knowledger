@@ -1,5 +1,23 @@
 # 검증 기록
 
+## v0.7.0 게시와 기존 Fabric 연속 검증 — 2026-09-20
+
+[PR #18](https://github.com/ictechgy/knowledger/pull/18), 후보 `aaaa28a`의 push/PR CI8개를
+통과하고 동일 파일 tree인 merge `b237bcf`에 [v0.7.0](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0)을
+게시했다. [CI](https://github.com/ictechgy/knowledger/actions/runs/35509099798)는 Node24/26,
+Fabric/auth 경계, Chromium30개와 성능·복구 드릴을 포함한다. 태그 commit·본문·Latest readback 일치.
+
+기존 네트워크에서 `fabric:http-smoke`(게시374·승인376·활성377·철회381·최종383),
+`configured:smoke`(게시384·승인386·활성387·철회396·최종399)가 순서대로 통과했다.
+세 peer 모두 block399/height400과 같은 hash를 보고했다. 신규 네트워크 초기화·키 재발급은
+하지 않았고 기존 genesis hash를 이전 증거와 대조했다. crypto132개 파일의 mtime이
+HTTP 시험 시작보다 앞섬을 확인하고, HTTP 실행 중 수집한 baseline과 configured 종료 후
+size/mtime/inode hash도 일치했다. 이것은 기존 ledger/auth 연속 검증이며 신규 HMAC 댓글
+전달을 실제 운영 조직에 연결한 검증으로 표현하지 않는다.
+
+근거 `.artifacts/release-v0.7.0-20260920/`,
+`.data/fabric-http-smoke-ryUOYC/http-evidence.json`, `.data/configured-smoke-ZxhTGK/evidence.json`.
+
 ## 선택적 댓글 전달·재시도 큐·가상 연동 — 2026-09-20
 
 `feature/review-delivery`에서 작성자의 명시 확인·서버 고정 수신자 기반 댓글 전달과

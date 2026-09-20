@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0 게시 준비 — 이후 자동 리마인더 진행 승인)_
+_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0 게시 완료 — 자동 리마인더 후속 진행)_
 
 ## Goal
 
@@ -14,12 +14,20 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **[v0.7.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0)**:
+  [PR #18](https://github.com/ictechgy/knowledger/pull/18), merge `b237bcf`, 후보 `aaaa28a`의
+  push/PR CI8개 통과 후 같은 tree에 태그·Latest 게시/본문 readback을 확인했다.
+  [CI](https://github.com/ictechgy/knowledger/actions/runs/35509099798). 기존 실제 Fabric
+  HTTP·configured 연속 검증도 통과했고 세 peer는 block399(height400), 시험 합의는 철회됐다.
+  기존 genesis hash와 crypto132개 파일 metadata 보존. 새로운 댓글 전달의 실제 조직 연결은
+  가상 앱 검증과 별도이며 아직 미실행이다. 근거 `.artifacts/release-v0.7.0-20260920/`.
+
 - **후속 일괄 진행 승인**: 댓글 전달을 v0.7.0으로 게시한 뒤 앱 내부 자동 기한 리마인더를
   구현·검증한다. 외부 알림 제품과 실제 조직 연결 입력은 아직 미정이다. GitHub 게시 및
   기존 Fabric의 HTTP/configured 연속 검증을 진행하며 새 네트워크를 초기화하지 않는다.
-  릴리스 metadata는0.7.0 후보이며, 아직 게시 완료로 표시하지 않는다.
+  v0.7.0 게시를 마쳤으며 앱 내부 자동 리마인더를 이어서 진행한다.
 
-- **댓글 전달 구현·로컬 검증 완료**: 현재 branch는 `feature/review-delivery`다.
+- **댓글 전달 구현·검증 완료(`e14501d`)**:
   작성자가 확인한 본인 댓글을 구성된 사람 수신자에게 보내는 API/UI, 영속 outbox/inbox,
   임대·현재 인가·대상 binding·유한 재시도·HMAC/HTTPS adapter를 추가했다.
   수신 저장 영수증은 승인/읽음/VALID 커밋 증명이 아니다. 기존 댓글 자동 전파는 없고
@@ -28,7 +36,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   동일 전송2회/수신1건·수신자 격리·문서 본문 제외·승인0건을 검증했다.
   Node24 **543개 중542 통과·1 GC 생략**, 타입·기존 demo·Chromium **30개 통과**.
   [설정/계약 안내](docs/33-REVIEW-DELIVERY.md), 근거 `.artifacts/review-delivery-20260920/`.
-  원격 게시와 실환경 조직 연결은 하지 않았다. 버전은0.6.0, 변경은 Unreleased다.
+  PR #18·v0.7.0으로 원격 게시했다. 실제 조직 연결은 아직 하지 않았다.
   기존 Fabric fixture·키·genesis와 사용자 폴더는 보존했다.
 
 - **[v0.6.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.6.0)**:
