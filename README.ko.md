@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-**v0.8 개발 알파 · MIT · Node.js 24+**
+**v0.9 개발 알파 · MIT · Node.js 24+**
 
 각 조직이 자신의 지식과 기밀을 보유하면서, 공동 업무에 사용할 해석을 합의한다. 공유된 지식 문서는 **본문·개정·제안·합의 이력까지** 허가형 분산원장에 보관하고, KB/LLM 위키와 RAG는 이 정본에서 만든 조회·검색 화면으로 제공한다.
 
@@ -114,6 +114,13 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로�
 [선택한 댓글 전달](docs/33-REVIEW-DELIVERY.md)은 명시적 수신자 확인, 영속 재시도 큐와 별도 수신함을 제공한다. `npm run demo:review-delivery`로 응답 유실·중복 제거를 포함한 두 앱의 가상 연동을 실행할 수 있다.
 
 [자동 기한 알림](docs/34-REVIEW-REMINDERS.md)은 현재 담당자에게 앱 내부 알림을 만들고 중복과 이전 일정의 알림을 제외한다.
+
+[Slack DM 연결](docs/38-SLACK-NOTIFICATIONS.md)은 최소 알림·앱 링크와 본인의 확인·재처리 이력을
+지원한다. 공급자 접수와 본인 확인은 합의 승인과 구분한다.
+[Confluence 수집](docs/37-CONFLUENCE-SOURCE.md)은 지정 페이지를 비공개 초안으로 가져오며
+회전 OAuth 토큰 갱신·정기 수집을 선택할 수 있다. [임베딩 전송 정책](docs/36-EMBEDDING-EGRESS.md)은
+별도 반출 검사와 OpenAI adapter를 제공한다. 실제 계정·비밀 저장소·반출 정책은 배포 입력이며
+실제 공급자 연결과 한국어 검색 품질을 검증했다는 뜻은 아니다.
 
 [Markdown 저장소 연결](docs/23-KB-SOURCE-CONNECTOR.md)은 manifest에 지정한 파일만 비공개 초안으로 동기화한다.
 [지식 클라이언트](docs/24-KNOWLEDGE-CLIENT.md)는 정확한 개정본과 합의 상태를 확인하고,

@@ -7,6 +7,10 @@ import { ScanningBrowseQueries } from '../../packages/storage/scanning-browse.ts
 import { cosineSimilarity, developmentEmbedding, isFiniteEmbedding } from '../../packages/storage/vector-index.ts';
 import type { VectorCandidate, VectorCandidateIndex, VectorIndexEntry, VectorIndexWriter } from '../../packages/storage/vector-index.ts';
 import { SearchMatchCache } from './search-matches.ts';
+import { EmbeddingError } from '../../packages/embeddings/contract.ts';
+import type { EmbeddingOptions, EmbeddingTarget } from '../../packages/embeddings/contract.ts';
+import { EmbeddingRuntime } from '../../packages/embeddings/runtime.ts';
+import type { EmbeddingOperation } from '../../packages/embeddings/runtime.ts';
 import type { Actor, Checkpoint } from '../../packages/storage/local-ledger.ts';
 import { PrivateStore } from '../../packages/storage/private-store.ts';
 import { ReviewStoreError, reviewPeople } from '../../packages/storage/review-store.ts';
@@ -15,9 +19,13 @@ import { ReviewReminderWorker } from '../../packages/review/reminder-worker.ts';
 import type { ReviewReminderOptions } from '../../packages/review/reminder-worker.ts';
 import { ReviewDeliveryRuntime } from './review-delivery.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
+import { SlackNotificationRuntime } from './slack-notifications.ts';
+import type { SlackNotificationOptions } from './slack-notifications.ts';
+import { ConfluenceSyncRuntime } from './confluence-sync.ts';
+import type { ConfluenceSyncOptions } from './confluence-sync.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
-import { sourceId, sourceMapping, validateSourceManifest } from '../../packages/connectors/source-contract.ts';
+import { sourceId, sourceMapping, validateSourceManifest, confluenceOrigin } from '../../packages/connectors/source-contract.ts';
 import { SourceStore, SourceStoreError } from '../../packages/connectors/source-store.ts';
 import { parseJsonStrict } from './json.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
@@ -96,6 +104,8 @@ interface StoredRunRecord { boot_id?: string; slot?: any; manifest?: any; model_
 export class KnowledgerService {
   readonly reviewDelivery: ReviewDeliveryRuntime | undefined;
   readonly reviewReminders: ReviewReminderWorker | undefined;
+  readonly slackNotifications: SlackNotificationRuntime | undefined;
+  readonly confluenceSync: ConfluenceSyncRuntime | undefined;
   private reminderPosition: ReminderPosition | null = null;
   readonly ledger: ApplicationLedger;
   private vault: PrivateStore;
@@ -110,6 +120,7 @@ export class KnowledgerService {
   private readonly vectorIndex: VectorCandidateIndex | undefined;
   private readonly embedQuery: (text: string) => readonly number[] | Promise<readonly number[]>;
   private readonly embedRevision: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
+  private readonly embeddingRuntime: EmbeddingRuntime | undefined;
   /** 개정본 다이제스트는 불변이므로 임베딩도 불변 — derived-scan의 요청당 O(N) 재계산을 막는 상한 캐시다. */
   private readonly embeddingCache = new Map<string, readonly number[]>();
   /** 진행 중인 색인 재구축 실행 — 동시 호출은 이 Promise에 합류해 중복 스캔·교체를 막는다. */
@@ -129,18 +140,24 @@ export class KnowledgerService {
 
   constructor(ledger: ApplicationLedger, vault: PrivateStore, definition: ApplicationDefinition, personas: Persona[] = definition.personas,
     options: { vectorIndex?: VectorCandidateIndex; embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>; embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
-      modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false; currentActor?: (actor: Actor) => Promise<void> } = {}) {
+      embedding?: EmbeddingOptions; modelEgress?: ModelEgressPolicy; reviewDelivery?: ReviewDeliveryOptions; reviewReminders?: ReviewReminderOptions | false;
+      slackNotifications?: SlackNotificationOptions; confluenceSync?: ConfluenceSyncOptions; currentActor?: (actor: Actor) => Promise<void> } = {}) {
     // 임베더는 같은 임베딩 공간의 쌍으로만 받는다 — 한쪽만 주어지면 나머지가 개발용
     // 기본값으로 조용히 채워져 차원 불일치가 런타임 오류나 잘못된 색인이 된다.
     // 두 임베더 모두 같은 입력에 같은 출력을 돌려야 한다 — 커서는 순위 목록 해시로
     // 후보 집합을 고정하므로 비결정적 임베더는 페이지마다 순위가 흔들려
     // 색인이 바뀌지 않아도 INVALID_CURSOR를 유발할 수 있다.
     if ((options.embedQuery === undefined) !== (options.embedRevision === undefined)) throw new TypeError('embedQuery and embedRevision must be configured together');
-    if (options.vectorIndex && !options.embedQuery) throw new TypeError('An external vector index requires an explicit embedQuery matching the indexed embeddings');
+    if (options.embedding && (options.embedQuery || options.embedRevision)) throw new TypeError('Choose the guarded embedding provider or legacy embedding functions, not both');
+    if (options.vectorIndex && !options.embedQuery && !options.embedding) throw new TypeError('An external vector index requires an explicit embedQuery matching the indexed embeddings');
     this.definition = definition;
     this.ledger = ledger;
     this.vault = vault;
     this.personas = personas;
+    if (options.embedding) this.embeddingRuntime = new EmbeddingRuntime(options.embedding, async (actor, signal) => {
+      signal.throwIfAborted(); await this.refresh(); signal.throwIfAborted(); this.actor(actor);
+      await options.currentActor?.(actor); signal.throwIfAborted(); this.actor(actor);
+    });
     if (options.reviewReminders !== false) this.reviewReminders = new ReviewReminderWorker((now, signal) => this.generateReviewReminders(now, signal), options.reviewReminders);
     if (options.reviewDelivery && (!personas.some(actor => actor.org_id === options.reviewDelivery!.source_org_id)
       || (options.reviewDelivery.destinations ?? []).some(target => !definition.genesis.identities.some(actor => actor.kind === 'human' && actor.org_id === target.recipient?.org_id && actor.actor_id === target.recipient?.actor_id)))) {
@@ -150,6 +167,30 @@ export class KnowledgerService {
       workspaceId: definition.workspace.id, channelId: ledger.channelId, refresh: () => this.refresh(), actor: actor => this.actor(actor),
       currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
     }, options.reviewDelivery);
+    if (options.slackNotifications) {
+      if (!Array.isArray(options.slackNotifications.targets) || options.slackNotifications.targets.some(target => !personas.some(actor => actor.kind === 'human' && actor.org_id === target.recipient?.org_id && actor.actor_id === target.recipient?.actor_id))) throw new TypeError('Slack targets must identify configured local human recipients');
+      this.slackNotifications = new SlackNotificationRuntime(vault, {
+        workspaceId: definition.workspace.id, refresh: () => this.refresh(), actor: actor => this.actor(actor),
+        currentActor: options.currentActor, config: () => this.config(), revision: digest => this.reviewRevision(digest),
+      }, options.slackNotifications);
+    }
+    if (options.confluenceSync) {
+      if (!Array.isArray(options.confluenceSync.sources) || options.confluenceSync.sources.some(target => !personas.some(actor => actor.kind === 'human' && actor.org_id === target.owner?.org_id && actor.actor_id === target.owner?.actor_id))) throw new TypeError('Confluence schedules must identify configured local human owners');
+      this.confluenceSync = new ConfluenceSyncRuntime(vault, {
+        workspaceId: definition.workspace.id,
+        authorize: async (actor, signal) => {
+          signal.throwIfAborted(); await this.refresh(); signal.throwIfAborted(); this.actor(actor);
+          if (!this.config()?.serving_enabled) throw new ApiError('SERVING_FROZEN', '수집을 일시 중지했습니다.', 503);
+          await options.currentActor?.(actor); signal.throwIfAborted(); this.actor(actor);
+        },
+        request: async (actor, id, path, input, guard) => {
+          if (path === `/sources/${id}` && (!input.method || input.method === 'GET')) return this.getSource(actor, id, guard);
+          if (path === `/sources/${id}/confluence` && input.method === 'POST') return this.importSourceMarkdown(actor, id, input.body, 'confluence', guard);
+          if (path === `/sources/${id}/reconcile` && input.method === 'POST') return this.reconcileSource(actor, id, input.body, guard);
+          throw new ApiError('INVALID_INPUT', '허용되지 않은 수집 작업입니다.');
+        },
+      }, options.confluenceSync);
+    }
     this.vectorIndex = options.vectorIndex;
     this.embedQuery = options.embedQuery ?? (text => developmentEmbedding(text));
     this.embedRevision = options.embedRevision ?? ((title, body) => developmentEmbedding(`${title}\n${body}`));
@@ -233,7 +274,8 @@ export class KnowledgerService {
    * 요청당 O(N) 임베더 호출을 막는 상한 LRU 캐시다. 상한을 넘는 순차 스캔에서는
    * 적중률이 떨어지지만 메모리는 유한하게 유지되고 정확성은 영향받지 않는다.
    */
-  private async embedRevisionCached(digest: string, title: string, body: string): Promise<readonly number[]> {
+  private async embedRevisionCached(digest: string, title: string, body: string, operation?: EmbeddingOperation, target?: EmbeddingTarget): Promise<readonly number[]> {
+    if (operation) return operation.embed(`${title}\n${body}`, target!);
     const cached = this.embeddingCache.get(digest);
     if (cached) {
       // LRU 갱신 — 적중한 항목을 최근 사용으로 옮겨 뜨거운 부분집합을 유지한다.
@@ -256,6 +298,7 @@ export class KnowledgerService {
    * 원인은 cause에 보존한다.
    */
   private indexError(error: unknown): ApiError {
+    if (error instanceof EmbeddingError) return new ApiError(error.code, error.message, error.status, error.retryable);
     const transientNetwork = /^(ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR)/.test(String((error as any)?.cause?.code ?? (error as any)?.code ?? ''));
     const permanent = (error instanceof TypeError || error instanceof RangeError) && !transientNetwork;
     const wrapped = new ApiError(permanent ? 'INDEX_MISCONFIGURED' : 'INDEX_UNAVAILABLE',
@@ -403,7 +446,9 @@ export class KnowledgerService {
       try {
         const value=stored.source;sourceId(value.source_id);
         const mapping=sourceMapping({path:value.path,policy_id:value.policy_id,policy_version:value.policy_version,title:stored.revision.payload.title});
-        metadata.source={source_id:value.source_id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version};
+        const origin=value.origin===undefined?undefined:confluenceOrigin(value.origin);
+        if(origin&&mapping.path!==`confluence/${origin.page_id}.md`)throw new Error('Invalid origin path');
+        metadata.source={source_id:value.source_id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version,...(origin?{origin}: {})};
       } catch {throw new ApiError('PRIVATE_DRAFT_CORRUPT','비공개 원본 연결을 확인할 수 없습니다.',503,true);}
     }
     if (stored.source_draft_id !== undefined) {
@@ -749,8 +794,10 @@ export class KnowledgerService {
     const page = this.vault.reviews.reminders(actor, input);
     return { ...page, reminders: page.reminders.map(reminder => {
       const revision = this.reviewRevision(reminder.revision_digest);
-      return { ...reminder, title: revision.payload.title, ...slotFields(revision.payload) };
-    }), automation: { enabled: Boolean(this.reviewReminders?.pollMs), poll_ms: this.reviewReminders?.pollMs ?? 0,
+      return { ...reminder, title: revision.payload.title, ...slotFields(revision.payload), slack: this.slackNotifications?.summary(actor, reminder.reminder_id) ?? null };
+    }), slack_automation: { enabled: Boolean(this.slackNotifications?.worker.pollMs),
+      last_error: this.slackNotifications?.worker.lastError ? 'SLACK_UNAVAILABLE' : null },
+      automation: { enabled: Boolean(this.reviewReminders?.pollMs), poll_ms: this.reviewReminders?.pollMs ?? 0,
       overdue_after_ms: this.reviewReminders?.overdueAfterMs ?? null, last_error: this.reviewReminders?.lastError ?? null } };
   }
   async readReviewReminder(actor: Actor, id: string, input: any) {
@@ -1013,19 +1060,24 @@ export class KnowledgerService {
   async listSources(actor:Actor,limit=20,cursor?:string) {
     await this.refresh();this.actor(actor);return new SourceStore(this.vault).list(actor,limit,cursor);
   }
-  async getSource(actor:Actor,id:string) {
-    await this.refresh();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
+  async sourceAutomations(actor: Actor) {
+    await this.refresh(); this.actor(actor); return { schedules: this.confluenceSync?.list(actor) ?? [] };
+  }
+  async getSource(actor:Actor,id:string,guard?:()=>Promise<void>) {
+    await this.refresh();if(guard)await guard();this.actor(actor);const source=new SourceStore(this.vault).get(actor,id);
     if(!source)throw new SourceStoreError('NOT_FOUND',404);return source;
   }
-  private async privateWrite<T>(actor: Actor, operation: () => T): Promise<T> {
+  private async privateWrite<T>(actor: Actor, operation: () => T, guard?:()=>Promise<void>): Promise<T> {
     await this.refresh();
+    if(guard)await guard();
     this.actor(actor);
     // No await inside operation: validation, CAS, and private writes finish atomically
     // with respect to other JS tasks, without waiting for public transport submission.
     return operation();
   }
-  importSourceMarkdown(actor:Actor,id:string,input:any) {
-    onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64']);
+  importSourceMarkdown(actor:Actor,id:string,input:any,kind:'markdown'|'confluence'='markdown',guard?:()=>Promise<void>) {
+    onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64',...(kind==='confluence'?['origin']:[])]);
+    if(kind==='confluence')confluenceOrigin(input.origin);
     return this.privateWrite(actor,()=>{
       const mapping=sourceMapping({path:input.path,policy_id:input.policy_id,policy_version:input.policy_version,title:input.title});
       const policy=this.policy(mapping.policy_id,mapping.policy_version);
@@ -1036,11 +1088,11 @@ export class KnowledgerService {
         const revision=this.buildDraftRevision(actor,{...slotFields(policy),title:mapping.title,...(base?{base_revision_digest:base.revision_digest}:{})},content,'approved_import');
         return {draft_id:newId('draft'),revision};
       });
-    });
+    },guard);
   }
-  reconcileSource(actor:Actor,id:string,input:any) {
+  reconcileSource(actor:Actor,id:string,input:any,guard?:()=>Promise<void>) {
     onlyFields(input,['operation_id','expected_version','present_paths']);
-    return this.privateWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input));
+    return this.privateWrite(actor,()=>new SourceStore(this.vault).reconcile(actor,id,input),guard);
   }
   async getRevision(actor:Actor,digest:string) {
     if(!/^sha256:[a-f0-9]{64}$/.test(digest))throw new ApiError('INVALID_INPUT','올바른 개정 digest가 필요합니다.');
@@ -1281,7 +1333,12 @@ export class KnowledgerService {
    * EMBEDDING_CACHE_LIMIT를 넘는 배포는 외부 임베더 호출이 요청당 N회가 되므로
    * 외부 색인을 설정해야 한다.
    */
-  async vectorSearch(actor: Actor, input: any) {
+  async vectorSearch(actor: Actor, input: any, signal?: AbortSignal) {
+    if (!this.embeddingRuntime) return this.vectorSearchInternal(actor, input);
+    try { return await this.embeddingRuntime.run(actor, signal, operation => this.vectorSearchInternal(actor, input, operation)); }
+    catch (error) { if (error instanceof EmbeddingError) throw this.indexError(error); throw error; }
+  }
+  private async vectorSearchInternal(actor: Actor, input: any, operation?: EmbeddingOperation) {
     onlyFields(input, ['query', 'document_ids', 'context_id', 'scope_id', 'usage_scope', 'limit', 'cursor']);
     // 공백만 있는 검색어는 영벡터 임베딩과 무의미한 전수 스캔을 만들므로 거부한다.
     if (typeof input.query !== 'string' || input.query.trim().length < 1 || input.query.length > 1000) throw new ApiError('INVALID_INPUT', '검색어는 1,000자 이하의 내용이어야 합니다.');
@@ -1293,7 +1350,8 @@ export class KnowledgerService {
     const page = this.page(actor, 'vector-search', input, filter);
     const context = this.browseContext(page.checkpoint);
     let embedding: readonly number[];
-    try { embedding = await this.embedQuery(input.query); }
+    try { embedding = operation ? await operation.embed(input.query, { kind: 'query', checkpoint: page.checkpoint,
+      scope: { context_id: input.context_id ?? null, scope_id: input.scope_id ?? null, usage_scope: input.usage_scope ?? null } }) : await this.embedQuery(input.query); }
     catch (error) { throw this.indexError(error); }
     if (!isFiniteEmbedding(embedding)) throw this.indexError(new TypeError('embedQuery returned an invalid embedding'));
     const scores = new Map<string, number | null>();
@@ -1305,8 +1363,9 @@ export class KnowledgerService {
         if (!scores.has(candidate.revision_digest)) scores.set(candidate.revision_digest, candidate.score);
       }
     } else {
-      await this.addDerivedScanScores(scores, required, embedding, input, page.checkpoint);
+      await this.addDerivedScanScores(scores, required, embedding, input, page.checkpoint, operation);
     }
+    operation?.check();
 
     const ranked = this.verifyAndRankCandidates(scores, context, input, required);
 
@@ -1319,9 +1378,13 @@ export class KnowledgerService {
     const refs = selected.map(item => this.revisionRef(item.digest, context));
     this.prefetchRevisionSet(context, refs);
     const results = await Promise.all(refs.map(async (reference, index) => ({ ...(await this.describeRevision(this.pageRevision(reference, context), context)), score: selected[index]!.score })));
+    if (operation) await operation.authorize();
     this.actor(actor);
     return { view: 'summary', results, total: ranked.length, next_cursor: this.nextCursor(page, ranked.length, setHash), checkpoint: page.checkpoint,
-      candidate_source: this.vectorIndex ? 'external-index' : 'derived-scan', complete: this.vectorIndex === undefined };
+      candidate_source: this.vectorIndex ? 'external-index' : 'derived-scan', complete: this.vectorIndex === undefined,
+      ...(this.embeddingRuntime ? { embedding_profile: { id: this.embeddingRuntime.profile.id, provider: this.embeddingRuntime.profile.provider,
+        model: this.embeddingRuntime.profile.model, dimensions: this.embeddingRuntime.profile.dimensions, preprocessing: this.embeddingRuntime.profile.preprocessing },
+        embedding_profile_digest: this.embeddingRuntime.profileDigest } : {}) };
   }
 
   /**
@@ -1345,11 +1408,15 @@ export class KnowledgerService {
    * 색인이 아니라 원장 스캔이 후보 집합이므로 결과는 완전하다.
    * 필수 참조는 점수 없는 고정 참조 계약을 유지한다 — 모드마다 응답 형태가 달라지지 않게 한다.
    */
-  private async addDerivedScanScores(scores: Map<string, number | null>, required: Set<string>, embedding: readonly number[], input: any, at: Checkpoint): Promise<void> {
+  private embeddingTarget(reference: RevisionBrowseRef, at: Checkpoint): EmbeddingTarget {
+    return { kind: 'revision', checkpoint: at, scope: { context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope },
+      revision: { revision_digest: reference.revision_digest, slot: reference.slot } };
+  }
+  private async addDerivedScanScores(scores: Map<string, number | null>, required: Set<string>, embedding: readonly number[], input: any, at: Checkpoint, operation?: EmbeddingOperation): Promise<void> {
     for (const { reference, revision } of this.verifiedRevisionEntries(at, { context_id: input.context_id, scope_id: input.scope_id, usage_scope: input.usage_scope })) {
       if (required.has(reference.revision_digest)) continue;
       let score: number;
-      try { score = cosineSimilarity(embedding, await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown)); }
+      try { score = cosineSimilarity(embedding, await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown, operation, this.embeddingTarget(reference, at))); }
       catch (error) { throw this.indexError(error); }
       scores.set(reference.revision_digest, score);
     }
@@ -1404,7 +1471,7 @@ export class KnowledgerService {
    * 진행 중인 재구축에 합류한 호출자는 그 실행의 스캔 체크포인트를 돌려받는다 —
    * 자신의 refresh 이후 헤드가 아니라 실제로 색인을 채운 스냅샷이다.
    */
-  async rebuildVectorIndex(actor: Actor, input: any = {}) {
+  async rebuildVectorIndex(actor: Actor, input: any = {}, signal?: AbortSignal) {
     onlyFields(input, []);
     await this.refresh();
     this.actor(actor);
@@ -1414,7 +1481,10 @@ export class KnowledgerService {
     const writer = this.vectorIndex as (VectorCandidateIndex & Partial<VectorIndexWriter>) | undefined;
     if (!writer || typeof writer.replaceAll !== 'function') throw new ApiError('UNSUPPORTED_ACTION', '원자적 재구축을 지원하는 벡터 색인이 설정되지 않았습니다.');
     // 동시 재구축 호출은 진행 중인 실행에 합류한다 — 전수 스캔·전체 교체의 중복 실행을 막는다.
-    this.rebuildInFlight ??= this.runVectorIndexRebuild(writer as VectorCandidateIndex & VectorIndexWriter).finally(() => { this.rebuildInFlight = undefined; });
+    this.rebuildInFlight ??= (this.embeddingRuntime
+      ? this.embeddingRuntime.run(actor, signal, operation => this.runVectorIndexRebuild(writer as VectorCandidateIndex & VectorIndexWriter, actor, operation))
+      : this.runVectorIndexRebuild(writer as VectorCandidateIndex & VectorIndexWriter, actor))
+      .catch(error => { if (error instanceof EmbeddingError) throw this.indexError(error); throw error; }).finally(() => { this.rebuildInFlight = undefined; });
     return this.rebuildInFlight;
   }
 
@@ -1422,20 +1492,26 @@ export class KnowledgerService {
    * 재구축 실행부 — 체크포인트의 검증된 개정본을 임베딩해 원자적으로 교체한다.
    * rebuildVectorIndex에서 분리해 동시 호출 합류가 실행 자체와 섞이지 않게 한다.
    */
-  private async runVectorIndexRebuild(writer: VectorCandidateIndex & VectorIndexWriter) {
+  private async runVectorIndexRebuild(writer: VectorCandidateIndex & VectorIndexWriter, actor: Actor, operation?: EmbeddingOperation) {
     const checkpoint = this.ledger.checkpoint()!;
     const entries: VectorIndexEntry[] = [];
     for (const { reference, revision } of this.verifiedRevisionEntries(checkpoint, {})) {
       let embedded: readonly number[];
-      try { embedded = await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown); }
+      try { embedded = await this.embedRevisionCached(reference.revision_digest, revision.payload.title, revision.payload.body_markdown, operation, this.embeddingTarget(reference, checkpoint)); }
       catch (error) { throw this.indexError(error); }
       entries.push({ document_id: reference.slot.document_id, revision_digest: reference.revision_digest,
         context_id: reference.slot.context_id, scope_id: reference.slot.scope_id, usage_scope: reference.slot.usage_scope, embedding: embedded });
     }
+    if (operation) {
+      for (const { reference, revision } of this.verifiedRevisionEntries(checkpoint, {})) await operation.checkTarget(this.embeddingTarget(reference, checkpoint), Buffer.byteLength(`${revision.payload.title}\n${revision.payload.body_markdown}`));
+      await operation.authorize(); operation.check();
+    }
     try { await writer.replaceAll(entries); }
     catch (error) { throw this.indexError(error); }
+    if (operation) await operation.authorize(); this.actor(actor);
     return { indexed: entries.length, checkpoint };
   }
+  async closeEmbeddings(): Promise<void> { await this.embeddingRuntime?.close(); }
 
   /**
    * 체크포인트에서 검증된 개정본을 브라우즈 색인 순서대로 열거한다.

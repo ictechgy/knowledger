@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import type { Actor } from './local-ledger.ts';
 import { ReviewStore } from './review-store.ts';
 import { ReviewDeliveryStore } from './review-delivery-store.ts';
+import { SlackNoticeStore } from './slack-notice-store.ts';
 
 const CREATED_AT = "CASE WHEN json_valid(value_json) THEN json_extract(value_json, '$.revision.payload.metadata.created_at') END";
 const SUMMARY_FIELDS = {
@@ -16,13 +17,14 @@ const SUMMARY_FIELDS = {
 const SUMMARY_COLUMNS = Object.entries(SUMMARY_FIELDS).map(([name, path]) =>
   `CASE WHEN json_valid(value_json) THEN json_extract(value_json, '${path}') END AS ${name}`).join(', ');
 const ID = /^[A-Za-z][A-Za-z0-9._:-]{2,63}$/;
-type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-operation';
+type PrivateKind = 'draft' | 'preview' | 'run' | 'command' | 'source' | 'source-operation' | 'source-schedule';
 
 /** Local-only records. This database is never consumed by the shared ledger projector. */
 export class PrivateStore {
   private db: DatabaseSync;
   readonly reviews: ReviewStore;
   readonly deliveries: ReviewDeliveryStore;
+  readonly slackNotices: SlackNoticeStore;
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
@@ -39,6 +41,7 @@ export class PrivateStore {
         CREATE INDEX IF NOT EXISTS private_command_actor_order ON private_records(org_id, actor_id, kind);`);
       this.reviews = new ReviewStore(this.db);
       this.deliveries = new ReviewDeliveryStore(this.db);
+      this.slackNotices = new SlackNoticeStore(this.db);
     } catch (error) { this.db.close(); throw error; }
   }
   put(kind: PrivateKind, id: string, actor: Actor, value: any): void {

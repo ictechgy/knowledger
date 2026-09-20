@@ -2,7 +2,7 @@ export interface ReviewReminderOptions { pollMs?: number; timeoutMs?: number; ov
 export interface ReminderRun { scanned: number; created: number }
 const bounded = (value: number, low: number, high: number) => { if (!Number.isSafeInteger(value) || value < low || value > high) throw new TypeError('Invalid review reminder options'); return value; };
 
-/** Generates local recipient notices only; it has no external transport or approval authority. */
+/** Bounded polling lifecycle. Local reminders and opt-in adapters provide separate work callbacks. */
 export class ReviewReminderWorker {
   readonly pollMs: number; readonly timeoutMs: number; readonly overdueAfterMs: number; readonly batchSize: number;
   lastError: 'REMINDER_UNAVAILABLE' | null = null;

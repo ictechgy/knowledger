@@ -267,6 +267,7 @@ function clearSourceState() {
   if (el('source-folder')) el('source-folder').value = '';
   el('source-preview')?.replaceChildren();
   el('source-list')?.replaceChildren();
+  el('source-automation-list')?.replaceChildren();
   el('source-detail')?.replaceChildren();
   text(el('source-status'), '');
   text(el('source-count'), '—');
@@ -309,8 +310,23 @@ async function loadSources(append = false) {
     const sources = append ? [...state.sources.sources, ...(page.sources || [])] : (page.sources || []);
     state.sources = { ...page, sources: [...new Map(sources.map((source) => [source.source_id, source])).values()] };
     renderSources();
+    if (!append) void loadSourceAutomations(session, version);
   } catch (error) { if (session === state.session && version === state.sourceListVersion) text(el('source-status'), `저장소 목록을 불러오지 못했습니다. ${error.message}`); }
   finally { if (session === state.session && version === state.sourceListVersion) el('more-sources')?.toggleAttribute('disabled', false); }
+}
+
+async function loadSourceAutomations(session, version) {
+  try {
+    const response = await request(`${apiBase}/source-automations`, { sessionGuard: session });
+    if (session !== state.session || version !== state.sourceListVersion) return;
+    const list = el('source-automation-list'); list.replaceChildren();
+    for (const schedule of response.schedules) {
+      const item = document.createElement('li');
+      const labels = { pending: '수집 대기', running: '수집 중', completed: '수집 완료', failed: '수집 보류 · 연결 또는 권한 확인 필요' };
+      item.textContent = `${schedule.source_id} · ${labels[schedule.status] || '상태 확인 필요'} · ${schedule.enabled ? '정기 수집 켜짐' : '수동 실행'}${schedule.last_run_at ? ` · ${new Date(schedule.last_run_at).toLocaleString('ko-KR')}` : ''}`;
+      list.append(item);
+    }
+  } catch (error) { if (session === state.session && version === state.sourceListVersion) text(el('source-automation-list'), '정기 수집 상태를 확인할 수 없습니다.'); }
 }
 
 async function loadSourceDetail(sourceId) {
@@ -331,7 +347,7 @@ function renderSourceDetail() {
   detail.replaceChildren();
   if (!state.sourceDetail) return;
   const heading = document.createElement('h3'); heading.textContent = `${state.sourceDetail.source_id} · 버전 ${state.sourceDetail.version}`; detail.append(heading);
-  (state.sourceDetail.entries || []).forEach((entry) => { const row = document.createElement('button'); row.type = 'button'; row.className = 'source-entry'; row.textContent = `${entry.path} · ${entry.title || '제목 없음'} · ${sourceStatusLabel(entry.status)}`; row.addEventListener('click', () => { if (entry.draft_id) openSavedDraft(entry.draft_id); }); detail.append(row); });
+  (state.sourceDetail.entries || []).forEach((entry) => { const row = document.createElement('button'); row.type = 'button'; row.className = 'source-entry'; row.textContent = `${entry.path} · ${entry.title || '제목 없음'} · ${sourceStatusLabel(entry.status)}${entry.origin?.kind === 'confluence' ? ` · Confluence 페이지 ${entry.origin.page_id} v${entry.origin.page_version}` : ''}`; row.addEventListener('click', () => { if (entry.draft_id) openSavedDraft(entry.draft_id); }); detail.append(row); });
 }
 
 function selectedManifestFile() { return el('source-manifest-file')?.files?.[0] || null; }

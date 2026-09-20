@@ -13,6 +13,8 @@ import { ApiError, KnowledgerService, onlyFields } from './service.ts';
 import type { ModelEgressPolicy } from './service.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
 import type { ReviewReminderOptions } from '../../packages/review/reminder-worker.ts';
+import type { SlackNotificationOptions } from './slack-notifications.ts';
+import type { ConfluenceSyncOptions } from './confluence-sync.ts';
 import { DELIVERY_MAX_BYTES } from '../../packages/review/delivery-contract.ts';
 import { parseJsonStrict } from './json.ts';
 import { ensureRuntimeScope } from '../../packages/storage/runtime-scope.ts';
@@ -24,6 +26,7 @@ import type { ApplicationDefinition, Persona } from '../../packages/config/types
 import { ReadinessMonitor } from './readiness.ts';
 import { assertOptionalCloseBound, closeHttpServer, type DEFAULT_CLOSE_DEADLINE_MS } from '../../packages/http/graceful-close.ts';
 import type { VectorCandidateIndex } from '../../packages/storage/vector-index.ts';
+import type { EmbeddingOptions } from '../../packages/embeddings/contract.ts';
 
 interface Session { id: string; csrf: string; actor: Actor; expires: number }
 type RequestSession = Session | AuthenticatedSession;
@@ -62,12 +65,18 @@ export interface AppOptions {
   embedQuery?: (text: string) => readonly number[] | Promise<readonly number[]>;
   /** embedQuery와 같은 임베딩 공간의 개정본 임베더 — 색인에 기록된 행의 임베더와 차원이 같아야 한다. */
   embedRevision?: (title: string, body: string) => readonly number[] | Promise<readonly number[]>;
+  /** Guarded provider path, exclusive with the legacy embedding pair. */
+  embedding?: EmbeddingOptions;
   /** 모델 egress 정책 — allows가 어댑터별 현재 전송 권한을 재확인하고 policy_version이 manifest에 결속된다. */
   modelEgress?: ModelEgressPolicy;
   /** Explicit operator-configured delivery targets and inbound peer keys; disabled when omitted. */
   reviewDelivery?: ReviewDeliveryOptions;
   /** Local deadline notices; false disables generation, pollMs: 0 enables explicit manual runs. */
   reviewReminders?: ReviewReminderOptions | false;
+  /** Opt-in minimal Slack DM deadline notices; no external calls when omitted. */
+  slackNotifications?: SlackNotificationOptions;
+  /** Opt-in Confluence collection into configured owners' private drafts. */
+  confluenceSync?: ConfluenceSyncOptions;
   /** 종료 시 진행 중 요청이 끝나기를 기다리는 상한(ms) — 기본 {@link DEFAULT_CLOSE_DEADLINE_MS}, 초과 시 잔여 연결을 강제 해제한다. */
   shutdownDeadlineMs?: number;
 }
@@ -108,8 +117,9 @@ export async function createApp(options: AppOptions) {
     if (ledger.mode !== 'local-simulation' && !definition.demo && !authentication) throw new Error('Fabric requires configured authentication');
     if (ledger.mode !== 'local-simulation' && !options.personas) throw new Error('Fabric test network requires an explicit signer persona list');
     vault = new PrivateStore(join(options.dataDir, 'private-local.sqlite'));
-    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, modelEgress: options.modelEgress,
-      reviewDelivery: options.reviewDelivery, reviewReminders: options.reviewReminders, currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
+    service = new KnowledgerService(ledger, vault, definition, personas, { vectorIndex: options.vectorIndex, embedQuery: options.embedQuery, embedRevision: options.embedRevision, embedding: options.embedding, modelEgress: options.modelEgress,
+      reviewDelivery: options.reviewDelivery, reviewReminders: options.reviewReminders, slackNotifications: options.slackNotifications, confluenceSync: options.confluenceSync,
+      currentActor: authentication ? actor => authentication.assertCurrentActor(actor) : undefined });
     await service.initialize();
   } catch (error) {
     // 색인 정리 실패가 원래 초기화 오류를 가리지 않게 원인에 부착한다.
@@ -193,6 +203,17 @@ export async function createApp(options: AppOptions) {
   }
 
   const server = createServer(async (req, res) => {
+    let embeddingController: AbortController | undefined;
+    const embeddingSignal = () => {
+      if (!embeddingController) {
+        embeddingController = new AbortController();
+        const abort = () => { embeddingController!.abort(); cleanup(); };
+        const cleanup = () => { req.off('aborted', abort); res.off('close', abort); res.off('finish', cleanup); };
+        req.once('aborted', abort); res.once('close', abort); res.once('finish', cleanup);
+        if (req.aborted || res.destroyed) abort();
+      }
+      return embeddingController.signal;
+    };
     const requestStarted = performance.now();
     const requestId = `request-${randomUUID()}`;
     res.setHeader('X-Request-ID', requestId);
@@ -208,7 +229,7 @@ export async function createApp(options: AppOptions) {
       const url = new URL(req.url ?? '/', origin);
       const path = url.pathname;
       const resourcePath = path.startsWith(`${workspaceRoot}/`) ? path.slice(workspaceRoot.length) : '';
-      const staticPage = req.method === 'GET' && ['/', '/app.js', '/style.css', '/revision-diff.js', '/review-workspace.js'].includes(path);
+      const staticPage = req.method === 'GET' && ['/', '/app.js', '/style.css', '/revision-diff.js', '/review-workspace.js', '/slack-management.js'].includes(path);
       const authPath = Boolean(authentication && ['/auth/login', '/auth/callback', '/auth/logout'].includes(path));
       const callbackException = Boolean(authentication && req.method === 'GET' && path === '/auth/callback' && url.origin === authentication.origin);
       if (url.origin !== origin || (authentication && authPath && url.origin !== authentication.origin)) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
@@ -282,14 +303,19 @@ export async function createApp(options: AppOptions) {
           [`${root}/revisions`]: () => service.publish(actor, input),
           [`${root}/agreement-proposals`]: () => service.propose(actor, input),
           [`${root}/search`]: () => service.search(actor, input),
-          [`${root}/vector-search`]: () => service.vectorSearch(actor, input),
-          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor, input),
+          [`${root}/vector-search`]: () => service.vectorSearch(actor, input, embeddingSignal()),
+          [`${root}/vector-index/rebuild`]: () => service.rebuildVectorIndex(actor, input, embeddingSignal()),
           [`${root}/resolve`]: () => service.resolve(actor, input),
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
         const reminderRead = /^\/review-reminders\/([^/]+)\/read$/.exec(resourcePath);
         if (reminderRead) { respond(await run(() => service.readReviewReminder(actor, decodeResourceId(reminderRead[1]), input))); return; }
+        const slackResolve = /^\/slack-notices\/([^/]+)\/resolve$/.exec(resourcePath);
+        if (slackResolve) {
+          if (!service.slackNotifications) throw new ApiError('NOT_FOUND', 'Slack 알림이 설정되지 않았습니다.', 404);
+          respond(await run(() => service.slackNotifications!.resolve(actor, decodeResourceId(slackResolve[1]), input, embeddingSignal()))); return;
+        }
         const deliveryWrite = /^\/revisions\/([^/]+)\/review\/deliveries$/.exec(resourcePath);
         const deliveryRetry = /^\/review-deliveries\/([^/]+)\/retry$/.exec(resourcePath);
         if (deliveryWrite || deliveryRetry) {
@@ -305,8 +331,8 @@ export async function createApp(options: AppOptions) {
         }
         const notificationRead = /^\/review-notifications\/([^/]+)\/read$/.exec(resourcePath);
         if (notificationRead) { respond(await run(() => service.readReviewNotification(actor, decodeResourceId(notificationRead[1]), input))); return; }
-        const sourceMatch=/^\/sources\/([^/]+)\/(markdown|reconcile)$/.exec(resourcePath);
-        if(sourceMatch){respond(await run(()=>sourceMatch[2]==='markdown'?service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input):service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input)));return;}
+        const sourceMatch=/^\/sources\/([^/]+)\/(markdown|confluence|reconcile)$/.exec(resourcePath);
+        if(sourceMatch){respond(await run(()=>sourceMatch[2]==='reconcile'?service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input):service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input,sourceMatch[2] as 'markdown'|'confluence')));return;}
         const retryMatch = /^\/commands\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/retry$/.exec(resourcePath);
         if (retryMatch) { respond(await run(()=>service.retryCommand(actor,retryMatch[1],input))); return; }
         let draftMatch = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(resourcePath);
@@ -319,6 +345,14 @@ export async function createApp(options: AppOptions) {
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if (resourcePath === '/slack-notices') {
+          const input = pageQuery(url);
+          json(res, 200, await run(async () => {
+            if (service.slackNotifications) return service.slackNotifications.list(actor, input, embeddingSignal());
+            await service.refresh(); service.actor(actor); return { enabled: false, notices: [], next_cursor: null };
+          })); return;
+        }
+        if (resourcePath === '/source-automations') { pageQuery(url, []); json(res, 200, await run(() => service.sourceAutomations(actor))); return; }
         if (resourcePath === '/review-reminders') { json(res, 200, await run(() => service.reviewReminderList(actor, pageQuery(url)))); return; }
         if (resourcePath === '/review-delivery-targets') {
           pageQuery(url, []);
@@ -419,6 +453,8 @@ export async function createApp(options: AppOptions) {
           server.off('error', onError);
           service.reviewDelivery?.worker.start();
           service.reviewReminders?.start();
+          service.slackNotifications?.worker.start();
+          service.confluenceSync?.start();
           const address = server.address() as { port: number };
           resolve(publicOrigin ?? `http://127.0.0.1:${address.port}`);
         });
@@ -438,6 +474,9 @@ export async function createApp(options: AppOptions) {
       await attempt('readiness', () => readiness.close());
       await attempt('review-delivery', () => service.reviewDelivery?.close());
       await attempt('review-reminders', () => service.reviewReminders?.close());
+      await attempt('slack-notifications', () => service.slackNotifications?.close());
+      await attempt('confluence-sync', () => service.confluenceSync?.close());
+      await attempt('embeddings', () => service.closeEmbeddings());
       await attempt('http', () => closeHttpServer(server, { deadlineMs: options.shutdownDeadlineMs, label: 'api' }));
       // 외부 벡터 색인이 주입된 배포만 해제한다 — 로컬 색인은 원장 저장소의 생명주기를 따라간다.
       await attempt('vectorIndex', () => options.vectorIndex?.close?.());

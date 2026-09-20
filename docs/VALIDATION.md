@@ -1,5 +1,89 @@
 # 검증 기록
 
+## 통합 운영 보강·v0.9.0 후보 — 2026-09-20
+
+사용자가 원격 게시와 운영 보강을 승인했다. OAuth 회전 토큰 갱신과 Confluence 정기 수집,
+Slack 본인 확인/종료/재시도 UI·API를 추가했다. 실제 secret backend·계정 호출 없이
+가상 provider와 격리 앱으로 검증했고 기존 Fabric 네트워크·키·genesis는 조작하지 않았다.
+
+- Node24 `npm run check`: **618 tests /617 passed /0 failed /1 GC skipped**.
+  `npm run check:types`, 합의·KB·peer 전달 demo, stopped-app 백업 리허설과 별도 프로세스
+  복구 드릴 통과. 독립 물리 호스트나 실제 Fabric 장애 시험은 아니다.
+- OAuth8개: intent→회전→CAS 저장 후 반환, current grant/정책 재확인, 동시 공급자1회만 호출,
+  응답 유실/invalid grant/중복 JSON/저장 실패/교체 경합, timeout·늦은 key와 SQL CAS 계약.
+  배포용 암호화 secret store와 최초 OAuth 동의는 연결하지 않았다.
+- Scheduler6개: private import·영속 간격·복원 후 중복 방지, 현재 serving 차단, 늦은 token 및
+  import refresh 중 종료 후 쓰기0회, 두 DB 연결의 lease 중복 차단, 자동 실행과 owner 격리.
+- Slack 새6개: 일정 완료 뒤에도 본인 확인 이력 보존, receipt/승인 비생성, 명시적 중복 위험
+  확인·policy/CAS/멱등과 누적 시도, 읽음 뒤 재시도 거절/종료, HTTP actor/CSRF/query 제한,
+  정책 대기 중 취소와 이전 schema의 상태·시도 보존 migration.
+- Chromium **38개 통과**: 기존35개와 source 자동 수집 상태/actor 격리, Slack 수신 직접
+  확인·재발송 동의/이력3개를 검증했다. 최초 전체 실행은 기본 Chromium 캐시 부재로 기동
+  실패했고 `.artifacts/playwright-cache`에 잠긴 v1243을 설치한 뒤 전체를 재실행했다.
+  중간 재발송 테스트는 실제1초 DM 대기 규칙을 반영하도록 polling 단언으로 수정했다.
+- 제품 manifest/lockfile만0.9.0으로 갱신했으며 의존성 graph와 chaincode0.1.0은 유지했다.
+  최종 런타임 검사 뒤의 문서/버전 표기는 구조·참조/버전 대조로 확인했다.
+
+근거 `.artifacts/integration-operations-20260920/`의 `check-final.log`, `types.log`,
+`browser-final.log`, `demo.log`, `kb-demo.log`, `delivery-demo.log`, `backup.log`, `drill.log`.
+실제 외부 발송/tenant/model 품질을 검증한 것은 아니며 원격 CI·게시 결과는 별도로 기록한다.
+
+## Slack 개인 DM 알림·통합 회귀 — 2026-09-20
+
+Node24 `npm run check`: **598 tests /597 passed /0 failed /1 GC skipped**.
+`npm run check:types`, Chromium **35개**, 합의 demo와 peer 전달 demo 통과.
+Slack target과 token callback, 모든 provider fetch는 가상 값이며 실제 전송은0회다.
+
+- 새 adapter7개: 고정 endpoint·bot/team/정확한 DM 결속, 최소 내용·미리보기 차단,
+  사전/키 조회 뒤 인가,429/명확한 거절/모호한 오류 구분, 잘못된/큰/중복 JSON 응답,
+  callback/stream timeout·취소·늦은 호출 차단과 오류 redaction을 검증했다.
+- 새 runtime/store12개: actor 격리·원장/승인 비영향, 접수/불명 상태의 stopped-app 복원,
+  default deny, 읽음/완료/이전 단계 제외, 키 조회 중 완료, serving/membership 회수,
+  target binding 변경, post/ledger 대기 중 종료, 자동 tick 중복, 두 DB 연결 claim과
+  lease 만료의 unknown, workspace429 대기와 총3회 제한을 검증했다.
+- 브라우저2개: 수신자만 접수/열람 미확인 표시, 결과 불명의 자동 재발송 중지 표시,
+  최소 전송 내용과390px 넘침 없음. 기존33개(Confluence 출처1개 포함)도 통과했다.
+- 합의 demo는 기존 활성/제공/철회 흐름을, peer 전달 demo는2회 제출/1개 inbox 저장과
+  receipt·수신자 격리·승인0건을 유지했다. Slack 접수를 peer 영수증으로 바꾸지 않았다.
+
+근거 `.artifacts/slack-notifications-20260920/`의 `check.log`, `types.log`, `browser.log`,
+`demo.log`, `delivery-demo.log`. [경계/운영 안내](38-SLACK-NOTIFICATIONS.md).
+실제 Fabric 재실행·데이터/키 변경·실계정 연결·원격 게시는 하지 않았다.
+
+## Confluence 비공개 수집 — 2026-09-20
+
+Node24 `npm run check` **579 tests /578 passed /0 failed /1 GC skipped**,
+`npm run check:types` 및 새 Chromium provenance 검사1개 통과.
+새 수집 회귀9개는 고정 OAuth URL/재조회, ADF 거절/상한, 권한 회수·버전 경합의 쓰기0회,
+비공개 격리/공유 metadata 제외, version-only 새 초안, 응답 유실 재실행, source 제거와
+원장 비영향, stopped-app 백업/새 디렉터리 복원을 검증했다.
+브라우저는 본인 source의 page/version 표시·초안 열기·공유 preview 출처 제외·actor 격리를
+확인했다. 실제 Atlassian 네트워크나 토큰은 사용하지 않았다. 기존 Fabric은 변경하지 않았다.
+근거 `.artifacts/confluence-20260920/{check,types,browser}.log`, [계약](37-CONFLUENCE-SOURCE.md).
+
+## 임베딩 전송 정책·OpenAI adapter — 2026-09-20
+
+별도 `embedding` provider 경로를 추가했다. 기존 생성용 `modelEgress`와 분리해 default deny,
+현재 actor·canonical revision scope, cache 재인가, provider 호출 직전/결과 뒤 검사와 유한
+operation을 적용한다. API 키·실계정은 사용하지 않고 모든 공급자 응답을 fake fetch로 검증했다.
+정책 metadata에는 원문을 넘기지 않고 전송 여부는 가상 fetch 호출 수로 확인했다.
+
+- Node24.18.0 `npm run check`: **570 tests / 569 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, 기존 합의 demo 통과. 새 dependency/SDK 설치 없음.
+- 새 API12개: actor/정확한 slot/profile·정책에 원문 비노출, missing/false/nonboolean 거절,
+  생성용 허용과 분리, 문서 단위 거절·캐시/타 actor 재인가, 늦은 정책·키 조회 중 권한 회수,
+  응답 중 serving freeze, 재구축 실패/예산/최종 검사·기존 색인 유지, HTTP disconnect,
+  종료·진단 redaction·동시 처리 상한을 검증했다.
+- adapter6개: 고정 URL·float·정확한 입력, tokenizer/byte/key 사전 검사, 잘못된 모델/index/
+  차원/zero/nonfinite vector/usage/중복 JSON/큰 응답, 상태별 안전한 오류·자동 재시도 없음,
+  늦은 key callback과 미완성 response stream의 timeout/cancel을 확인했다.
+- 기존 벡터/configured 검사52개도 통과했다. 문서 변경의 참조/구조와 `git diff --check` 통과.
+  근거 `.artifacts/embedding-egress-20260920/`의 `check.log`, `types.log`, `demo.log`.
+
+실제 OpenAI 요금·한국어 의미 검색 품질·운영 tokenizer는 미측정이다. runtime API/전체 작업
+중단과 이미 시작된 외부 index 교체의 경계를 [구현 안내](36-EMBEDDING-EGRESS.md)에 명시했다.
+실제 Fabric network·keys·genesis, 외부 계정은 조작하지 않았고 원격 게시도 하지 않았다.
+
 ## v0.8.0 게시 — 2026-09-20
 
 [PR #19](https://github.com/ictechgy/knowledger/pull/19), 후보 `714d65d`의 push/PR CI8개

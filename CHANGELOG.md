@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-20
+
+### Added
+
+- Confluence rotating OAuth refresh with durable secret-store CAS, pre-send
+  intent and fail-closed recovery after ambiguous rotation. Opt-in scheduled
+  collection persists owner-scoped leases, due times and safe status summaries.
+- Recipient-only Slack resolution UI/API for manual receipt confirmation,
+  dismissal or explicitly acknowledged retries. Atomic audit/CAS/idempotency
+  retain total attempts and separate user reports from provider acceptance.
+- Opt-in Slack DM deadline notifications with explicit recipient/workspace/DM
+  bindings, current authorization and a separate egress policy. Messages contain
+  only a notice and app link. Durable provider acceptance, bounded retry/rate
+  limits and unknown outcomes prevent automatic reposting after ambiguous sends;
+  recipient views distinguish Slack acceptance from human reading or approval.
+- Confluence Cloud allowlist collection into actor-private immutable drafts, with
+  conservative ADF conversion, full reread before writes, private version/hash
+  provenance and resumable imports. OAuth credentials remain caller-owned.
+- Opt-in guarded embedding providers with separate fail-closed egress policy,
+  current actor checks before sends/results/cache use, immutable profiles,
+  bounded calls/concurrency/deadlines and HTTP/shutdown cancellation.
+- A fixed-endpoint OpenAI embedding adapter for text-embedding-3-small/large:
+  caller-owned tokenizer and key access, no truncation or automatic retry,
+  strict response/model/dimension checks and redacted failures. Legacy local
+  embedding functions and the dependency-free default remain available.
+
+### Upgrade notes
+
+- All external integrations remain opt-in and require deployment-owned secrets,
+  policies and account mappings. No live tenant/model/message validation is claimed.
+- Private storage adds source schedules, Slack resolution records and version/
+  total-attempt columns. Back up with the app stopped. Older readers cannot handle
+  new Slack terminal states; validate rollback in a separate restored directory.
+- Existing ledger/genesis/signing and deployed chaincode 0.1.0 remain unchanged.
+
 ## [0.8.0] — 2026-09-20
 
 ### Added
@@ -306,7 +341,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/ictechgy/knowledger/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ictechgy/knowledger/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ictechgy/knowledger/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ictechgy/knowledger/compare/v0.5.0...v0.6.0
