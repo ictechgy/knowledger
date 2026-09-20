@@ -215,3 +215,17 @@ revalidate 호출에 전달해 클라이언트 `authorize` 콜백과 서버 정�
 교체해 대조를 통과시키는 변조나 다른 actor 행으로의 도장 복사도 무결성 불일치로 잡힌다.
 후속 계약 버전에서 manifest에 `model_adapter_id`를 포함해 `validateRefreshedManifest`
 비교 대상에 넣는 것을 검토한다.
+
+### 대형 조회 풀과 Fabric 변경분 커밋 — 2026-09-20
+
+대형 결과 하나만 유지하던 캐시를 일반/대형 풀별 LRU로 바꾼다. 대형 풀은 최대8개를
+허용하되 기존 합산 바이트 예산(브라우즈 추정16MiB·검색 UTF-8 64MiB)을 늘리지 않는다.
+정확한 checkpoint·actor·조건 결속, canonical 대조와 최종 인가·eligibility 판정은 유지한다.
+예산보다 큰 작업 세트는 축출·재계산하며, 추가 서비스나 영속 캐시를 도입하지 않는다.
+
+Fabric durable ingest는 `fork()`의 전체 상태 Map 복사를 `prepareBlock`의 쓰기 delta로
+대체한다. full-block 검증을 마친 뒤 SQL 커밋이 성공해야 메모리 상태·체크포인트를 공개한다.
+준비 결과는 원래 체크포인트 객체에 결속해 중복·오래된 커밋을 거부하고, 반환한 result는
+대기 중인 쓰기 객체와 분리한다. SQL 실패 시 준비 상태를 버리고 같은 블록을 재시도한다.
+일반 `applyBlock`은 준비와 커밋을 즉시 실행하고, 명시적 `fork()`의 독립 복사 계약은 유지한다.
+원장·snapshot 형식이나 프로토콜 전이에는 변경이 없다.

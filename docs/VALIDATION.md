@@ -1,5 +1,85 @@
 # 검증 기록
 
+## v0.3.0 후보 — 실제 Fabric 재검증 — 2026-09-20
+
+중지된 기존 Colima VM과 `kcl-fabric-smoke` 컨테이너를 재가동했다. 새 네트워크
+초기화·chaincode 배포·인증서 갱신은 실행하지 않았다. 시작 높이는290(block289),
+종료 후 세 peer는 모두 **height332 / block331**과 같은 해시
+`a671a99fc2dd2747dc7fcf73b234716caceb7f33644e8698149be1bfcee50982`를 반환했다.
+기존 genesis의 SHA-256과 crypto 파일132개의 크기·mtime·inode가 전후 일치한다.
+검증 앱·issuer·signer는 격리된 디렉터리와 포트에서 실행 후 정상 종료했다.
+
+- `npm run fabric:http-smoke` 통과: 게시290·승인292·활성293·철회297,
+  최종299. 중복 게시의 동일 VALID receipt, private 경계, peer 중단503·복구,
+  재시작 뒤 원래 receipt, stale run과 철회된 지식 제공 차단을 확인했다.
+- `npm run configured:smoke` 통과: 게시316·승인318·활성319·철회328,
+  최종331. OIDC 미바인딩 주체 거절·계정 비활성화, 조직 경계, 원래 command retry,
+  SDK exact revision, 생성 후 철회 차단, v3 스냅샷·새 디렉터리 복원을 확인했다.
+- 설정형 도구의 옛 설정을 새 계약에 맞췄다. `org_id`·`require_attestation`과
+  감사 파일을 지정하고, 부팅·복원 모두 테스트용 모델 egress 정책을 주입한다.
+  미증명 서명은 실제 signer에서 거절됐으며, 감사 기록463개의 조직·사람 actor와
+  `proposal`/`submit`/`query` phase를 확인했다. 미승인 모델은
+  `EGRESS_POLICY_DENIED`, generate 호출0회다. 모델 콜백은 로컬 stub이다.
+- 첫 설정형 실행은 새 감사 단언이 SDK 호출명(`endorse`/`status`)을 감사 phase와
+  혼동해 마지막에 실패했다. 단언을 계약의 phase로 수정하고 전체 설정형 검증을
+  다시 통과시켰다. 실패·성공 실행 모두 시험 합의를 철회했다.
+- Node24.18.0의 `npm run check`: **493 tests / 492 passed / 0 failed / 1 GC skipped**.
+  타입 검사·`demo`·`demo:kb`, 백업 리허설(`rehearsal_pass: true`),
+  두 프로세스 장애 드릴(`drill_pass: true`) 통과.
+- 로컬 `test:browser`는 Playwright의 Chromium headless shell1243 실행 파일이
+  없어 테스트 본문 시작 전에 실패했다. 브라우저 검증은 정확한 후보 커밋의
+  기존 원격 CI `browser-and-experiments` 결과를 릴리스 게이트로 확인한다.
+
+실제 네트워크 근거는 Git 제외 `.data/fabric-http-smoke-6yDcmN/http-evidence.json`,
+`.data/configured-smoke-XaPSPf/evidence.json`이다. 실패 실행의 감사 단언 근거는
+`.data/configured-smoke-tBaJjj/evidence.json`에 보존했다. 실행 로그·보존 비교는
+`.artifacts/release-v0.3.0/`에 있다. 이 시험은 한 호스트의 실제 Fabric 네트워크이며,
+독립 물리 호스트 재해 복구나 실제 조직·외부 모델 공급자 파일럿 검증은 아니다.
+
+## 잔여 로드맵 B7·B8·D와 파일럿 준비 — 2026-09-20
+
+B8의 대형 질의 교대 시 재계산과 Fabric ingest의 블록당 상태 Map 복사를 수정했다.
+일반·대형 캐시 풀은 각각 최대8개이며 대형 풀의 합산 바이트 예산은 기존 그대로다
+(브라우즈 추정16MiB, 검색 UTF-8 64MiB). 크기·개수 예산별 LRU, 작은 결과 격리,
+동일 키 크기 변경의 예산 회수, 두 체크포인트 교대 및 비순차 커밋 무효화를 검사했다.
+`prepareBlock`은 VALID full-block 검증 후 쓰기만 대기시키고 SQL 커밋 뒤 공개한다.
+준비 결과 변조 격리·폐기·오래된/중복 커밋 거절, SQL 실패·같은 블록 재시도·재시작을 확인했다.
+
+- Node **v24.18.0**, `npm run check`: **493 tests / 492 passed / 0 failed / 1 GC 전용 skipped**.
+- `npm run check:types`, `npm run demo` 통과. 데모는 승인 전 withheld → 두 승인 후
+  provided → 의존성 철회 후 withheld를 확인했다.
+- 파일럿 예제·빈 관찰 템플릿은 실제 `validateObservationLog`로 로딩 검증했다.
+- 공개 인증서81개 `ok`, User1 세 개의 `valid_to`는 `2027-01-14T14:41:57Z`다.
+  개인키·인증서 변경, 앱 재시작, 네트워크 호출은 하지 않았다. 다음 수동 점검일은
+  2027-01-01 KST이며 자동 작업은 설치하지 않았다.
+- Track D의 릴리스 점검·게시·의존성 핀·갱신 검증·롤백 기준과 파일럿 계획/결과
+  템플릿을 문서화했다. 새 릴리스 게시나 실제 조직 파일럿 완료를 뜻하지 않는다.
+
+### Fabric 합성 인제스트 전후 표본
+
+기준 `76e71d4`의 추적 소스 사본과 수정본을 같은 장비에서 순서대로 실행했다.
+`tools/performance-fabric.ts --documents 2000 --body-bytes 128 --samples 1 --tx-per-block 1`
+조건이며 생성 workload digest와 환경 비교가 통과했다. 2,015개 거래·2,015개 블록으로
+블록당 복사 비용이 드러나는 작은 블록 workload다. 다른 테스트 부하와 분리했다.
+
+| 항목 | 기준 | 수정 후 |
+| --- | ---: | ---: |
+| 인제스트 전체 | 1,153.65ms | 848.47ms |
+| 블록당 평균 | 0.573ms | 0.421ms |
+| 검색 전 페이지 | 137.21ms | 132.42ms |
+| 목록 전 페이지 | 126.66ms | 127.78ms |
+| 재시작 replay | 418.84ms | 432.34ms |
+
+두 실행에서 생성·조회·검색·재시작 후 목록/검색이 모두2,000건으로 일치했다.
+인제스트는 이 단일 표본에서 약26% 줄었다. 검색·재생 개선이나 운영 SLA를 주장하는
+측정은 아니다. 실제 Fabric 네트워크·10만 문서·동시 사용자 성능은 재측정하지 않았다.
+합성 입력은 실제 VALID 네트워크 커밋 증명이 아니다.
+
+근거: Git 제외 `.artifacts/remaining-roadmap-20260920/`의 `before.json`, `after.json`,
+`benchmark-source.json`, `check.log`, `demo.log`, `certificates.json`.
+풀의 예산을 넘는 작업 세트, 첫 검색의 원문 읽기, cold history replay, 명시적인
+`fork()`의 얕은 복사 비용은 남는다. [조회 인덱스 경계](26-BROWSE-INDEX.md)를 따른다.
+
 ## 10만 문서 확장성 — 오프셋 페이지네이션 결함 수정 — 2026-09-17
 
 10만 문서 측정에서 실제 확장성 결함을 발견했다. 브라우즈 개정본 캐시(`MAX_REVISION_CACHE_REFS`
@@ -20,7 +100,7 @@
 극단적 결과도 메모리 바운드를 유지한다. 체크포인트별 키 분리와 후속 커밋 격리는 회귀
 테스트로 고정했다.
 
-알려진 한계: 상주 대형 항목은 캐시당 하나뿐이라 서로 다른 대형 질의가 번갈아 오면 서로를
+당시 알려진 한계(2026-09-20 수정은 위 항목 참조): 상주 대형 항목은 캐시당 하나뿐이라 서로 다른 대형 질의가 번갈아 오면 서로를
 교체해 페이지마다 재계산으로 돌아간다. 일반 항목은 대형 항목을 축출하지 않고, 다른 대형
 결과만이 상주 항목을 교체한다. 또한 커밋은 실제로 변경된 revision의 최소 체크포인트 이하의
 `at`에 바인딩된 캐시 선택 집합만 무효화한다 — 순서대로 들어오는 커밋은 기존 `at`보다

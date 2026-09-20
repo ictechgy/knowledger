@@ -187,18 +187,55 @@ test('normal revision queries cannot evict the resident oversized selection', ()
   const tail = index.query({ kind: 'revisions', mode: 'all', at, offset: total - 1, limit: 1 });
   assert.equal(tail.total, total);
   assert.equal(tail.items.length, 1);
-  // 더 새로운 체크포인트의 대형 결과만이 상주 대형 항목을 교체하고 일반 항목은 남는다.
+  // 더 새로운 체크포인트의 대형 결과도 예산 안에서 과거 시점과 함께 유지한다.
   const later = revision('revision-mixed-later', slot('doc-mixed-later'));
   commit(index, checkpoint(2), [[keyFor.revision(later.revision_digest), later]]);
   index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 10 });
   assert.equal(index.revisionCacheStats.oversized, true);
-  assert.ok(index.revisionCacheStats.entries > 1, 'a newer oversized result replaces the resident one without wiping normal entries');
+  assert.equal(index.revisionCacheStats.oversizedEntries, 2);
+  const misses = index.revisionCacheStats.misses;
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at, offset: 100, limit: 10 }).total, total);
+  assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 100, limit: 10 }).total, total + 1);
+  assert.equal(index.revisionCacheStats.misses, misses, 'alternating checkpoints reuse their own selection');
   // 비순차 커밋은 상주 대형 항목도 무효화한다 — 그 항목의 at가 새 쓰기를 볼 수 있으므로.
   const outOfOrder = revision('revision-mixed-ooo', slot('doc-mixed-ooo'));
   commit(index, checkpoint(0), [[keyFor.revision(outOfOrder.revision_digest), outOfOrder]]);
   assert.equal(index.revisionCacheStats.oversized, false, 'out-of-order commits invalidate the resident oversized entry');
   assert.equal(index.revisionCacheStats.entries, 0);
+  assert.equal(index.revisionCacheStats.refs, 0);
+  assert.equal(index.revisionCacheStats.bytes, 0);
+  assert.equal(index.revisionCacheStats.oversizedEntries, 0);
   assert.equal(index.query({ kind: 'revisions', mode: 'all', at: checkpoint(2), offset: 0, limit: 1 }).total, total + 2);
+});
+
+test('large browse selections share a bounded LRU pool without evicting normal selections', () => {
+  for (const limits of [{ maxEntries: 2, maxOversizedBytes: 10_000 }, { maxEntries: 8, maxOversizedBytes: 3_000 }]) {
+    const index = new VerifiedBrowseIndex(CHANNEL, { ...limits, maxRefs: 2, maxBytes: 1_024 });
+    const writes: [string, unknown][] = [];
+    for (const group of ['a', 'b', 'c']) {
+      for (let n = 0; n < 64; n++) {
+        const value = revision(`revision-${group}-${n}`, slot(`doc-${group}-${n}`, `context-${group}`));
+        writes.push([keyFor.revision(value.revision_digest), value]);
+      }
+    }
+    commit(index, checkpoint(1), writes);
+    const query = (group: string, offset = 0) => index.query({ kind: 'revisions', mode: 'all', context_id: `context-${group}`, at: checkpoint(1), offset, limit: 10 });
+    const normal = () => index.query({ kind: 'revisions', mode: 'document', document_id: 'doc-a-0', at: checkpoint(1), offset: 0, limit: 10 });
+    normal(); query('a'); query('b');
+    assert.equal(index.revisionCacheStats.oversizedEntries, 2);
+    assert.equal(query('a', 10).total, 64); // Touch a so b must be evicted first.
+    query('c');
+    const misses = index.revisionCacheStats.misses;
+    assert.equal(query('a', 20).total, 64);
+    assert.equal(query('c', 20).total, 64);
+    assert.equal(normal().total, 1);
+    assert.equal(index.revisionCacheStats.misses, misses);
+    assert.equal(index.revisionCacheStats.oversizedEntries, 2);
+    assert.equal(index.revisionCacheStats.refs, 129);
+    assert.ok(index.revisionCacheStats.bytes <= 1_024 + limits.maxOversizedBytes);
+    assert.equal(query('b').total, 64);
+    assert.equal(index.revisionCacheStats.misses, misses + 1);
+  }
 });
 
 test('overlapping prepared commits cannot duplicate or rewrite immutable entries', () => {
