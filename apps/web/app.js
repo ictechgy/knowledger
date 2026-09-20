@@ -1,4 +1,5 @@
 import { compareRevisions, RevisionComparisonError } from './revision-diff.js';
+import { createReviewWorkspace } from './review-workspace.js';
 
 let apiBase = '';
 
@@ -67,6 +68,25 @@ const text = (node, value) => { if (node) node.textContent = value == null ? '' 
 const setValue = (node, value) => { if (node) node.value = value == null ? '' : String(value); };
 const shortDigest = (value) => value ? `${value.slice(0, 19)}…${value.slice(-8)}` : '—';
 const nowCommand = () => `command-${crypto.randomUUID()}`;
+const reviewWorkspace = createReviewWorkspace({ request, getSession: () => state.session, getBase: () => apiBase,
+  openRevision: openReviewRevision, revise: async doc => {
+    const session = state.session;
+    try {
+      const revision = await request(`${apiBase}/revisions/${encodeURIComponent(doc.revision_digest)}`, { sessionGuard: session });
+      if (session === state.session) openComposer('revise', revision);
+    } catch (error) { if (session === state.session) showStatus(error.message, 'error'); }
+  }, propose: proposeCurrentRevision, showStatus });
+async function openReviewRevision(digest) {
+  const session = state.session;
+  try {
+    const doc = await request(`${apiBase}/revisions/${encodeURIComponent(digest)}`, { sessionGuard: session });
+    if (session !== state.session) return;
+    clearSelectedRevisionState(); state.selectedDocumentKey = slotKeyFor(doc.payload); state.selectedRevisionDigest = digest;
+    state.selectedDocumentSnapshot = doc; state.selectedProposalId = null; state.compareRevisionDigest = null;
+    setWorkspace('review'); renderOverview(); await loadSelectedRevision(doc, session);
+    el('review-discussion-title')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } catch (error) { if (session === state.session) showStatus(error.message, 'error'); }
+}
 const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{2,63}$/.test(value);
 function setApiBase(workspace) {
   const id = workspace?.id;
@@ -168,6 +188,7 @@ async function loadSession() {
 }
 
 function renderAuthState(session) {
+  if (!session?.actor) reviewWorkspace.reset();
   const authenticatedMode = Boolean(session?.auth_mode);
   const anonymous = authenticatedMode && !session.actor;
   const controls = el('auth-controls');
@@ -877,6 +898,7 @@ async function loadOverview({ preserveSelection = true, append = false, appendPr
   }
   renderOverview();
   if (selected && (refreshDetail || !Object.hasOwn(selected.payload || {}, 'body_markdown'))) void loadSelectedRevision(selected, session);
+  if (!append && !appendProposals) void reviewWorkspace.refreshInbox();
 }
 
 async function loadMoreOverview(kind) {
@@ -915,6 +937,7 @@ function renderOverview() {
   renderRevisionComparison(findSelectedDocument());
   renderResolverDocuments(docs);
   renderReviewInbox();
+  reviewWorkspace.select(findSelectedDocument());
   syncDraftPolicies();
 }
 
@@ -1652,6 +1675,7 @@ async function switchPersona(event) {
   try { selected = JSON.parse(event.target.value); } catch { return; }
   if (!selected?.org_id || !selected?.actor_id || (selected.org_id === state.session?.actor?.org_id && selected.actor_id === state.session?.actor?.actor_id)) return;
   event.target.disabled = true;
+  reviewWorkspace.reset();
   resetComposer(); clearPrivateDrafts(); clearCommands(); state.selectedDocumentKey = null; state.selectedRevisionDigest = null; state.selectedProposalId = null; clearSelectedRevisionState();
   clearSourceState();
   try { const session = await request('/api/session', { method: 'POST', body: jsonBody({ org_id: selected.org_id, actor_id: selected.actor_id }) }); state.session = session; showStatus('검토자 세션을 바꿨습니다. 최신 권한과 문서를 다시 읽습니다.', 'success'); text(el('footer-actor'), `${session.actor.org_id} · ${session.actor.actor_id}`); await loadOverview({ preserveSelection: false }); } catch (error) { showStatus(`검토자 변경 실패: ${error.message}`, 'error'); } finally { event.target.disabled = false; await loadPrivateDrafts(); await loadCommands(); await loadSources(); }
@@ -1704,6 +1728,17 @@ function openComposer(mode, doc = null) {
 }
 
 function bindEvents() {
+  el('apply-draft-template').addEventListener('click', () => {
+    const body = el('draft-body'); if (body.value.trim()) { showStatus('템플릿은 본문이 비어 있을 때 적용할 수 있습니다.', 'error'); return; }
+    const templates = {
+      guide: '# 업무 가이드\n\n## 목적과 적용 범위\n\n## 시작 조건\n\n## 처리 순서\n\n1. \n\n## 예외와 중단 조건\n\n## 확인할 근거\n',
+      definition: '# 용어·판단 기준\n\n## 정의\n\n## 적용하는 상황\n\n## 적용하지 않는 상황\n\n## 사례와 반례\n\n## 관련 근거\n',
+      decision: '# 결정 기록\n\n## 해결할 문제\n\n## 검토한 선택지\n\n## 선택한 방향과 근거\n\n## 영향받는 문서와 업무\n\n## 다시 검토할 조건\n',
+    };
+    body.value = templates[el('draft-template').value] || templates.guide;
+    body.dispatchEvent(new Event('input', { bubbles: true })); body.focus();
+  });
+  el('refresh-review-notifications').addEventListener('click', () => { void reviewWorkspace.refreshInbox(); });
   el('refresh-overview').addEventListener('click', async () => { clearStatus(); try { await loadOverview(); showStatus('원장 체크포인트에서 최신 상태를 읽었습니다.', 'success'); } catch (error) { showStatus(error.message, 'error'); } });
   el('more-documents')?.addEventListener('click', () => { void loadMoreOverview('documents'); });
   el('more-proposals')?.addEventListener('click', () => { void loadMoreOverview('proposals'); });
@@ -1727,6 +1762,7 @@ function bindEvents() {
       const authMode = state.session?.auth_mode || 'oidc';
       state.session = null;
       state.overview = null;
+      reviewWorkspace.reset();
       clearCommands();
       clearSourceState();
       renderAuthState({ auth_mode: authMode, actor: null, login_url: '/auth/login' });

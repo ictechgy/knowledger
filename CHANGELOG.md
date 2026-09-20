@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-20
+
+### Added
+
+- Application-local review comments, mentions, human assignees, due dates,
+  recurring reviews and recipient-scoped read notifications. Revision binding,
+  atomic event/notification storage, schedule CAS and idempotent retries preserve
+  the existing approval and use-control contracts. Stopped-app backups include
+  the records; organization-scoped Fabric applications do not replicate them.
+- Verified reverse dependency impact with exact-checkpoint pagination, required
+  versus informational paths, current eligibility and actions to open or revise
+  the pinned affected revision. Review completion never creates an approval.
+- Three starter document templates, read-only Git/Markdown sync previews
+  (`--dry-run`) and optional bounded retries (`--retries 0..3`).
+- Configured-runtime embedding/index injection and labeled retrieval evaluation:
+  precision/recall/MRR at k, unexpected releases and unexpected withholding.
+  Actual embedding providers and customer KB integrations remain deployment work.
+- Review workflow guide and a separate, unimplemented governance migration design.
+
 ## [0.5.0] — 2026-09-20
 
 ### Added
@@ -257,7 +276,8 @@ First public development alpha.
 - Failure drills: peer/orderer outage, SIGKILL during certificate apply, and
   runtime snapshot restore.
 
-[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ictechgy/knowledger/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ictechgy/knowledger/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ictechgy/knowledger/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ictechgy/knowledger/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ictechgy/knowledger/compare/v0.2.0...v0.3.0

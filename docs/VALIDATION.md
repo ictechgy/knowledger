@@ -1,5 +1,36 @@
 # 검증 기록
 
+## 검토 협업·변경 영향·도입 편의 — 2026-09-20
+
+`feature/review-collaboration`에서 검토 기록/알림/일정, 역방향 의존 조회, 초안 템플릿,
+동기화 미리보기/재시도와 검색 평가를 구현했다. 기존 원장 명령·chaincode·승인/사용 판정은
+변경하지 않았다. 상세 계약과 설치 단위의 한계는 [운영 안내](31-REVIEW-WORKSPACE.md).
+
+- Node24.18.0 `npm run check`: **525 tests / 524 passed / 0 failed / 1 GC skipped**.
+  `npm run check:types`, `npm run demo`, `git diff --check` 통과. demo는 local-simulation이며
+  승인 전 withheld → 가상 승인 후 provided → 의존성 철회 후 withheld, 원장22건을 확인했다.
+- 신규 검토 API9개: shared digest·수신자 격리·승인 비영향, 일정 CAS·반복 완료·멱등,
+  잘못된 날짜/대상·현재 인가, 재시작/정지 후 snapshot 복원, 목록 격리·동시 추가,
+  required/informational 전이 영향·정확한 체크포인트 커서, HTTP CSRF/입력, 실제 도메인
+  철회 뒤 eligibility, 알림 쓰기 실패 시 이벤트·일정 전체 rollback.
+- 커넥터3개: private 쓰기 없는 preview·CLI dry-run, 업로드 성공 후 응답 유실의 동일 요청
+  재시도·초안 중복 방지, 재시도 상한·권한/버전 충돌 즉시 중단. 설정형 runtime1개는
+  embedding 쌍·색인 전달/종료와 실제 HTTP 클라이언트 기반 retrieval/withheld 평가를 확인했다.
+  평가 함수2개는 순위 점수·잘못된 제공/보류의 분리, 입력 사전 검증과 잘못된 결과 거절을 검증했다.
+  가상 임베딩의 점수를 실제 공급자 모델의 품질 주장으로 사용하지 않는다.
+- Chromium **28개 통과**: 기존23개와 새5개. 템플릿의 기존 본문 보존, 댓글 XSS 문자 처리·
+  수신자 알림·재시작, 기한/반복 완료, 영향받는 정확한 개정 수정과 원문/부모 유지,
+  늦은 이전 개정의 응답 폐기를 확인했다. 선택 상자의 접근성 이름 문제를 수정한 뒤 재검증했다.
+  390/1440px 가로 넘침 검사와 실제 데스크톱/모바일 screenshot 확인도 수행했다.
+- 근거: `.artifacts/review-collaboration-20260920/`의 `check-final.log`, `types.log`,
+  `browser-final.log`, `demo.log`, `review-desktop.png`, `review-mobile.png`.
+  테스트는 새 격리 runtime을 사용하고 정상 종료했다. 이번 변경에서 기존 Fabric fixture,
+  인증서·키·genesis를 조작하지 않았고 live Fabric smoke·원격 CI·게시도 수행하지 않았다.
+  공유 프로토콜 변경은 없으며 기존 Fabric 경계 회귀 검사는 `npm run check`에 포함된다.
+
+조직/정책 변경은 [별도 미구현 설계](32-GOVERNANCE-EVOLUTION.md)로 기록했다.
+실제 KB/모델 공급자 연결, 조직 앱 간 검토 기록 전송, 실제 사용자 파일럿은 완료 항목이 아니다.
+
 ## 의존관계 작성 API·UI와 도입 준비 — 2026-09-20
 
 [PR #16](https://github.com/ictechgy/knowledger/pull/16)을 merge commit `af7b92c`로

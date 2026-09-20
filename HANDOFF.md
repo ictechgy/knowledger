@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (의존관계 작성 PR #16 머지·원격 CI·v0.5.0 게시 완료 — 실환경 입력 대기)_
+_Last updated: 2026-09-20 KST (검토 협업 v0.6.0 릴리스 후보 — 원격 CI·게시 진행)_
 
 ## Goal
 
@@ -14,11 +14,34 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **v0.6.0 게시 승인·준비 중**: 사용자 지시에 따라 `80a556d`의 검토 협업·영향 조회·
+  도입 편의를 다음 minor 릴리스로 게시한다. 제품 manifest/lockfile·README·웹 버전·
+  changelog를0.6.0으로 맞췄다. 아래 로컬 검증은 같은 runtime 코드의 근거로 재사용하고
+  PR head의 원격 CI를 확인한 뒤 merge·태그·릴리스를 게시한다. chaincode0.1.0과
+  기존 Fabric 네트워크는 유지한다. 현재는 아직 게시 완료가 아니다.
+
+- **경쟁력 보강 구현·로컬 검증 완료**: 현재 branch는 `feature/review-collaboration`이다.
+  exact shared revision에 연결된 댓글·멘션·수신자별 알림·기한·반복 검토와 역방향 의존
+  영향을 API/UI에 추가했다. 검토 완료는 합의 승인이 아니다. 기록은 앱 설치 단위이며
+  조직별 Fabric 앱 간 복제·외부 메일 전송은 하지 않는다. 기존 private DB의 별도 테이블에
+  이벤트/일정/알림을 원자 저장하고 백업 복원·CAS·멱등 재시도를 검증했다.
+  작성 템플릿3개, Git/Markdown `--dry-run`·`--retries 0..3`, 설정형 embedding/index
+  주입과 검색 정답 평가 함수도 추가했다. [운영 안내](docs/31-REVIEW-WORKSPACE.md).
+  Node24 검사 **525개 중524 통과·1 GC 생략**, 타입·demo·Chromium **28개 통과**.
+  근거와 390/1440px 화면은 `.artifacts/review-collaboration-20260920/`.
+  실제 Fabric fixture·키·genesis는 이번 변경에서 조작하지 않았다. 구현 당시 원격 게시를
+  하지 않았으며, 현재는 위 v0.6.0 릴리스 준비로 이어졌다.
+- **남은 제품/배포 입력**: 실제 KB 제품(Confluence/SharePoint 등), 임베딩 공급자·모델과
+  전송 정책이 지정되지 않았다. Git/Markdown부터 보강했고 외부 공급자 문서 조회는 하지 않았다.
+  runtime 조직/정책 변경은 [관리 권한·migration 설계](docs/32-GOVERNANCE-EVOLUTION.md)만
+  작성했으며 관리 승인 주체/정족수와 epoch 변경 영향 수용 결정이 필요하다. 구현된 기능으로
+  표시하지 않는다. 실제 파일럿·독립 호스트·SSO/KMS/모델 연동의 환경 입력도 계속 필요하다.
+
 - **[v0.5.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.5.0)**:
   [PR #16](https://github.com/ictechgy/knowledger/pull/16)을 merge `af7b92c`로 main에
   반영하고 같은 커밋에 태그·Latest 릴리스를 게시했다. head `d833b41`의 CI8개·
   Chromium23개 통과, 태그 commit·릴리스 본문·공개 상태 readback 일치.
-  이전 리허설 기록 `a0204ad`도 함께 원격 반영됐다. 현재 branch는 `main`이다.
+  이전 리허설 기록 `a0204ad`도 함께 원격 반영됐다. 게시 완료 당시 branch는 `main`이었다.
 - **의존관계 작성 API·UI 구현 완료(`9b0148c`)**: 새 draft·edit·Markdown import에서
   공유 개정 digest/관계/사용 조건을 선택하면 서버가 canonical 전체 slot을 채운다.
   UI는 검색·paging·참조 추가/변경/제거·미리보기를 지원하며 기준 개정을 고정한다.

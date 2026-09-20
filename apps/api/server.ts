@@ -200,13 +200,13 @@ export async function createApp(options: AppOptions) {
       const url = new URL(req.url ?? '/', origin);
       const path = url.pathname;
       const resourcePath = path.startsWith(`${workspaceRoot}/`) ? path.slice(workspaceRoot.length) : '';
-      const staticPage = req.method === 'GET' && ['/', '/app.js', '/style.css', '/revision-diff.js'].includes(path);
+      const staticPage = req.method === 'GET' && ['/', '/app.js', '/style.css', '/revision-diff.js', '/review-workspace.js'].includes(path);
       const authPath = Boolean(authentication && ['/auth/login', '/auth/callback', '/auth/logout'].includes(path));
       const callbackException = Boolean(authentication && req.method === 'GET' && path === '/auth/callback' && url.origin === authentication.origin);
       if (url.origin !== origin || (authentication && authPath && url.origin !== authentication.origin)) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
       if (!callbackException && !staticPage && (req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== origin))) throw new ApiError('ORIGIN_REJECTED', '요청 출처를 확인할 수 없습니다.', 403);
       if (authentication && authPath && await authentication.handle(req, res, url)) return;
-      if (req.method === 'GET' && ['/', '/app.js', '/style.css', '/revision-diff.js'].includes(path)) {
+      if (staticPage) {
         const file = path === '/' ? 'index.html' : path.slice(1);
         const contents = await readFile(new URL(`../web/${file}`, import.meta.url));
         res.writeHead(200, { 'Content-Type': file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -275,6 +275,14 @@ export async function createApp(options: AppOptions) {
         };
         const respond = (value: any) => json(res, value?.status === 'pending' ? 202 : 200, value);
         if (Object.hasOwn(routes, path)) { respond(await run(routes[path])); return; }
+        const reviewWrite = /^\/revisions\/([^/]+)\/review\/(comments|schedule|complete)$/.exec(resourcePath);
+        if (reviewWrite) {
+          const digest = decodeResourceId(reviewWrite[1]);
+          respond(await run(() => reviewWrite[2] === 'comments' ? service.commentOnReview(actor, digest, input)
+            : reviewWrite[2] === 'schedule' ? service.scheduleReview(actor, digest, input) : service.completeReview(actor, digest, input))); return;
+        }
+        const notificationRead = /^\/review-notifications\/([^/]+)\/read$/.exec(resourcePath);
+        if (notificationRead) { respond(await run(() => service.readReviewNotification(actor, decodeResourceId(notificationRead[1]), input))); return; }
         const sourceMatch=/^\/sources\/([^/]+)\/(markdown|reconcile)$/.exec(resourcePath);
         if(sourceMatch){respond(await run(()=>sourceMatch[2]==='markdown'?service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input):service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input)));return;}
         const retryMatch = /^\/commands\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/retry$/.exec(resourcePath);
@@ -289,6 +297,12 @@ export async function createApp(options: AppOptions) {
         if (match) { respond(await run(() => service.revalidate(actor, match![1], input))); return; }
       }
       if (req.method === 'GET') {
+        if (path === `${workspaceRoot}/review-notifications`) { json(res, 200, await run(() => service.reviewNotifications(actor, pageQuery(url)))); return; }
+        if (path === `${workspaceRoot}/review-due`) { json(res, 200, await run(() => service.dueReviews(actor, pageQuery(url, ['limit'])))); return; }
+        const reviewRead = /^\/revisions\/([^/]+)\/review$/.exec(resourcePath);
+        if (reviewRead) { json(res, 200, await run(() => service.review(actor, decodeResourceId(reviewRead[1]), pageQuery(url)))); return; }
+        const impactRead = /^\/revisions\/([^/]+)\/impact$/.exec(resourcePath);
+        if (impactRead) { json(res, 200, await run(() => service.revisionImpact(actor, decodeResourceId(impactRead[1]), pageQuery(url)))); return; }
         if(path===`${workspaceRoot}/sources`){
           const keys=[...url.searchParams.keys()];const raw=url.searchParams.get('limit');const limit=raw===null?20:/^\d+$/.test(raw)?Number(raw):NaN;const cursor=url.searchParams.get('cursor')??undefined;
           if(keys.some(key=>!['limit','cursor'].includes(key))||new Set(keys).size!==keys.length||!Number.isSafeInteger(limit)||limit<1||limit>50||(cursor!==undefined&&!/^[A-Za-z][A-Za-z0-9._:-]{2,63}$/.test(cursor)))throw new ApiError('INVALID_QUERY','올바른 원본 목록 조건이 필요합니다.');

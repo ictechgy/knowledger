@@ -73,6 +73,18 @@ npm run kb:sync -- \
 
 ## 동기화 순서
 
+변경 내용을 먼저 확인하려면 같은 `kb:sync` 명령에 `--dry-run`을 붙인다.
+`planMarkdownSync(client, snapshot)`은 added/changed/restored/unchanged/removed 경로와
+기준 source version을 반환하고 private 데이터 쓰기를 하지 않는다. CLI의 개발 세션
+handshake는 여전히 수행한다. 실제 동기화는 상태를 다시 읽고 CAS를 적용하므로 이 미리보기가
+쓰기 권한이나 잠금은 아니다. 보고서에는 원문은 없고 manifest 상대 경로는 포함된다.
+
+`--retries 0..3` 또는 `syncMarkdownSource(client, snapshot, {retries: 2})`로 일시적
+네트워크/timeout·재시도 가능한 429/500/502/503/504 오류에 한해 재시도할 수 있다.
+기본은 0이고 대기는 100/200/400ms다. 같은 operation ID·version·본문을 재전송하며
+권한 거절·CAS 충돌·명시적 취소는 재시도하지 않는다. 최대 횟수 뒤에는 기존처럼 멈춘다.
+원본 삭제가 공유 합의 철회를 자동으로 유발하지 않는 계약은 유지한다.
+
 `syncMarkdownSource`는 한 번의 동기화 입력을 먼저 검증한 뒤 source의 현재 버전을 읽는다.
 
 1. 현재 source가 있으면, 이번 snapshot에도 있는 현재 경로만 남기도록 stale 경로를 먼저 reconcile한다.

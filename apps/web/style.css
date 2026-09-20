@@ -299,3 +299,13 @@ input::placeholder, textarea::placeholder { color: #596475; }
 .operations-event-head { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .operations-event-detail { color: var(--faint); font-size: .66rem; text-align: right; }
 @media (max-width: 760px) { .operations-event { flex-direction: column; gap: .2rem; } .operations-event-detail { text-align: left; } }
+.review-form { display: grid; gap: .75rem; margin: 1rem 0; }
+.review-form label { display: grid; gap: .4rem; min-width: 0; }
+.review-form textarea, .review-form select, .review-form input { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.review-form textarea { resize: vertical; }
+.review-event-list { list-style: none; padding: 0; display: grid; gap: .75rem; }
+.review-event-list li, .review-schedule-summary { overflow-wrap: anywhere; min-width: 0; }
+.review-event-list li { padding: .65rem 0; border-bottom: 1px solid var(--border); }
+.review-event-list li p { white-space: pre-wrap; }
+.review-event-list button { max-width: 100%; white-space: normal; margin: .2rem .3rem .2rem 0; text-align: left; }
+.review-schedule-summary { font-size: 14px; }
