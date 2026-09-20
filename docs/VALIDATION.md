@@ -2,6 +2,16 @@
 
 ## Fabric 파일럿 측정 지원 — 2026-09-20
 
+[PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로
+main에 반영하고 같은 커밋에 `v0.4.0` 태그·[릴리스](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0)를
+게시했다. 원격 태그의 커밋, 릴리스 본문, 공개·Latest 상태를 readback으로 확인했다.
+head `0bdf96e`의 push/PR CI8개가 모두 통과했고 머지 커밋의 파일 트리는 그 head와 같다.
+[PR CI](https://github.com/ictechgy/knowledger/actions/runs/35492112374)는 Node24·26,
+Fabric/auth 경계, Chromium18개와 성능·복구 드릴을 통과했다. 신규 Fabric 측정10개가
+skip 없이 실행된 로그도 확인했다. 릴리스 준비는 버전·문서만 바꾸었으므로 아래
+`d491d81`의 동일 런타임에 대한 로컬 검증을 재사용했다. 새 live Fabric 거래는 수행하지 않았다.
+게시·CI 근거는 Git 제외 `.artifacts/release-v0.4.0/`에 보존했다.
+
 `pilot:metrics --mode fabric`에 명시적 channel/chaincode/version/public genesis
 바인딩과 읽기 전용 projection 재생 경로를 추가했다. durable replay와 같은 원시 블록
 검증기·projector로 블록0부터 전체를 검증하고 VALID 거래만 스트리밍 집계한다.
@@ -39,8 +49,8 @@ SHA-256이 전후 모두 동일함을 확인했다.
 
 새 peer 조회나 MSP/endorsement 서명·최신 tip 인증은 수행하지 않는다. 획득 경로가
 신뢰된 저장 블록의 재측정이며, 실제 파일럿·독립 호스트 시험은 여전히 별도다.
-위 근거는 구현 커밋 `d491d81`의 로컬 검증 기록이다. 원격 CI·게시 상태는
-[인계 기록](../HANDOFF.md)과 해당 릴리스의 실행 근거를 함께 확인한다.
+위 로컬 근거는 구현 커밋 `d491d81`에 대한 기록이며, 원격 CI·게시 근거는 이 항목
+첫 문단에 기록했다. 이어서 할 작업은 [인계 기록](../HANDOFF.md)에 있다.
 
 ## v0.3.0 릴리스 — 실제 Fabric 재검증 — 2026-09-20
 
