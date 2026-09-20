@@ -31,8 +31,11 @@ reverse dependencies, starter templates, sync preview/retries and retrieval eval
 Released in v0.7.0: [selected comment delivery](docs/33-REVIEW-DELIVERY.md), including
 explicit recipient confirmation, durable leased retries, a recipient-only inbox and
 HTTPS/HMAC transport with a two-app simulation.
-Live peer deployment, vendor notifications and automatic deadline reminders,
-a selected customer KB connector and a configured production embedding provider remain open.
+[Local automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) are implemented in
+the subsequent working branch: current-recipient notices, durable deduplication,
+stale-schedule suppression and visible-tab refresh. Publication is pending.
+Live peer deployment, vendor/external reminders, a selected customer KB connector
+and a configured production embedding provider remain open.
 Dynamic organizational/policy changes require the separate
 [governance migration design](docs/32-GOVERNANCE-EVOLUTION.md), including an explicit
 choice of governance authorities and quorum; editing genesis is not a migration.

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Local automatic review reminders: one due and one overdue notice per exact
+  revision, schedule version and recipient. Restart/restore and concurrent workers
+  retain deduplication and read state; rescheduling, reassignment and completion
+  hide stale notices. Downtime catch-up emits only the current phase.
+- A bounded reminder worker enabled by default while the app listens, with runtime
+  controls to tune or disable generation. Serving/membership checks precede local
+  writes; current session authorization protects recipient views and read actions.
+- A recipient-only deadline inbox with visible-tab refresh. No reminder enters the
+  external delivery queue, shared ledger, human review events or approval records.
+
 ## [0.7.0] — 2026-09-20
 
 ### Added

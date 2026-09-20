@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0 게시 완료 — 자동 리마인더 후속 진행)_
+_Last updated: 2026-09-20 KST (v0.7.0 게시 완료·자동 기한 알림 구현/검증 완료 — v0.8.0 준비)_
 
 ## Goal
 
@@ -14,6 +14,15 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **앱 내부 자동 기한 알림 구현·검증 완료**: `feature/review-reminders`에서 기본60초
+  worker와 브라우저30초 갱신, 기한/초과 단계별 중복 제거, 현재 일정/수신자에 한정된 목록과
+  읽음 처리를 구현했다. 일정 변경·완료 뒤 과거 알림은 숨기고 재시작/복원 시 중복과 읽음
+  상태를 보존한다. 원장·댓글 이벤트·사람 승인·외부 전달 큐에는 쓰지 않는다.
+  Node24 **552개 중551 통과·1 GC 생략**, 타입·합의/전달 demo·Chromium **32개 통과**.
+  빈 후보일 때 불필요한 원장 조회를 생략해 기존 anonymous liveness 회귀도 통과했다.
+  [안내](docs/34-REVIEW-REMINDERS.md), 근거 `.artifacts/review-reminders-20260920/`.
+  사용자 일괄 진행 승인에 따라 v0.8.0으로 게시할 예정이다. 아직 게시 완료가 아니다.
+
 - **[v0.7.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.7.0)**:
   [PR #18](https://github.com/ictechgy/knowledger/pull/18), merge `b237bcf`, 후보 `aaaa28a`의
   push/PR CI8개 통과 후 같은 tree에 태그·Latest 게시/본문 readback을 확인했다.
@@ -25,7 +34,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 - **후속 일괄 진행 승인**: 댓글 전달을 v0.7.0으로 게시한 뒤 앱 내부 자동 기한 리마인더를
   구현·검증한다. 외부 알림 제품과 실제 조직 연결 입력은 아직 미정이다. GitHub 게시 및
   기존 Fabric의 HTTP/configured 연속 검증을 진행하며 새 네트워크를 초기화하지 않는다.
-  v0.7.0 게시를 마쳤으며 앱 내부 자동 리마인더를 이어서 진행한다.
+  v0.7.0 게시·앱 내부 자동 리마인더 구현을 마쳤으며 v0.8.0 게시로 이어간다.
 
 - **댓글 전달 구현·검증 완료(`e14501d`)**:
   작성자가 확인한 본인 댓글을 구성된 사람 수신자에게 보내는 API/UI, 영속 outbox/inbox,

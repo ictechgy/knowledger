@@ -113,6 +113,8 @@ API와 UI는 실행 가능한 초기 알파다. 정책·조직 구성은 프로�
 
 [선택한 댓글 전달](docs/33-REVIEW-DELIVERY.md)은 명시적 수신자 확인, 영속 재시도 큐와 별도 수신함을 제공한다. `npm run demo:review-delivery`로 응답 유실·중복 제거를 포함한 두 앱의 가상 연동을 실행할 수 있다.
 
+[자동 기한 알림](docs/34-REVIEW-REMINDERS.md)은 현재 담당자에게 앱 내부 알림을 만들고 중복과 이전 일정의 알림을 제외한다.
+
 [Markdown 저장소 연결](docs/23-KB-SOURCE-CONNECTOR.md)은 manifest에 지정한 파일만 비공개 초안으로 동기화한다.
 [지식 클라이언트](docs/24-KNOWLEDGE-CLIENT.md)는 정확한 개정본과 합의 상태를 확인하고,
 모델 생성 전과 결과 반환 전에 권한·최신성을 다시 검사한다.

@@ -122,6 +122,9 @@ with adoption. Review completion does not replace human agreement approvals.
 transport, durable retry queue and separate inbox. Run `npm run demo:review-delivery`
 for a two-app local simulation with deliberate receipt loss and duplicate suppression.
 
+[Automatic deadline reminders](docs/34-REVIEW-REMINDERS.md) notify the current
+assignees inside the app and suppress duplicates and stale schedule versions.
+
 [Markdown repository connector](docs/23-KB-SOURCE-CONNECTOR.md) syncs only manifest-listed files into private drafts.
 The [knowledge client](docs/24-KNOWLEDGE-CLIENT.md) verifies the exact revision and agreement state,
 and re-checks authorization and freshness before model generation and before returning results.

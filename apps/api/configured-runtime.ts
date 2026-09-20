@@ -15,7 +15,7 @@ import type { ConfiguredRuntimeBinding } from '../../packages/storage/configurat
  * policy_version은 그 훅에 붙는 배포 계약이라 configurationAuthorityDigest 대상이 아니다.
  */
 export async function createConfiguredApp(input: ProjectConfiguration, options: {dataDir:string;port:number;organization?:string;modelEgress?:ModelEgressPolicy}
-  & Pick<AppOptions, 'vectorIndex' | 'embedQuery' | 'embedRevision' | 'reviewDelivery'>) {
+  & Pick<AppOptions, 'vectorIndex' | 'embedQuery' | 'embedRevision' | 'reviewDelivery' | 'reviewReminders'>) {
   const configuration = validateProjectConfiguration(input);
   const definition = applicationDefinition(configuration);
   const fabric = configuration.ledger.mode === 'fabric';
@@ -54,5 +54,5 @@ export async function createConfiguredApp(input: ProjectConfiguration, options: 
   } catch(error) { await ledger?.close();await authentication?.close();throw error; }
   // createApp takes ownership and closes resources on initialization failure.
   return createApp({dataDir:options.dataDir,definition,ledger,personas,authentication,binding,publicOrigin:configuration.server?.public_origin,modelEgress:options.modelEgress,
-    vectorIndex:options.vectorIndex,embedQuery:options.embedQuery,embedRevision:options.embedRevision,reviewDelivery:options.reviewDelivery});
+    vectorIndex:options.vectorIndex,embedQuery:options.embedQuery,embedRevision:options.embedRevision,reviewDelivery:options.reviewDelivery,reviewReminders:options.reviewReminders});
 }
