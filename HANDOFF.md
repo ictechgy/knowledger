@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (댓글 전달 v0.7.0·자동 기한 알림 v0.8.0 게시 완료)_
+_Last updated: 2026-09-20 KST (v0.8.0 게시 완료·파일럿 연동 후보 공식 조사/선정 완료)_
 
 ## Goal
 
@@ -14,13 +14,24 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **파일럿 연동 조합 권고 선정 완료**: 사용자가 Atlassian·Microsoft·Slack·OpenAI·Ollama의
+  공개 공식 문서 조회를 승인했고 확인한 자료로 [선정 기록](docs/35-PILOT-INTEGRATION-SELECTION.md)을
+  작성했다. 첫 구현 대상은 **Confluence Cloud + Slack Bot 개인 DM + text-embedding-3-small/1536**.
+  기존 도구는 미지정이며 구매/계정 선택을 확정한 것은 아니다. M365 사용 조직에는
+  SharePoint/Teams, 원격 임베딩 반출 불가 시 Ollama `embeddinggemma:300m`을 대안으로 둔다.
+  실제 계정·키 조회·설치·모델 다운로드·실데이터 전송은 하지 않았다. 현재 branch는
+  `docs/pilot-stack-selection`이며 이 문서 변경은 원격 미게시다.
+  다음 구현은 임베딩 전송 정책/provider → Confluence private 수집 → Slack 알림 순서다.
+  기존 `modelEgress`가 embedding 호출까지 자동 검사하지 않는 점과 공급자 접수/peer 저장
+  영수증을 구분해야 하는 점을 기록했다. 런타임 변경 없이 문서 링크/구조 검사만 수행한다.
+
 - **[v0.8.0 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.8.0)**:
   [PR #19](https://github.com/ictechgy/knowledger/pull/19), merge `21780da`, 후보 `714d65d`의
   push/PR CI8개 통과 뒤 동일 tree에 태그·Latest를 게시하고 본문/원격 commit을 readback했다.
   [CI](https://github.com/ictechgy/knowledger/actions/runs/35510239235)는 Node24/26,
   Fabric/auth 경계, Chromium32개, 성능·복구 드릴과 전달 demo를 포함한다.
-  현재 branch는 `main`, 제품 버전0.8.0이며 의존성·배포 chaincode0.1.0은 그대로다.
-  남은 외부 알림 채널 선택은 답변이 없으므로 실제 공급자·조직으로 전송하지 않았다.
+  게시 당시 branch는 `main`, 제품 버전0.8.0이며 의존성·배포 chaincode0.1.0은 그대로다.
+  이후 위 공식 문서 조사로 구현 후보를 선정했으나 실제 공급자·조직으로 전송하지 않았다.
 
 - **앱 내부 자동 기한 알림 구현·검증 완료**: `feature/review-reminders`에서 기본60초
   worker와 브라우저30초 갱신, 기한/초과 단계별 중복 제거, 현재 일정/수신자에 한정된 목록과
@@ -575,6 +586,11 @@ inbox와 가상 연동을 구현했다. 기본 비활성·고정 수신자·명�
 브라우저30초 갱신, 중복/이전 일정 제외·현재 수신자 인가·종료/timeout을 검증했다.
 실제 peer URL/키/계정 배포와 외부 메일·Slack·Teams adapter는 남았다. 채널 선택을
 사용자에게 요청했지만 아직 답변이 없어 외부 실제 전송은 구성하지 않았다.
+이후 사용자가 공개 공식 문서 조회를 승인해 `docs/35-PILOT-INTEGRATION-SELECTION.md`에
+Confluence Cloud·Slack Bot DM·text-embedding-3-small/1536을 첫 구현 후보로 선정했다.
+실제 사용 중인 도구/계정은 미지정이며 SaaS 연결·임베딩 호출은 수행하지 않았다.
+임베딩 전송 정책과 공급자 접수 영수증의 별도 계약을 구현하기 전 단순 callback 연결로
+운영 보호가 갖춰졌다고 설명하지 마. 선정 문서는 `docs/pilot-stack-selection` 로컬 변경이다.
 runtime 관리 정책은 `docs/32-GOVERNANCE-EVOLUTION.md`의 설계 단계이고 구현 완료가 아니다.
 실제 조직·호스트·공급자 정보는 아직 없어 실환경 파일럿/연동/독립 호스트 시험은 남아 있다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
