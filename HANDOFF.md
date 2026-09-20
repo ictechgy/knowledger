@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (Fabric 파일럿 측정 PR #15 머지·원격 CI 통과·v0.4.0 게시 완료)_
+_Last updated: 2026-09-20 KST (v0.4.0 이후 격리된 가상 파일럿 리허설22개 통과 — 실제 파일럿 대상은 미정)_
 
 ## Goal
 
@@ -14,6 +14,15 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **가상 파일럿 리허설 완료**: 사용자의 선택에 따라 v0.4.0(`5ccb41e`)로
+  가상 개발팀·운영팀, 관점3개·문서5개·가상 승인10개의 로컬 시나리오를 실행했다.
+  비공개 격리·agent 승인 거절·필수 승인·재사용·egress·의존성 철회·백업 복원
+  단언22개 통과. 실제 사람의 관찰·승인이나 Fabric VALID 커밋 증명은 아니다.
+  새 데이터는 `.data/pilot-rehearsal-UivsQz/`, 보고서·측정·실행 코드는
+  `.artifacts/pilot-rehearsal-20260920/`에 보존했다. 앱은 모두 정상 종료했다.
+  기본 문서2개는 HTTP 게시, 의존 문서3개는 도메인 fixture다. 새 draft API의
+  의존관계 작성 입력은 없으므로 실제 파일럿 전에 작성 경로를 결정해야 한다.
+  제품 코드 변경·원격 게시 없이 실행 결과와 이력을 기록했다.
 - **[v0.4.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.4.0)**:
   [PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로
   main에 반영하고 같은 커밋에 태그·GitHub Latest 릴리스를 게시했다. head `0bdf96e`의
@@ -158,6 +167,16 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
+
+2026-09-20 가상 파일럿 리허설:
+
+- 단언22개 통과. 제안/활성 합의5개·가상 승인10개·철회1개, 의존성 참조 개정3/5.
+- 원천 기준 철회 후 직접/간접 의존 문서 제공 차단, 독립 문서 제공 유지.
+  생성 중 철회·stale run·미허용 모델 차단과 agent 승인 거절 확인.
+- 백업·복원 직후 저널51건·private 초안4개·checkpoint·내용 digest·측정 JSON 일치.
+  복원 후 최신 조회5회는 fence를 더해56건이 됐고 파생 채택 지표는 동일하다.
+- 원장·관찰은 가상이며 실제 도입 효과는 미측정. 근거 `.artifacts/pilot-rehearsal-20260920/`.
+  런타임 코드는 바꾸지 않았으므로 통과한 기존 검사는 재사용하고 실행 자료·문서 구조를 검증했다.
 
 2026-09-20 v0.4.0 릴리스 검증:
 
@@ -390,6 +409,8 @@ python3 -B tools/check_docs.py
 2. 선택 검증(로컬 다중 컨테이너 수준) 완료: peer·orderer 중단, 인증서 적용 중 실제 SIGKILL,
    런타임 스냅샷 복원. 독립 물리 호스트 간 장애·재해 복구는 여전히 미검증이다.
 3. 선택 도입/확장: 실제 SSO/KMS·모델 공급자/egress 연동과 실제 파일럿 실행.
+   가상 파일럿 리허설은 완료했다(로컬 단언22개). 실제 참여 조직·업무·검토자·환경과
+   의존 문서 작성 경로는 미정이며, 가상 리허설을 실제 파일럿 완료로 표시하지 않는다.
    벡터 검색 read model(PR #8)·Git 소스 커넥터·채택 측정(PR #13) 코드는 main 반영 완료.
    운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
@@ -437,6 +458,10 @@ main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과
 source 전체 tip·저널 digest와 정확한 거래 checkpoint를 출력하며 기존 로컬 모드도
 유지한다. 현재 branch는 main이다. 실제 조직 파일럿·독립 호스트 검증·외부 공급자
 연동과 2027-01-01 수동 인증서 점검은 남아 있다.
+이후 사용자가 가상 리허설을 선택해 2개 가상 조직·5개 문서의 로컬 시나리오22개를
+통과했다. 자료는 `.artifacts/pilot-rehearsal-20260920/`, 데이터는 `.data/pilot-rehearsal-UivsQz/`다.
+실제 조직 정보는 아직 없으며, 의존 문서3개는 새 draft 의존관계 입력이 없어 도메인
+fixture로 만들었다. 실제 파일럿 전 대상과 문서 작성 경로를 확정해야 한다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.

@@ -1,5 +1,37 @@
 # 검증 기록
 
+## 격리된 가상 파일럿 리허설 — 2026-09-20
+
+사용자가 가상 리허설을 선택해 v0.4.0 코드(`5ccb41e`)로 새 로컬 workspace를 만들었다.
+가상 개발팀·운영팀, 개발/운영/조율 관점3개, 공유 문서5개와 초안 agent fixture를
+사용했다. 루프백 임시 포트의 앱만 실행하고 정상 종료했다. 기존 workspace·Fabric
+네트워크·키·genesis는 사용하지 않았다. 제품 코드 변경은 없다.
+
+- **기능 단언22개 전부 통과.** 비공개 초안 격리, agent 초안 허용/승인 거절,
+  게시 확인, 중복 게시·승인의 원래 receipt, 두 조직의 가상 승인 요구를 확인했다.
+- 제안5·가상 승인10·활성 합의5·철회1·공유 개정5. 의존성 참조 개정3개,
+  참조4개로 구조적 재사용 비율은60%다. 합의 시간 중앙값0.015초는 자동 실행
+  fixture의 시간이며 사람의 검토 수고나 도입 효과가 아니다.
+- 개발 기준을 철회하면 직접 의존한 배포 기준과 간접 의존한 점검표가 withheld이고,
+  독립된 운영 기준과 복구 안내는 provided였다. 생성 도중 철회와 오래된 run도
+  차단됐으며 미허용 모델은 generate가 호출되지 않았다.
+- 정상 종료 후 WAL/SHM이 남지 않은 상태에서 configured-local snapshot을 만들었다.
+  새 디렉터리 복원 직후 checkpoint·전체 저널51건·비공개 초안4개·측정 JSON이 일치했다.
+  복원 앱의 최신 resolve 검사5회가 fence를 추가해 저널은56건이 됐지만 파생 채택
+  지표는 그대로였다. 원본/복원 직후/조회 후 측정의 window를 각각 보존했다.
+- 기본 문서2개는 HTTP draft→preview→publish, 의존 문서3개는 명시적 도메인
+  publish fixture로 생성했다. 현재 새 draft API에는 의존관계 입력이 없으므로
+  의존관계를 UI에서 새로 작성하는 사용자 흐름까지 검증한 것으로 표시하지 않는다.
+- 사람 관찰 로그는 비어 있으며 해석 혼합·질문·공개 부담은 **미측정**이다.
+  가상 승인·로컬 callback은 실제 승인·SSO/KMS/모델 공급자 통합을 증명하지 않는다.
+
+실행 자료는 Git 제외 `.artifacts/pilot-rehearsal-20260920/`의 `REPORT.md`, `run.mjs`,
+`evidence.json`, `measurement.json`, `measurement-restored.json`,
+`measurement-after-readback.json`이다. 데이터·구성·fixture·snapshot·복원본은
+`.data/pilot-rehearsal-UivsQz/`에 보존했다. 실제 파일럿은 참여 조직·업무·검토자·환경과
+의존 문서 작성 경로를 확정한 뒤 진행한다. 실행은 로컬 시뮬레이션이며 Fabric VALID
+커밋, 실제 조직의 효과 비교나 독립 호스트 재해 복구 검증은 아니다.
+
 ## Fabric 파일럿 측정 지원 — 2026-09-20
 
 [PR #15](https://github.com/ictechgy/knowledger/pull/15)를 merge commit `0eea4be`로
