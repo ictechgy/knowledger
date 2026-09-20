@@ -1,6 +1,13 @@
 # 검증 기록
 
-## v0.3.0 후보 — 실제 Fabric 재검증 — 2026-09-20
+## v0.3.0 릴리스 — 실제 Fabric 재검증 — 2026-09-20
+
+[PR #14](https://github.com/ictechgy/knowledger/pull/14)를 merge commit `bdb55fb`로
+main에 반영하고 같은 커밋에 `v0.3.0` 태그·[릴리스](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0)를
+게시했다. 태그의 커밋, 릴리스 본문, 공개·Latest 상태를 다시 확인했다.
+PR head `87c06ad`의 push/PR CI8개가 모두 통과했고 머지 커밋의 파일 트리는
+그 head와 동일하다. [PR CI](https://github.com/ictechgy/knowledger/actions/runs/35486928102)는
+Node24·26, Fabric/auth 경계, Chromium18개와 성능·복구 드릴을 포함한다.
 
 중지된 기존 Colima VM과 `kcl-fabric-smoke` 컨테이너를 재가동했다. 새 네트워크
 초기화·chaincode 배포·인증서 갱신은 실행하지 않았다. 시작 높이는290(block289),
@@ -28,7 +35,7 @@
   두 프로세스 장애 드릴(`drill_pass: true`) 통과.
 - 로컬 `test:browser`는 Playwright의 Chromium headless shell1243 실행 파일이
   없어 테스트 본문 시작 전에 실패했다. 브라우저 검증은 정확한 후보 커밋의
-  기존 원격 CI `browser-and-experiments` 결과를 릴리스 게이트로 확인한다.
+  기존 원격 CI `browser-and-experiments`에서 **18 passed**로 확인했다.
 
 실제 네트워크 근거는 Git 제외 `.data/fabric-http-smoke-6yDcmN/http-evidence.json`,
 `.data/configured-smoke-XaPSPf/evidence.json`이다. 실패 실행의 감사 단언 근거는

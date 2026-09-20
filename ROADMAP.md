@@ -16,7 +16,8 @@ verified, or still planned. Items are grouped by track, not by promised date.
   cold/warm search scenarios
 - Container-level failure drills: peer/orderer outage, SIGKILL during
   certificate apply, runtime snapshot restore
-- Public release: `v0.1.0` (2026-09-16), `v0.2.0` (2026-09-18)
+- Public release: `v0.1.0` (2026-09-16), `v0.2.0` (2026-09-18),
+  [`v0.3.0`](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0) (2026-09-20)
 
 ## Track A — Protocol completeness
 

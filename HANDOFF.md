@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (v0.3.0 후보 — 실제 Fabric 재검증 완료, PR·CI·게시 진행)_
+_Last updated: 2026-09-20 KST (PR #14 머지·실제 Fabric 재검증·원격 CI 통과·v0.3.0 게시 완료)_
 
 ## Goal
 
@@ -14,11 +14,15 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
-- **v0.3.0 릴리스 후보**: `release/v0.3.0`에서 준비 중이다. 제품 패키지와
+- **[v0.3.0 릴리스 게시 완료](https://github.com/ictechgy/knowledger/releases/tag/v0.3.0)**:
+  [PR #14](https://github.com/ictechgy/knowledger/pull/14)를 main에 merge commit
+  `bdb55fb`로 반영하고 같은 커밋에 태그·GitHub Latest 릴리스를 게시했다.
+  로컬 branch는 `main`이다. 제품 패키지와
   README·changelog를 0.3.0으로 갱신하고, 설정형 smoke의 조직 서명·감사 로그·
   모델 egress 설정을 현재 계약에 맞췄다. 실제 `fabric:http-smoke`와
-  `configured:smoke`가 통과했다. 새 릴리스 게시는 PR·원격 CI 확인 뒤 진행한다.
-- **잔여 로드맵 로컬 작업 완료(2026-09-20)**: B8 대형 캐시를 일반/대형 풀별
+  `configured:smoke`가 통과했다. head `87c06ad`의 원격 CI8개와 Chromium18개가
+  통과했다([PR CI](https://github.com/ictechgy/knowledger/actions/runs/35486928102)).
+- **잔여 로드맵 main 반영 완료(2026-09-20, PR #14)**: B8 대형 캐시를 일반/대형 풀별
   최대8개 LRU로 확장했다. 대형 풀 합산 예산은 기존 브라우즈 추정16MiB·검색
   UTF-8 64MiB를 유지한다. Fabric durable ingest는 `prepareBlock`의 검증된
   쓰기 delta를 SQL 성공 뒤 커밋해 블록마다 전체 상태 Map을 복사하지 않는다.
@@ -27,7 +31,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   모두 정상이다. 실제 파일럿·독립 물리 호스트 장애 시험은 수행하지 않았다.
   대상 조직·환경·사람 검토자가 정해져야 실제 파일럿을 시작한다.
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`.
-  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`·`v0.2.0`.**
+  **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`·`v0.2.0`·`v0.3.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
   **PR #2 머지 완료(squash `1249f1e`)**: 10만 문서 확장성 — 브라우즈/검색 페이지네이션과
   블록 인제스트의 O(N²) 제거, `tools/performance-fabric.ts` 합성 Fabric 어댑터 벤치마크.
@@ -138,7 +142,7 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Verification
 
-2026-09-20 v0.3.0 후보 검증:
+2026-09-20 v0.3.0 릴리스 검증:
 
 - 실제 HTTP smoke 게시290·승인292·활성293·철회297·최종299 통과.
 - 실제 configured smoke 게시316·승인318·활성319·철회328·최종331 통과.
@@ -146,12 +150,13 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   OIDC 권한 회수·SDK 철회 차단·v3 복원 확인. 첫 실행의 감사 phase 단언 오류는
   수정 후 재실행했다. 두 실행 모두 시험 합의 철회 완료.
 - `npm run check` 493개 중492 통과·1 GC 생략. 타입·demo·demo:kb·백업/장애 드릴 통과.
-  로컬 Chromium 바이너리 부재로 브라우저 검사는 원격 CI를 완료 조건으로 둔다.
+  로컬 Chromium 바이너리는 없으며, 정확한 PR head의 원격 CI에서 Chromium18개
+  통과를 확인했다. push/PR의 Node24·26, Fabric 경계, browser/experiments 전부 성공.
 - genesis digest와 crypto132개 파일의 크기·mtime·inode 보존. 근거는
   `.artifacts/release-v0.3.0/`, `.data/fabric-http-smoke-6yDcmN/http-evidence.json`,
   `.data/configured-smoke-XaPSPf/evidence.json`.
 
-2026-09-20 잔여 로드맵 로컬 변경 검증:
+2026-09-20 잔여 로드맵의 최초 로컬 변경 시점 검증(이후 릴리스 검증은 위 항목):
 
 - `npm run check`: **493 tests / 492 passed / 0 failed / 1 GC 전용 skipped**.
   `npm run check:types`, `npm run demo` 통과.
@@ -353,7 +358,7 @@ python3 -B tools/check_docs.py
    벡터 검색 read model(PR #8)·Git 소스 커넥터·채택 측정(PR #13) 코드는 main 반영 완료.
    운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
-   B8의 단일 대형 캐시·블록당 Map 복사는 2026-09-20 로컬 수정 완료.
+   B8의 단일 대형 캐시·블록당 Map 복사는 PR #14·v0.3.0에 반영 완료.
    풀별 예산을 넘는 교차 질의 재계산·cold 검색/이력 재생 비용은 남는다.
    현재 파일럿 측정 CLI는 LocalLedger 저널만 지원하며 Fabric projection DB 직접
    측정은 지원하지 않는다. Fabric 파일럿에는 별도 VALID 이벤트 추출 연동이 필요하다.
@@ -368,9 +373,10 @@ python3 -B tools/check_docs.py
    필수 감사 로그·qscc 전용 슬롯을 갖춘 원격 서명 경계를 도입했다.
    `feature/org-signing-gateway` 브랜치는 머지 완료.
 7. **Track A·B·C 머지 완료(PR #7–#10·#12·#13)** — Track C는 PR #13(squash
-   `4aad9ea`)으로 main 반영. 이후 B8 수정·Track D 정책·파일럿 준비는 로컬 완료.
+   `4aad9ea`)으로 main 반영. 이후 B8 수정·Track D 정책·파일럿 준비도 PR #14로
+   main에 반영하고 v0.3.0으로 게시했다.
    실제 파일럿, 독립 물리 호스트/Fabric 채널 장애 검증, 실제 외부 공급자 연동은 남는다.
-   새 릴리스 게시는 별도 명시적 요청 시 릴리스 절차에 따라 진행한다.
+   이후 릴리스는 [운영 정책](docs/29-PROJECT-OPERATIONS.md)에 따라 진행한다.
 8. 유지보수: 공개 인증서 점검은 2026-09-20 완료. 기본14일 경고 창은
    2026-12-31 23:41:57 KST부터이며 다음 수동 점검일은 **2027-01-01 KST**다.
    그때 필요하면 갱신한다. 자동 예약은 설정하지 않았다.
@@ -378,15 +384,15 @@ python3 -B tools/check_docs.py
 ## Resume Prompt
 
 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`에서 AGENTS.md와 HANDOFF.md를 읽고 작업을 이어가.
-공개 저장소는 https://github.com/ictechgy/knowledger, 릴리스 `v0.1.0`·`v0.2.0` 게시·원격 CI 통과 완료.
+공개 저장소는 https://github.com/ictechgy/knowledger, 최신 릴리스 `v0.3.0` 게시·원격 CI 통과 완료.
 10만 문서 확장성 수정은 PR #2(`1249f1e`), 성능 도구 개선은 PR #3(`b073c81`)·#4(`e636166`),
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
 Track C(PR #13 squash `4aad9ea` — Git 커넥터·채택 측정·원자 아티팩트)는 리뷰 수렴 후
 main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과 Track D 운영 정책,
-파일럿 계획/관찰 템플릿을 로컬 구현·검증했다(493개 중492 통과·1 GC 생략).
-v0.3.0 후보를 release/v0.3.0에서 준비하며 실제 Fabric HTTP/configured smoke와
-백업·장애 드릴까지 통과했다. PR·원격 CI·릴리스 게시 상태는 이어서 확인한다.
+파일럿 계획/관찰 템플릿을 PR #14(merge `bdb55fb`)로 main에 반영하고 v0.3.0으로
+게시했다(493개 중492 통과·1 GC 생략). 실제 Fabric HTTP/configured smoke와
+백업·장애 드릴, 원격 Node24·26/Fabric/Chromium18개 CI까지 통과했다. 로컬 branch는 main이다.
 공개 인증서81개는 정상이고, 세 peer tip은 block331(height332)이다.
 남은 작업은 2027-01-01 수동 인증서 점검, 대상 조직·환경이 필요한 실제 파일럿,
 독립 물리 호스트/Fabric 채널 장애 검증이다. 파일럿 CLI는 LocalLedger 전용이며
