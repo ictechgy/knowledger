@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Confluence Cloud allowlist collection into actor-private immutable drafts, with
+  conservative ADF conversion, full reread before writes, private version/hash
+  provenance and resumable imports. OAuth credentials remain caller-owned.
 - Opt-in guarded embedding providers with separate fail-closed egress policy,
   current actor checks before sends/results/cache use, immutable profiles,
   bounded calls/concurrency/deadlines and HTTP/shutdown cancellation.

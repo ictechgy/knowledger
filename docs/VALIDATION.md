@@ -1,5 +1,16 @@
 # 검증 기록
 
+## Confluence 비공개 수집 — 2026-09-20
+
+Node24 `npm run check` **579 tests /578 passed /0 failed /1 GC skipped**,
+`npm run check:types` 및 새 Chromium provenance 검사1개 통과.
+새 수집 회귀9개는 고정 OAuth URL/재조회, ADF 거절/상한, 권한 회수·버전 경합의 쓰기0회,
+비공개 격리/공유 metadata 제외, version-only 새 초안, 응답 유실 재실행, source 제거와
+원장 비영향, stopped-app 백업/새 디렉터리 복원을 검증했다.
+브라우저는 본인 source의 page/version 표시·초안 열기·공유 preview 출처 제외·actor 격리를
+확인했다. 실제 Atlassian 네트워크나 토큰은 사용하지 않았다. 기존 Fabric은 변경하지 않았다.
+근거 `.artifacts/confluence-20260920/{check,types,browser}.log`, [계약](37-CONFLUENCE-SOURCE.md).
+
 ## 임베딩 전송 정책·OpenAI adapter — 2026-09-20
 
 별도 `embedding` provider 경로를 추가했다. 기존 생성용 `modelEgress`와 분리해 default deny,

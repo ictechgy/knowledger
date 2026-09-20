@@ -319,8 +319,8 @@ export async function createApp(options: AppOptions) {
         }
         const notificationRead = /^\/review-notifications\/([^/]+)\/read$/.exec(resourcePath);
         if (notificationRead) { respond(await run(() => service.readReviewNotification(actor, decodeResourceId(notificationRead[1]), input))); return; }
-        const sourceMatch=/^\/sources\/([^/]+)\/(markdown|reconcile)$/.exec(resourcePath);
-        if(sourceMatch){respond(await run(()=>sourceMatch[2]==='markdown'?service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input):service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input)));return;}
+        const sourceMatch=/^\/sources\/([^/]+)\/(markdown|confluence|reconcile)$/.exec(resourcePath);
+        if(sourceMatch){respond(await run(()=>sourceMatch[2]==='reconcile'?service.reconcileSource(actor,decodeResourceId(sourceMatch[1]),input):service.importSourceMarkdown(actor,decodeResourceId(sourceMatch[1]),input,sourceMatch[2] as 'markdown'|'confluence')));return;}
         const retryMatch = /^\/commands\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/retry$/.exec(resourcePath);
         if (retryMatch) { respond(await run(()=>service.retryCommand(actor,retryMatch[1],input))); return; }
         let draftMatch = /^\/drafts\/([A-Za-z][A-Za-z0-9._:-]{2,63})\/edits$/.exec(resourcePath);

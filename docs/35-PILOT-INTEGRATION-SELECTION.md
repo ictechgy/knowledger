@@ -104,6 +104,7 @@ true이므로 adapter에서는 false로 지정해 입력 손실을 감추지 않
    실제 tokenizer/키 연결 및 한국어 실측은 별도다.
 2. **Confluence source adapter**: 페이지 allowlist·고정 버전·보수적인 본문 변환,
    private import/CAS/재시도, 원본 권한 회수·삭제·버전 경합을 시험한다.
+   후속 [구현 안내](37-CONFLUENCE-SOURCE.md)에 수집 API와 지원 본문/인증 경계를 기록했다.
 3. **Slack 알림 adapter**: 명시적 actor/DM 매핑, 최소 메시지, 실제 전송 전 현재 인가,
    공급자 접수와 모호한 결과·재시도 상태를 구현한다. 기존 peer 영수증 계약은 유지한다.
 4. **실제 소규모 파일럿**: 제안 범위는 대표 문서10~20개·한국어 질의30~50개다. 참여자가

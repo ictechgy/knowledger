@@ -4,6 +4,16 @@ export interface SourceFileMapping { path:string; policy_id:string; policy_versi
 export interface MarkdownSourceManifest { version:1; source_id:string; files:SourceFileMapping[] }
 export interface SourceEntry extends SourceFileMapping {
   sha256:string; byte_length:number; draft_id:string; revision_digest:string; status:'present'|'removed'; updated_at:string;
+  origin?: ConfluenceOrigin;
+}
+/** Caller-reported private provenance, never an authorization or shared-ledger field. */
+export interface ConfluenceOrigin { kind:'confluence'; cloud_id:string; page_id:string; page_version:number; adf_sha256:string }
+export function confluenceOrigin(value: any): ConfluenceOrigin {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'adf_sha256,cloud_id,kind,page_id,page_version'
+    || value.kind !== 'confluence' || typeof value.cloud_id !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.cloud_id)
+    || typeof value.page_id !== 'string' || !/^[1-9][0-9]{0,19}$/.test(value.page_id) || !Number.isSafeInteger(value.page_version) || value.page_version < 1
+    || typeof value.adf_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.adf_sha256)) throw new SourceInputError('올바른 Confluence 출처 정보가 필요합니다.');
+  return { kind:'confluence',cloud_id:value.cloud_id,page_id:value.page_id,page_version:value.page_version,adf_sha256:value.adf_sha256 };
 }
 export interface SourceState { source_id:string; version:number; entries:SourceEntry[]; updated_at:string }
 export class SourceInputError extends Error {

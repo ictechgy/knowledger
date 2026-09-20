@@ -3,7 +3,7 @@ import { canonicalize, validateRevision } from '../domain/index.ts';
 import type { Actor } from '../domain/index.ts';
 import type { PrivateStore } from '../storage/private-store.ts';
 import { decodeMarkdownImport } from '../import/markdown.ts';
-import { MAX_SOURCE_FILES, MAX_SOURCE_BYTES, sourceId,sourcePath,sourceVersion,sourceMapping } from './source-contract.ts';
+import { MAX_SOURCE_FILES, MAX_SOURCE_BYTES, sourceId,sourcePath,sourceVersion,sourceMapping,confluenceOrigin } from './source-contract.ts';
 import type { SourceState,SourceEntry,SourceFileMapping } from './source-contract.ts';
 
 export class SourceStoreError extends Error {
@@ -16,7 +16,8 @@ export function validateSourceState(value:any,id?:string):SourceState {
     if(!value||Object.keys(value).sort().join(',')!=='entries,source_id,updated_at,version'||sourceId(value.source_id)!==(id??value.source_id)||sourceVersion(value.version)<1||!iso(value.updated_at)||!Array.isArray(value.entries)||value.entries.length>MAX_SOURCE_FILES*2)throw new Error('Invalid source');
     const seen=new Set<string>();
     for(const entry of value.entries){
-      if(!entry||Object.keys(entry).sort().join(',')!=='byte_length,draft_id,path,policy_id,policy_version,revision_digest,sha256,status,title,updated_at')throw new Error('Invalid entry');
+      if(!entry||Object.keys(entry).filter(key=>key!=='origin').sort().join(',')!=='byte_length,draft_id,path,policy_id,policy_version,revision_digest,sha256,status,title,updated_at')throw new Error('Invalid entry');
+      if(Object.hasOwn(entry,'origin')){const origin=confluenceOrigin(entry.origin);if(entry.path!==`confluence/${origin.page_id}.md`)throw new Error('Invalid origin path');}
       sourceMapping({path:entry.path,title:entry.title,policy_id:entry.policy_id,policy_version:entry.policy_version});sourceId(entry.draft_id);
       if(seen.has(entry.path)||!['present','removed'].includes(entry.status)||!iso(entry.updated_at)||!Number.isSafeInteger(entry.byte_length)||entry.byte_length<1||entry.byte_length>256*1024||!/^sha256:[a-f0-9]{64}$/.test(entry.revision_digest)||!/^[a-f0-9]{64}$/.test(entry.sha256))throw new Error('Invalid entry');seen.add(entry.path);
     }
@@ -51,7 +52,7 @@ export class SourceStore {
         if(receipt.request_digest!==requestDigest)throw new SourceStoreError('IDEMPOTENCY_CONFLICT',409);
         const result=receipt.result;validateSourceState(result?.source,id);
         const keys=Object.keys(result).sort().join(',');
-        if(kind==='markdown' ? keys!=='draft_id,source,status'||!['imported','unchanged'].includes(result.status)||!result.source.entries.some((entry:SourceEntry)=>entry.draft_id===result.draft_id&&entry.path===input.path)
+        if(kind==='markdown'||kind==='confluence' ? keys!=='draft_id,source,status'||!['imported','unchanged'].includes(result.status)||!result.source.entries.some((entry:SourceEntry)=>entry.draft_id===result.draft_id&&entry.path===input.path)
           : keys!=='removed_count,source,status'||result.status!=='reconciled'||!Number.isSafeInteger(result.removed_count)||result.removed_count<0)throw new SourceStoreError('PRIVATE_SOURCE_CORRUPT',503);
         return result;
       }
@@ -66,25 +67,32 @@ export class SourceStore {
   }
   importMarkdown(actor:Actor,id:string,input:any,build:(mapping:SourceFileMapping,content:string)=>{draft_id:string;revision:any}){
     const mapping=sourceMapping({path:input.path,policy_id:input.policy_id,policy_version:input.policy_version,title:input.title});
+    const origin=input.origin===undefined?undefined:confluenceOrigin(input.origin);
+    if(origin&&mapping.path!==`confluence/${origin.page_id}.md`)throw new SourceStoreError('INVALID_SOURCE',400);
     const decoded=decodeMarkdownImport(mapping.path.split('/').at(-1),input.content_base64);
-    return this.operation(actor,id,input,'markdown',state=>{
+    return this.operation(actor,id,input,origin?'confluence':'markdown',state=>{
+      if(origin&&state?.entries.some(entry=>!entry.origin||entry.origin.cloud_id!==origin.cloud_id))throw new SourceStoreError('SOURCE_ORIGIN_CONFLICT',409);
+      if(!origin&&state?.entries.some(entry=>entry.origin))throw new SourceStoreError('SOURCE_ORIGIN_CONFLICT',409);
       const before=state?.entries.find(entry=>entry.path===mapping.path);
-      const unchanged=before&&before.sha256===decoded.sha256&&before.title===mapping.title&&before.policy_id===mapping.policy_id&&before.policy_version===mapping.policy_version;
+      if(origin&&before?.origin&&(origin.page_version<before.origin.page_version||origin.page_version===before.origin.page_version&&origin.adf_sha256!==before.origin.adf_sha256))throw new SourceStoreError('CONFLUENCE_VERSION_CONFLICT',409);
+      const unchanged=before&&before.sha256===decoded.sha256&&before.title===mapping.title&&before.policy_id===mapping.policy_id&&before.policy_version===mapping.policy_version
+        &&canonicalize(before.origin??null)===canonicalize(origin??null);
       let draft_id:string;let revision:any;
       if(unchanged){
         const draft=this.vault.get('draft',before.draft_id,actor);
-        try{revision=validateRevision(draft?.revision);if(revision.payload.body_markdown!==decoded.content||revision.payload.title!==mapping.title||revision.revision_digest!==before.revision_digest||revision.payload.metadata.author_org_id!==actor.org_id||revision.payload.metadata.author_id!==actor.actor_id)throw new Error('Invalid source draft');}
+        try{revision=validateRevision(draft?.revision);if(revision.payload.body_markdown!==decoded.content||revision.payload.title!==mapping.title||revision.revision_digest!==before.revision_digest||revision.payload.metadata.author_org_id!==actor.org_id||revision.payload.metadata.author_id!==actor.actor_id
+          ||canonicalize(draft?.source?.origin??null)!==canonicalize(origin??null))throw new Error('Invalid source draft');}
         catch{throw new SourceStoreError('PRIVATE_SOURCE_CORRUPT',503);}
         draft_id=before.draft_id;
       }else{
         const built=build(mapping,decoded.content);draft_id=built.draft_id;revision=built.revision;
-        this.vault.put('draft',draft_id,actor,{revision,import:{kind:'local_markdown',filename:decoded.filename,byte_length:decoded.byteLength,sha256:decoded.sha256},source:{source_id:id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version}});
+        this.vault.put('draft',draft_id,actor,{revision,import:{kind:'local_markdown',filename:decoded.filename,byte_length:decoded.byteLength,sha256:decoded.sha256},source:{source_id:id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version,...(origin?{origin}: {})}});
       }
       if(unchanged&&before.status==='present')return {status:'unchanged',source:state!,draft_id};
       const now=new Date().toISOString();let entries=[...(state?.entries??[])];
       if(!before&&entries.length>=MAX_SOURCE_FILES*2)entries=entries.filter(entry=>entry.status!=='removed');
       if(!before&&entries.length>=MAX_SOURCE_FILES*2)throw new SourceStoreError('SOURCE_LIMIT',409);
-      const entry:SourceEntry={...mapping,sha256:decoded.sha256,byte_length:decoded.byteLength,draft_id,revision_digest:revision.revision_digest,status:'present',updated_at:now};
+      const entry:SourceEntry={...mapping,sha256:decoded.sha256,byte_length:decoded.byteLength,draft_id,revision_digest:revision.revision_digest,status:'present',updated_at:now,...(origin?{origin}: {})};
       entries=entries.filter(item=>item.path!==mapping.path);entries.push(entry);
       const present=entries.filter(item=>item.status==='present');
       if(present.length>MAX_SOURCE_FILES||present.reduce((sum,item)=>sum+item.byte_length,0)>MAX_SOURCE_BYTES)throw new SourceStoreError('SOURCE_LIMIT',409);

@@ -142,6 +142,20 @@ test('repository source imports only allowlisted files and resumes changed priva
   } finally{rmSync(root,{recursive:true,force:true});}
 });
 
+test('Confluence provenance stays private while the imported draft opens for review',async({page,workspace})=>{
+  const actor={org_id:'AlphaMSP',actor_id:'maintainer',kind:'human'};
+  const cloud='11111111-1111-1111-1111-111111111111';
+  await workspace.app.service.importSourceMarkdown(actor,'confluence-browser',{operation_id:'cloud-import',expected_version:0,
+    path:'confluence/123.md',title:'Imported cloud guide',policy_id:'policy-shared-guideline',policy_version:1,
+    content_base64:Buffer.from('Private imported body').toString('base64'),origin:{kind:'confluence',cloud_id:cloud,page_id:'123',page_version:7,adf_sha256:'a'.repeat(64)}},'confluence');
+  await open(page,workspace);await page.locator('#source-list button').filter({hasText:'confluence-browser'}).click();
+  await expect(page.locator('#source-detail')).toContainText('Confluence 페이지 123 v7');
+  await page.locator('#source-detail .source-entry').click();await expect(page.locator('#draft-body')).toHaveValue('Private imported body');
+  await page.getByRole('button',{name:'공유 게시 미리보기 생성',exact:true}).click();
+  await expect(page.locator('#preview-section')).not.toContainText(cloud);await expect(page.locator('#preview-section')).not.toContainText('adf_sha256');
+  await switchActor(page,'BetaMSP');await expect(page.locator('#source-list')).not.toContainText('confluence-browser');
+});
+
 test('source file validation and actor changes stop uploads before any source mutation',async({page,workspace})=>{
   const {writeFileSync}=await import('node:fs');const root=mkdtempSync(join(tmpdir(),'knowledger-source-abort-'));
   const manifest={version:1,source_id:'kb-no-upload',files:[{path:'guide.md',title:'KB guide',policy_id:'policy-shared-guideline',policy_version:1}]};

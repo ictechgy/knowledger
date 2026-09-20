@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (임베딩 전송 정책/OpenAI adapter 구현 — Confluence 수집 후속 진행)_
+_Last updated: 2026-09-20 KST (Confluence 비공개 수집 구현 — Slack 알림 후속 진행)_
 
 ## Goal
 
@@ -13,6 +13,14 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 상시 규칙은 [AGENTS.md](AGENTS.md), 상세 이력은 [검증 기록](docs/VALIDATION.md)에 둔다.
 
 ## Current Status
+
+- **Confluence 수집 구현·로컬 검증**: `feature/pilot-integrations`에서 page allowlist,
+  보수적 ADF 변환·전체 재조회, 비공개 origin/site/version/hash, 멱등 import와 브라우저
+  출처 표시를 추가했다. Node24 **579개 중578 통과·1 GC 생략**, 타입·새 Chromium1개 통과.
+  실제 tenant/OAuth 호출 없이 가상 fetch와 임시 앱으로 권한·변경·응답 유실·복원을 검증했다.
+  [안내](docs/37-CONFLUENCE-SOURCE.md), `.artifacts/confluence-20260920/`.
+  임베딩 커밋은 `bdd5a67`이며 두 구현 모두 원격 미게시다. 다음은 Slack 최소 알림과
+  공급자 접수/결과 불명 상태를 구현한다. 실계정 연결·실데이터 전송 승인은 별도다.
 
 - **임베딩 전송 정책과 OpenAI adapter 구현·로컬 검증**: `feature/embedding-egress`에서
   별도 default-deny policy·현재 actor·profile/cache·호출/시간/동시 처리 예산·취소를 적용했다.

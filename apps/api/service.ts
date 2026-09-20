@@ -21,7 +21,7 @@ import { ReviewDeliveryRuntime } from './review-delivery.ts';
 import type { ReviewDeliveryOptions } from './review-delivery.ts';
 import { decodeMarkdownImport, validateMarkdownFilename, MAX_MARKDOWN_BYTES } from '../../packages/import/markdown.ts';
 import { slotFields } from '../../packages/config/types.ts';
-import { sourceId, sourceMapping, validateSourceManifest } from '../../packages/connectors/source-contract.ts';
+import { sourceId, sourceMapping, validateSourceManifest, confluenceOrigin } from '../../packages/connectors/source-contract.ts';
 import { SourceStore, SourceStoreError } from '../../packages/connectors/source-store.ts';
 import { parseJsonStrict } from './json.ts';
 import type { ApplicationDefinition, Persona } from '../../packages/config/types.ts';
@@ -415,7 +415,9 @@ export class KnowledgerService {
       try {
         const value=stored.source;sourceId(value.source_id);
         const mapping=sourceMapping({path:value.path,policy_id:value.policy_id,policy_version:value.policy_version,title:stored.revision.payload.title});
-        metadata.source={source_id:value.source_id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version};
+        const origin=value.origin===undefined?undefined:confluenceOrigin(value.origin);
+        if(origin&&mapping.path!==`confluence/${origin.page_id}.md`)throw new Error('Invalid origin path');
+        metadata.source={source_id:value.source_id,path:mapping.path,policy_id:mapping.policy_id,policy_version:mapping.policy_version,...(origin?{origin}: {})};
       } catch {throw new ApiError('PRIVATE_DRAFT_CORRUPT','비공개 원본 연결을 확인할 수 없습니다.',503,true);}
     }
     if (stored.source_draft_id !== undefined) {
@@ -1036,8 +1038,9 @@ export class KnowledgerService {
     // with respect to other JS tasks, without waiting for public transport submission.
     return operation();
   }
-  importSourceMarkdown(actor:Actor,id:string,input:any) {
-    onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64']);
+  importSourceMarkdown(actor:Actor,id:string,input:any,kind:'markdown'|'confluence'='markdown') {
+    onlyFields(input,['operation_id','expected_version','path','policy_id','policy_version','title','content_base64',...(kind==='confluence'?['origin']:[])]);
+    if(kind==='confluence')confluenceOrigin(input.origin);
     return this.privateWrite(actor,()=>{
       const mapping=sourceMapping({path:input.path,policy_id:input.policy_id,policy_version:input.policy_version,title:input.title});
       const policy=this.policy(mapping.policy_id,mapping.policy_version);
