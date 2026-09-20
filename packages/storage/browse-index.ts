@@ -43,8 +43,7 @@ interface RevisionCacheEntry {
 const MAX_REVISION_CACHE_ENTRIES = 8;
 const MAX_REVISION_CACHE_REFS = 16_384;
 const MAX_REVISION_CACHE_BYTES = 512 * 1024;
-// 상주 대형 항목도 무제한은 아니다 — 추정치 기준 백만 refs 규모까지 허용하는
-// 상한을 넘으면 캐시하지 않는다.
+// 대형 선택 집합 풀 전체의 추정 바이트 예산. 일반 작업 세트와 별도로 제한한다.
 const MAX_OVERSIZED_REVISION_CACHE_BYTES = 16 * 1024 * 1024;
 const ESTIMATED_REF_POINTER_BYTES = 16;
 
@@ -155,7 +154,7 @@ export class VerifiedBrowseIndex {
   private revisionCache = new Map<string, RevisionCacheEntry>();
   private revisionCacheRefs = 0;
   private revisionCacheBytes = 0;
-  private oversizedRevisionKey: string | undefined;
+  private readonly oversizedRevisionKeys = new Set<string>();
   private oversizedRevisionRefs = 0;
   private oversizedRevisionBytes = 0;
   private revisionCacheHits = 0;
@@ -171,9 +170,9 @@ export class VerifiedBrowseIndex {
   }
 
   /** 캐시 관측치 — 진단과 회귀 테스트용. 항목 내용이나 키는 노출하지 않는다. */
-  get revisionCacheStats(): { entries: number; refs: number; bytes: number; oversized: boolean; hits: number; misses: number } {
+  get revisionCacheStats(): { entries: number; refs: number; bytes: number; oversized: boolean; oversizedEntries: number; hits: number; misses: number } {
     return { entries: this.revisionCache.size, refs: this.revisionCacheRefs, bytes: this.revisionCacheBytes,
-      oversized: this.oversizedRevisionKey !== undefined, hits: this.revisionCacheHits, misses: this.revisionCacheMisses };
+      oversized: this.oversizedRevisionKeys.size > 0, oversizedEntries: this.oversizedRevisionKeys.size, hits: this.revisionCacheHits, misses: this.revisionCacheMisses };
   }
 
   prepare(batches: Iterable<BrowseWriteBatch>): { commit(): void } {
@@ -441,7 +440,10 @@ export class VerifiedBrowseIndex {
     this.revisionCache.delete(key);
     this.revisionCacheRefs -= entry.refs.length;
     this.revisionCacheBytes -= entry.estimatedBytes;
-    if (key === this.oversizedRevisionKey) this.resetOversizedRevision();
+    if (this.oversizedRevisionKeys.delete(key)) {
+      this.oversizedRevisionRefs -= entry.refs.length;
+      this.oversizedRevisionBytes -= entry.estimatedBytes;
+    }
   }
 
   private cacheRevisions(key: string, refs: readonly RevisionBrowseRef[], at: Checkpoint): void {
@@ -450,15 +452,18 @@ export class VerifiedBrowseIndex {
     if (refs.length > this.maxRevisionCacheRefs) {
       // 결과 건수가 상한을 넘는 선택 집합도 오프셋 페이지네이션이 같은 키로
       // 재질의하므로, 캐시하지 않으면 페이지마다 전체 refs를 다시 걸러
-      // O(문서²)가 된다. refs는 state의 객체를 공유하는 포인터 배열이므로 다른
-      // 항목을 비우고 단일 대형 항목으로 유지한다.
+      // O(문서²)가 된다. refs는 state의 객체를 공유하는 포인터 배열이며
+      // 대형 풀의 합산 예산 안에서 LRU로 유지한다.
       if (estimatedBytes > this.maxOversizedRevisionCacheBytes) return;
-      // 이전 대형 항목만 교체한다 — 일반 작업 세트는 유지해 교차 워크로드가
-      // 큰 선택 집합 사이에서도 작은 질의를 다시 필터링하지 않게 한다.
-      if (this.oversizedRevisionKey !== undefined) this.dropRevisionCacheEntry(this.oversizedRevisionKey);
-      this.oversizedRevisionKey = key;
-      this.oversizedRevisionRefs = refs.length;
-      this.oversizedRevisionBytes = estimatedBytes;
+      while (this.oversizedRevisionKeys.size >= this.maxRevisionCacheEntries
+        || this.oversizedRevisionBytes + estimatedBytes > this.maxOversizedRevisionCacheBytes) {
+        const oldest = [...this.revisionCache.keys()].find(candidate => this.oversizedRevisionKeys.has(candidate));
+        if (oldest === undefined) break;
+        this.dropRevisionCacheEntry(oldest);
+      }
+      this.oversizedRevisionKeys.add(key);
+      this.oversizedRevisionRefs += refs.length;
+      this.oversizedRevisionBytes += estimatedBytes;
     } else if (estimatedBytes > this.maxRevisionCacheBytes) {
       // 바이트만 넘는 항목(거대 키 등)은 캐시하지 않는다 — 상주 대상은
       // 페이지네이션이 재사용하는 큰 결과 집합뿐이다.
@@ -468,10 +473,10 @@ export class VerifiedBrowseIndex {
       // 교차 워크로드에서 큰 선택 집합의 다음 페이지가 다시 전체 필터를 한다.
       const normalRefs = () => this.revisionCacheRefs - this.oversizedRevisionRefs;
       const normalBytes = () => this.revisionCacheBytes - this.oversizedRevisionBytes;
-      while (this.revisionCache.size - (this.oversizedRevisionKey === undefined ? 0 : 1) >= this.maxRevisionCacheEntries
+      while (this.revisionCache.size - this.oversizedRevisionKeys.size >= this.maxRevisionCacheEntries
         || normalRefs() + refs.length > this.maxRevisionCacheRefs
         || normalBytes() + estimatedBytes > this.maxRevisionCacheBytes) {
-        const oldest = [...this.revisionCache.keys()].find(candidate => candidate !== this.oversizedRevisionKey);
+        const oldest = [...this.revisionCache.keys()].find(candidate => !this.oversizedRevisionKeys.has(candidate));
         if (oldest === undefined) break;
         this.dropRevisionCacheEntry(oldest);
       }
@@ -480,12 +485,6 @@ export class VerifiedBrowseIndex {
     this.revisionCache.set(key, entry);
     this.revisionCacheRefs += entry.refs.length;
     this.revisionCacheBytes += estimatedBytes;
-  }
-
-  private resetOversizedRevision(): void {
-    this.oversizedRevisionKey = undefined;
-    this.oversizedRevisionRefs = 0;
-    this.oversizedRevisionBytes = 0;
   }
 
   private proposals(query: ProposalBrowseQuery): BrowsePage<ProposalBrowseRef> {

@@ -246,8 +246,8 @@ export class SqliteFabricProjection {
       return clone(this.replayBlock(blockNumber));
     }
     const block = this.blockFromHeader(incoming, header);
-    const candidate = this.projector.fork();
-    const result = candidate.applyBlock(incoming);
+    const preparedBlock = this.projector.prepareBlock(incoming);
+    const result = preparedBlock.result;
     if (result.checkpoint.block_number !== blockNumber || result.checkpoint.block_hash !== block.block_hash || result.checkpoint.data_hash !== block.data_hash) throw new Error("Fabric candidate result does not match block header");
     // Prepare metadata before opening the SQL transaction.  `commit()` is
     // deliberately delayed until the durable projection commit succeeds, so
@@ -264,12 +264,12 @@ export class SqliteFabricProjection {
       this.appendDerived(block, result);
       this.db.exec("COMMIT");
       sqlCommitted = true;
+      preparedBlock.commit();
       preparedBrowse.commit();
     } catch (error) {
       if (!sqlCommitted) this.db.exec("ROLLBACK");
       throw error;
     }
-    this.projector = candidate;
     this.latestResult = result;
     this.latestRawDigest = block.raw_digest;
     this.journalDigest = appendJournalDigest(this.journalDigest, block.raw_digest);

@@ -291,6 +291,17 @@ export class FabricBlockProjector {
   }
 
   applyBlock(serialized: Uint8Array): ProjectBlockResult {
+    const prepared = this.prepareBlock(serialized);
+    prepared.commit();
+    return prepared.result;
+  }
+
+  /** Validate a block without publishing its writes. Hosting adapters commit
+      this delta only after durable storage succeeds. A prepared block is bound
+      to this exact state and can be committed once; later commits invalidate it.
+      The returned result shares no mutable values with the staged state. */
+  prepareBlock(serialized: Uint8Array): { result: ProjectBlockResult; commit(): void } {
+    const baseCheckpoint = this.latestCheckpoint;
     const block = decode(common.Block, serialized);
     if (!block.hasHeader() || !block.hasData() || !block.hasMetadata()) fail("Fabric block header, data, and metadata are required");
     const header = block.getHeader();
@@ -346,13 +357,19 @@ export class FabricBlockProjector {
       }
     }
     const checkpoint: ProjectorCheckpoint = { channel_id: this.channel_id, block_number: blockNumber, block_hash: fabricBlockHeaderHash(header), data_hash: digest(Buffer.concat(dataEntries.map(entry => Buffer.from(entry)))) };
-    for (const [key, value] of stagedWrites) this.state.set(key, value);
-    this.latestCheckpoint = checkpoint;
-    return {
+    const result: ProjectBlockResult = {
       checkpoint: { ...checkpoint },
       transactions: transactions.map(({ header_type: _headerType, ...transaction }) => ({ ...transaction, writeset: transaction.writeset.map(({ key, value }) => ({ key, value: clone(value) })) })),
       valid_transaction_ids: transactions.filter(transaction => transaction.valid).map(transaction => transaction.tx_id),
       invalid_transaction_ids: transactions.filter(transaction => !transaction.valid).map(transaction => transaction.tx_id),
+    };
+    return {
+      result,
+      commit: () => {
+        if (this.latestCheckpoint !== baseCheckpoint) fail("Prepared Fabric block is stale or already committed");
+        for (const [key, value] of stagedWrites) this.state.set(key, value);
+        this.latestCheckpoint = checkpoint;
+      },
     };
   }
 }

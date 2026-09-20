@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Release and dependency maintenance policy, with exact pins, upgrade
+  verification, compatibility notes and rollback criteria; adoption pilot
+  plan/results and empty observation-log templates.
 - Organisation signing-gateway attestation: the remote sign request can carry a
   decision attestation (actor, organisation, command binding, Fabric phase and
   transaction ID) or a read-only `phase: "query"` attestation for status and
@@ -133,6 +136,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Browse and substring-search caches keep up to eight large result sets
+  per pool using LRU eviction within the existing combined large-result
+  budgets (estimated 16 MiB for browse refs, 64 MiB of UTF-8 search keys/IDs).
+  Alternating large queries can reuse their pages while normal entries keep
+  their separate budgets; checkpoint and authorization checks are preserved.
+- Fabric durable block ingestion now stages verified write deltas and
+  publishes them only after SQL commit, eliminating the per-block full
+  state-map copy. Prepared blocks reject repeat or stale commits; explicit
+  `fork()` still provides an independent snapshot when requested.
 - Startup-breaking signing policy: organisation-bound keys now refuse to start
   without `--audit-log`, non-EC private keys and certificates whose
   `actor_kind` is outside `allowed_actor_kinds` fail at load rather than at

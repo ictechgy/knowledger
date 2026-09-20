@@ -267,9 +267,15 @@ test("rolls back raw journal, materialized state, and cursor on SQL failure", { 
     assert.equal(projection.read(second.key), undefined);
     db.exec("DROP TRIGGER fail_projection_history");
     db.close();
+    const recovered = projection.applyBlock(next);
+    assert.deepEqual(projection.read(first.key), first.value);
+    assert.deepEqual(projection.read(second.key), second.value);
+    assert.deepEqual(projection.applyBlock(next), recovered, 'retrying the committed block is idempotent');
+    const committed = projection.checkpoint();
     projection.close();
     const restarted = new SqliteFabricProjection(path, options);
-    assert.deepEqual(restarted.checkpoint(), before);
+    assert.deepEqual(restarted.checkpoint(), committed);
+    assert.deepEqual(restarted.read(second.key), second.value);
     restarted.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

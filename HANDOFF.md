@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-20 KST (PR #7–#10·#12·#13 머지 완료 — Track A·B·C 모두 main 반영)_
+_Last updated: 2026-09-20 KST (잔여 B8 성능 개선·Track D 정책·파일럿 준비, B7 공개 인증서 점검 완료 — 원격 미게시)_
 
 ## Goal
 
@@ -14,6 +14,14 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 ## Current Status
 
+- **잔여 로드맵 로컬 작업 완료(2026-09-20)**: B8 대형 캐시를 일반/대형 풀별
+  최대8개 LRU로 확장했다. 대형 풀 합산 예산은 기존 브라우즈 추정16MiB·검색
+  UTF-8 64MiB를 유지한다. Fabric durable ingest는 `prepareBlock`의 검증된
+  쓰기 delta를 SQL 성공 뒤 커밋해 블록마다 전체 상태 Map을 복사하지 않는다.
+  Track D는 [릴리스·의존성 정책](docs/29-PROJECT-OPERATIONS.md)으로 구체화했고,
+  실제 파일럿의 계획/결과·빈 관찰 로그 템플릿을 추가했다. 공개 인증서81개가
+  모두 정상이다. 새 릴리스·원격 게시·실제 파일럿·독립 물리 호스트 장애 시험은
+  수행하지 않았다. 대상 조직·환경·사람 검토자가 정해져야 실제 파일럿을 시작한다.
 - 저장소 `/Users/jinhongan/Desktop/knowledge-consensus-ledger`(로컬 체크아웃 경로는 그대로), 공개 이름은 `knowledger`. branch `main`.
   **공개 완료: https://github.com/ictechgy/knowledger — 리네임 커밋 `ad3693b`, 태그·릴리스 `v0.1.0`·`v0.2.0`.**
   이전 조회 최적화 `5173527`, 실제 Fabric 장애 검증 `de3e953`, 리뷰 수정 `90bdcda`.
@@ -107,9 +115,12 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
 
 - `.github/workflows/ci.yml`: local Node24/26, Fabric/auth/API·타입 검사, Chromium·성능/복구 jobs. 원격 실행 전 대상.
 - `infra/fabric/certificates.ts`, `examples/order-workflow/client-certificates.ts`: 갱신 core와 고정 예제 CLI.
-  적용 plan: `.data/fabric-smoke/certificate-renewals/renewal-20260916062911-ba83c15935beb018/plan.json`.
+  최신 적용 plan: `.data/fabric-smoke/certificate-renewals/renewal-20260916144157-3acf8bfc46847974/plan.json`.
 - `packages/storage/browse-index.ts`, `apps/api/service.ts`: 조회 인덱스 및 canonical 대조·페이지 계약.
-  `apps/api/search-matches.ts`는 검색 매치 스냅샷 캐시(일반+상주 대형 1개, 상한 생성자 주입 가능).
+  `apps/api/search-matches.ts`는 검색 매치 스냅샷 캐시(일반/대형 풀별 최대8개,
+  합산 바이트 예산, 상한 생성자 주입 가능).
+- `docs/29-PROJECT-OPERATIONS.md`: Track D 릴리스·의존성 운영 기준.
+  `examples/pilot/PLAN.template.md`·`observations.template.json`: 실제 파일럿 준비 입력.
 - `tools/performance-smoke.ts`(로컬 workload, `--slot-groups`·100k 상한)와
   `tools/performance-fabric.ts`(합성 블록→실제 projector·adapter 재생, `--journal` 재사용)가
   성능 측정 도구다. 결과는 `.artifacts/`에 JSON으로 남는다.
@@ -119,6 +130,20 @@ MIT 지식 합의 원장을 오픈소스로 공개한다. **제품 이름은 Kno
   Compose CLI `.tools/docker-compose`; Docker는 `/opt/homebrew/bin/docker`다.
 
 ## Verification
+
+2026-09-20 잔여 로드맵 로컬 변경 검증:
+
+- `npm run check`: **493 tests / 492 passed / 0 failed / 1 GC 전용 skipped**.
+  `npm run check:types`, `npm run demo` 통과.
+- 대형 캐시 LRU·합산 바이트/개수 예산·교대 체크포인트·무효화, 블록 준비/폐기·
+  결과 변조 격리·중복/stale commit 거절, SQL 실패 후 재시도·재시작을 검사했다.
+- 기준 `76e71d4`와 수정본의 순차 합성 Fabric 측정(2,000문서·128B·1tx/block·
+  1표본): 2,015블록 ingest 1,153.65→848.47ms. 생성·조회·검색·재시작 후
+  개수 전부 일치. 실제 Fabric 네트워크나 운영 SLA 검증이 아니다.
+- 공개 인증서81개 `ok`, User1 세 개 만료 `2027-01-14T14:41:57Z` 재확인.
+  파일럿 관찰 템플릿 2개를 실제 파서로 검증했다.
+- 근거 `.artifacts/remaining-roadmap-20260920/`, 상세 [검증 기록](docs/VALIDATION.md).
+  이번 코드의 원격 CI·실망 smoke·브라우저 검사는 실행하지 않았다.
 
 2026-09-20 Track C(PR #13, squash `4aad9ea`) 머지 시점 검증 근거:
 
@@ -308,10 +333,10 @@ python3 -B tools/check_docs.py
    벡터 검색 read model(PR #8)·Git 소스 커넥터·채택 측정(PR #13) 코드는 main 반영 완료.
    운영 대시보드(`e69a228`)·대규모 읽기 최적화(`f4113a1`+`7e6b46a`)·10만 문서
    확장성(PR #2 `1249f1e`)은 모두 main에 머지됐다.
-   알려진 잔여 한계(차단 아님, [검증 기록](docs/VALIDATION.md) 참조): 상주 대형 캐시 항목은
-   캐시당 하나라 교차 대형 질의 시 재계산으로 돌아가고, `fork()` 얕은 복사는 블록당
-   O(상태) Map 복사가 남는다(포인터 복사라 측정상 39배 개선).
-   이 항목들을 오픈소스 알파 공개의 필수 미완료 코드로 취급하지 않는다.
+   B8의 단일 대형 캐시·블록당 Map 복사는 2026-09-20 로컬 수정 완료.
+   풀별 예산을 넘는 교차 질의 재계산·cold 검색/이력 재생 비용은 남는다.
+   현재 파일럿 측정 CLI는 LocalLedger 저널만 지원하며 Fabric projection DB 직접
+   측정은 지원하지 않는다. Fabric 파일럿에는 별도 VALID 이벤트 추출 연동이 필요하다.
 4. 성능 도구 개선(baseline 비교·검색 시나리오·CLI 진단): **PR #3 머지 완료(squash `b073c81`)**.
    6라운드 리뷰 루프에서 유효 블로커를 모두 해소했고, 남은 LOW 항목은
    **PR #4(`e636166`)로 정리 완료** — 성능 도구 잔여 과제는 없다.
@@ -323,9 +348,12 @@ python3 -B tools/check_docs.py
    필수 감사 로그·qscc 전용 슬롯을 갖춘 원격 서명 경계를 도입했다.
    `feature/org-signing-gateway` 브랜치는 머지 완료.
 7. **Track A·B·C 머지 완료(PR #7–#10·#12·#13)** — Track C는 PR #13(squash
-   `4aad9ea`)으로 main 반영. 잔여 로드맵: B7 인증서 유지보수·B8 알려진 한계·
-   Track D(릴리스 케이던스·의존성 정책)와 실제 파일럿 실행.
-8. 유지보수: 기본14일 경고 창 기준 **2027년1월 초** 인증서를 점검·갱신한다. 자동 예약은 설정하지 않았다.
+   `4aad9ea`)으로 main 반영. 이후 B8 수정·Track D 정책·파일럿 준비는 로컬 완료.
+   실제 파일럿, 독립 물리 호스트/Fabric 채널 장애 검증, 실제 외부 공급자 연동은 남는다.
+   새 릴리스 게시는 별도 명시적 요청 시 릴리스 절차에 따라 진행한다.
+8. 유지보수: 공개 인증서 점검은 2026-09-20 완료. 기본14일 경고 창은
+   2026-12-31 23:41:57 KST부터이며 다음 수동 점검일은 **2027-01-01 KST**다.
+   그때 필요하면 갱신한다. 자동 예약은 설정하지 않았다.
 
 ## Resume Prompt
 
@@ -335,8 +363,12 @@ python3 -B tools/check_docs.py
 조직 signing gateway는 PR #6(rebase `f3fd4a2`)로 main에 머지됐다.
 Track A(PR #7·#8·#9)·B(PR #10 squash `e42122e`)·graceful-close(PR #12 `d39a9b1`)·
 Track C(PR #13 squash `4aad9ea` — Git 커넥터·채택 측정·원자 아티팩트)는 리뷰 수렴 후
-main에 머지됐다. 남은 로드맵은 B7 인증서 유지보수(2027년1월)·B8 알려진 한계·
-Track D(릴리스 케이던스·의존성 정책)와 실제 파일럿 실행이다.
+main에 머지됐다. 이후 B8 대형 캐시 LRU·Fabric 쓰기 delta 커밋과 Track D 운영 정책,
+파일럿 계획/관찰 템플릿을 로컬 구현·검증했다(493개 중492 통과·1 GC 생략).
+코드 변경의 원격 게시와 새 릴리스는 아직 하지 않았다. 공개 인증서81개는 정상이다.
+남은 작업은 2027-01-01 수동 인증서 점검, 대상 조직·환경이 필요한 실제 파일럿,
+독립 물리 호스트/Fabric 채널 장애 검증이다. 파일럿 CLI는 LocalLedger 전용이며
+Fabric 측정에는 별도 검증된 VALID 이벤트 추출 연동이 필요하다.
 완료된 코드와 기존 데이터·키·genesis·.serena·scorpionfish를 보존하고, 확인된 미비점만 수정·검증해.
 `kcl:` state 키·`kcl.actor_*` 인증서 속성·배포된 fixture 이름(kcl-demo/kcl/kcl_0.1.0/kcl-fabric-smoke/*.kcl.test)은 배포 계약이므로 리네임하지 마.
 실제 실행하지 않은 장애 시험을 완료로 표시하지 마.

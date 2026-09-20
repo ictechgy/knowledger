@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "pilot_id": "pilot-replace-me",
+  "concept": "측정할 개념으로 교체",
+  "workflow": "실제 업무로 교체",
+  "observations": []
+}

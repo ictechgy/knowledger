@@ -10,7 +10,7 @@ node tools/performance-smoke.ts \
   --out "$PWD/.artifacts/performance-smoke.json"
 ```
 
-The default dataset is intentionally small for CI. Use a separate disposable `--data` directory and `--documents 1000` or more for a larger local measurement. `--documents` is bounded at 10,000, `--samples` at 1,000, and `--body-bytes` at 256 KiB. The harness creates deterministic synthetic titles, document IDs, and body markers; it reports no document body.
+The default dataset is intentionally small for CI. Use a separate disposable `--data` directory and `--documents 1000` or more for a larger local measurement. `--documents` is bounded at 100,000, `--samples` at 1,000, and `--body-bytes` at 256 KiB. The harness creates deterministic synthetic titles, document IDs, and body markers; it reports no document body.
 
 The run publishes every synthetic document through the private draft, preview, and publish service path. It then measures repeated search and overview reads, closes and reopens the SQLite runtime to measure journal replay, and checks the database footprint. Every result includes p50, p95, and maximum elapsed time for each sampled operation, along with the requested dataset and runtime version.
 

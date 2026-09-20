@@ -216,6 +216,45 @@ test("rejects an invalid write atomically and preserves state and cursor", { ski
   assert.deepEqual(projector.entries(), before);
 });
 
+test("prepared blocks publish only on commit and isolate their returned result", { skip: !fabricProtosAvailable }, () => {
+  const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  const nonce = "nonce-prepared-123456";
+  const key = keyFor.fence(nonce);
+  const value = { nonce, eligibility_epoch: 0, tx_id: "tx-prepared" };
+  const serialized = block(0, [transaction({ txId: value.tx_id, writes: [{ key, value }] })]);
+  const prepared = projector.prepareBlock(serialized);
+  const competing = projector.prepareBlock(serialized);
+  const expectedCheckpoint = structuredClone(prepared.result.checkpoint);
+  assert.equal(projector.checkpoint(), null);
+  assert.equal(projector.read(key), undefined);
+  assert.deepEqual(projector.entries(), []);
+  prepared.result.checkpoint.block_number = 99;
+  (prepared.result.transactions[0].writeset[0].value as { nonce: string }).nonce = "caller-mutation";
+  serialized.fill(0);
+  prepared.commit();
+  assert.deepEqual(projector.checkpoint(), expectedCheckpoint);
+  assert.deepEqual(projector.read(key), value);
+  assert.throws(() => prepared.commit(), /stale or already committed/);
+  assert.throws(() => competing.commit(), /stale or already committed/);
+  assert.deepEqual(projector.checkpoint(), expectedCheckpoint);
+  assert.deepEqual(projector.read(key), value);
+});
+
+test("abandoned prepared blocks do not affect later validation and commits", { skip: !fabricProtosAvailable }, () => {
+  const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
+  const epoch = keyFor.eligibilityEpoch();
+  projector.applyBlock(block(0, [transaction({ txId: "tx-prepared-base", writes: [{ key: epoch, value: 0 }] })]));
+  const before = projector.checkpoint()!;
+  const next = (value: number) => block(1, [transaction({ txId: `tx-epoch-${value}`, writes: [{ key: epoch, value }] })], Buffer.from(before.block_hash, "hex"));
+  const abandoned = projector.prepareBlock(next(1));
+  assert.equal(projector.read(epoch), 0);
+  assert.deepEqual(projector.checkpoint(), before);
+  const actual = projector.applyBlock(next(2));
+  assert.throws(() => abandoned.commit(), /stale or already committed/);
+  assert.equal(projector.read(epoch), 2);
+  assert.deepEqual(projector.checkpoint(), actual.checkpoint);
+});
+
 test("a shallow fork isolates the candidate's state map from the parent", { skip: !fabricProtosAvailable }, () => {
   const projector = new FabricBlockProjector({ channel_id: channel, chaincode_name: chaincode, public_genesis: genesis });
   const epoch = keyFor.eligibilityEpoch();

@@ -41,11 +41,16 @@ Design contracts in `docs/` and their implementation status:
 6. ~~**Backup/restore rehearsal automation**~~ — `npm run test:backup`
    (`tools/backup-rehearsal.ts`) rehearses the offline snapshot/restore
    procedure, including its refusal guards, in CI.
-7. **Certificate maintenance** — next scheduled check/renewal around early
-   January 2027 (`docs/27-TEST-CERTIFICATES.md`).
-8. **Known limitations** — the resident large cache entry is evicted by
-   crossing large queries, and ledger `fork()` still copies state per block
-   (`docs/VALIDATION.md`).
+7. **Certificate maintenance** — public-certificate check passed on
+   2026-09-20 (81 certificates). Next manual check on 2027-01-01, inside the
+   14-day warning window; no automatic renewal job is installed
+   ([procedure](docs/27-TEST-CERTIFICATES.md)).
+8. **Known scalability limitations** — addressed: large browse/search
+   results share bounded LRU pools within the existing aggregate byte caps;
+   durable Fabric ingestion stages only block writes and publishes them
+   after SQL commit, removing the per-block state-map copy. Eviction above
+   the budgets, cold search and historical replay costs remain explicit
+   ([constraints](docs/26-BROWSE-INDEX.md)).
 
 ## Track C — Adoption and extensions
 
@@ -57,15 +62,18 @@ Design contracts in `docs/` and their implementation status:
     `npm run pilot:metrics` derives time-to-agreement, review effort and
     reuse rate from the verified journal and combines them with an
     explicit observation log for interpretation mixing and disclosure
-    burden (`docs/28-ADOPTION-PILOT.md`); running an actual pilot remains
-    open (`docs/07-DELIVERY-PLAN.md`).
+    burden; a plan/results template and empty observation log are available
+    ([pilot guide](docs/28-ADOPTION-PILOT.md)). Running an actual pilot still
+    requires participating organizations, a deployment and human reviewers.
 
 ## Track D — Project operations
 
-11. **Release cadence** — keep `CHANGELOG.md` current; tag a release when
-    main accumulates a coherent set of changes.
-12. **Dependency policy** — pin Fabric image/proto versions deliberately;
-    record upgrades with the same verification rigour as code changes.
+11. **Release cadence** — defined: four-week review, coherent minor releases,
+    urgent corrective patches, compatibility notes, verification and
+    publication readback ([release procedure](docs/29-PROJECT-OPERATIONS.md)).
+12. **Dependency policy** — defined: exact package versions and lockfiles,
+    Fabric image digests and CI action SHAs, scoped upgrade validation and
+    rollback criteria ([dependency policy](docs/29-PROJECT-OPERATIONS.md)).
 
 ## Out of scope for now
 

@@ -16,3 +16,7 @@ npm run demo
 See [runtime setup](docs/11-RUNTIME.md). Describe the exact environment and commands used in a pull request; distinguish local simulation, an injected SDK/shim test, a modeled MVCC race, and a real Fabric network.
 
 The built-in Node TypeScript loader executes erasable TypeScript; it does not perform static type checking. Changes to the Fabric adapter also need validation against the pinned official SDK packages before an operational release. Keep generated packages, dependency directories, credentials, and runtime data out of commits.
+
+Record user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+Follow the [release and dependency policy](docs/29-PROJECT-OPERATIONS.md) for
+version selection, exact dependency pins, upgrade evidence and rollback.
